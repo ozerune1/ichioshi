@@ -321,6 +321,11 @@ enum Action {
         files: Vec<PathBuf>,
     },
     DownloadEpisodes(Vec<u32>),
+    /// Library episodes of a series, to the end of the playlist.
+    AddToPlaylist {
+        id: u64,
+        files: Vec<PathBuf>,
+    },
 }
 
 /// What the delete confirmation is about.
@@ -1066,6 +1071,7 @@ impl App {
             Action::SetSeriesPrefs { id, prefs } => self.set_series_prefs(id, prefs),
             Action::RemuxLibrary { id, files } => self.remux_library(id, files),
             Action::DownloadEpisodes(episodes) => self.download_episodes(episodes),
+            Action::AddToPlaylist { id, files } => self.add_episodes_to_playlist(id, files),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),

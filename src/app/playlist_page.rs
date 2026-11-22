@@ -1,4 +1,4 @@
-//! The playlist page: order remuxed episodes and export them as a zip named
+//! The playlist page: order episodes and export them as a zip named
 //! after the current date and time, the files numbered `1) <title>`.
 
 use std::path::PathBuf;
@@ -141,7 +141,7 @@ impl App {
         let start = self.download_dir();
         self.spawn(async move {
             let picked = rfd::AsyncFileDialog::new()
-                .set_title("Add remuxed episodes")
+                .set_title("Add episodes")
                 .add_filter("Matroska video", &["mkv"])
                 .set_directory(&start)
                 .pick_files()
@@ -347,7 +347,7 @@ impl App {
         egui::CentralPanel::no_frame().show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 if items.is_empty() {
-                    ui.label("Nothing here yet. Remux a series and click “Add to playlist”, or add remuxed files above.");
+                    ui.label("Nothing here yet. Add episodes with “+ Playlist” on a series page, after remuxing, or from files above.");
                     return;
                 }
                 ui.add_enabled_ui(!exporting, |ui| {

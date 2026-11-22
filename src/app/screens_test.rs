@@ -1857,6 +1857,37 @@ fn library_and_series_pages() {
     assert!(h.query_by_label("⬇ Download series (2 missing)").is_some());
     save(&mut h, &base, "library-5-episodes.png");
 
+    // Episodes to the playlist: one from its row, then the rest.
+    assert!(h.state().playlist.items.is_empty());
+    h.get_all_by_label("+ Playlist").next().unwrap().click();
+    h.run_steps(3);
+    let titles = |a: &App| {
+        a.playlist
+            .items
+            .iter()
+            .map(|i| i.title.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(titles(h.state()), ["Frieren - 01"]);
+    assert!(h.query_by_label("✔ In playlist").is_some());
+    click(&mut h, "+ Playlist (1)");
+    assert_eq!(titles(h.state()), ["Frieren - 01", "Frieren - 02"]);
+    assert_eq!(
+        h.state().playlist.items[1].path,
+        library.join("Frieren").join(names[1])
+    );
+    h.run_steps(3);
+    assert_eq!(h.get_all_by_label("✔ In playlist").count(), 2);
+    assert!(
+        h.get_by_label("+ Playlist").accesskit_node().is_disabled(),
+        "nothing left to add"
+    );
+    assert!(
+        h.query_by_label("Added 1 episode to the playlist")
+            .is_some()
+    );
+    save(&mut h, &base, "library-5b-playlist.png");
+
     // One episode: a torrent with just that file, into the series' folder.
     h.get_all_by_label("⬇ Download")
         .find(|b| !b.accesskit_node().is_disabled())

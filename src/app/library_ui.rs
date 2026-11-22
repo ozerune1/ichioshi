@@ -1335,6 +1335,37 @@ impl App {
         self.pages.last_stats = None;
     }
 
+    /// Add library episodes to the playlist, titled like remuxes:
+    /// "<series> - 05" (numbered alike across the series' episodes).
+    pub(super) fn add_episodes_to_playlist(&mut self, id: u64, files: Vec<PathBuf>) {
+        let Some(series) = self.library.find(id) else {
+            return;
+        };
+        let title = match &self.page {
+            Page::Anime(ap) if ap.anime.anilist_id == id => ap.anime.title.clone(),
+            _ => series.title().to_owned(),
+        };
+        let all: Vec<PathBuf> = series.video_files();
+        let titles = crate::remux::episode_titles(&title, &all);
+        let items: Vec<crate::playlist::Item> = files
+            .into_iter()
+            .map(|path| {
+                let title = all
+                    .iter()
+                    .position(|p| *p == path)
+                    .map(|i| titles[i].clone())
+                    .unwrap_or_else(|| {
+                        crate::remux::episode_titles(&title, std::slice::from_ref(&path)).remove(0)
+                    });
+                crate::playlist::Item { path, title }
+            })
+            .collect();
+        self.handle_playlist_msg(Msg::PlaylistAdd {
+            items,
+            errors: Vec::new(),
+        });
+    }
+
     /// Every episode of the series: in the library, downloading, or not
     /// (grayed out, with Download).
     pub(super) fn episodes_section(&self, ui: &mut Ui, ap: &AnimePage, actions: &mut Vec<Action>) {
@@ -1399,6 +1430,25 @@ impl App {
             ui.heading("Episodes");
             ui.weak(format!("{} of {last} in your library", on_disk.len()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(s) = series {
+                    let files: Vec<PathBuf> = on_disk
+                        .values()
+                        .map(|(rel, _)| s.folder.join(rel))
+                        .filter(|p| !self.playlist.items.iter().any(|i| &i.path == p))
+                        .collect();
+                    let label = match files.len() {
+                        0 => "+ Playlist".to_owned(),
+                        n => format!("+ Playlist ({n})"),
+                    };
+                    let response = ui.add_enabled(!files.is_empty(), egui::Button::new(label));
+                    if response.clicked() {
+                        actions.push(Action::AddToPlaylist { id, files });
+                    } else if !on_disk.is_empty() {
+                        response
+                            .on_hover_text("Add the episodes to the end of the playlist")
+                            .on_disabled_hover_text("Every episode here is in the playlist");
+                    }
+                }
                 if !on_disk.is_empty()
                     && let Some(s) = series
                     && ui
@@ -1440,7 +1490,7 @@ impl App {
             .column(egui_extras::Column::exact(34.0))
             .column(egui_extras::Column::remainder().clip(true))
             .column(egui_extras::Column::exact(110.0))
-            .column(egui_extras::Column::exact(230.0))
+            .column(egui_extras::Column::exact(300.0))
             .body(|body| {
                 body.rows(28.0, last as usize, |mut row| {
                     let n = row.index() as u32 + 1;
@@ -1483,16 +1533,30 @@ impl App {
                             );
                         } else if let Some((rel, len)) = have {
                             ui.label(fmt_bytes(*len));
-                            if let Some(s) = series
-                                && ui
+                            if let Some(s) = series {
+                                let path = s.folder.join(rel);
+                                if ui
                                     .small_button("Remux…")
                                     .on_hover_text("Make a copy with only the tracks you want")
                                     .clicked()
-                            {
-                                actions.push(Action::RemuxLibrary {
-                                    id,
-                                    files: vec![s.folder.join(rel)],
-                                });
+                                {
+                                    actions.push(Action::RemuxLibrary {
+                                        id,
+                                        files: vec![path.clone()],
+                                    });
+                                }
+                                if self.playlist.items.iter().any(|i| i.path == path) {
+                                    ui.label(RichText::new("✔ In playlist").color(gray));
+                                } else if ui
+                                    .small_button("+ Playlist")
+                                    .on_hover_text("Add to the end of the playlist")
+                                    .clicked()
+                                {
+                                    actions.push(Action::AddToPlaylist {
+                                        id,
+                                        files: vec![path],
+                                    });
+                                }
                             }
                         } else if !out(n) {
                             ui.label(RichText::new("Not out yet").color(gray));

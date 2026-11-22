@@ -1,4 +1,4 @@
-//! The playlist: remuxed episodes in the order you want them, exported as a
+//! The playlist: episodes in the order you want them, exported as a
 //! zip named after the current date and time, e.g. `2026-11-21 16-45-03.zip`,
 //! holding a folder of the same name with the files renamed `1) <title>.mkv`,
 //! `2) <title>.mkv`... Saved as JSON in the app's state folder.
