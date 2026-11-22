@@ -3,11 +3,12 @@
 //! language preferences.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::{App, EngineState, Msg};
-use crate::library::move_files;
+use crate::library::{Applied, Series, move_files};
+use crate::prefs::LangPrefs;
 
 #[derive(Default)]
 pub(super) struct LibraryState {
@@ -16,6 +17,16 @@ pub(super) struct LibraryState {
     moving: HashSet<String>,
     /// Moves that failed: not tried again until the app restarts.
     failed: HashSet<String>,
+    last_defaults: Option<Instant>,
+    /// Default tracks are being set on some files.
+    applying: bool,
+}
+
+/// A file's size and modification time (Unix seconds).
+fn stamp(path: &Path) -> Option<(u64, i64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    Some((meta.len(), modified))
 }
 
 /// A move into the library, ready to run.
@@ -45,6 +56,99 @@ impl App {
         }
         self.move_finished_torrents();
         self.move_finished_jobs();
+    }
+
+    /// The preferences that apply to a series.
+    pub(super) fn prefs_for(&self, series: &Series) -> LangPrefs {
+        series.prefs.clone().unwrap_or_else(|| self.settings.prefs.clone())
+    }
+
+    /// Episodes whose default tracks don't match the preferences yet, or
+    /// changed since: `(series, path within its folder, path)`.
+    pub(super) fn pending_defaults(&self, series: &Series) -> Vec<(String, PathBuf)> {
+        let key = self.prefs_for(series).key();
+        let busy = self.busy_files();
+        series
+            .video_files()
+            .into_iter()
+            .filter(|p| !busy.contains(p))
+            .filter_map(|p| {
+                let rel = p.strip_prefix(&series.folder).ok()?.to_string_lossy().into_owned();
+                let (len, modified) = stamp(&p)?;
+                let done = series.applied.get(&rel).is_some_and(|a| a.key == key && a.len == len && a.modified == modified);
+                (!done).then_some((rel, p))
+            })
+            .collect()
+    }
+
+    /// Files a torrent is still writing.
+    fn busy_files(&self) -> HashSet<PathBuf> {
+        let mut busy = HashSet::new();
+        let Some(engine) = self.engine() else { return busy };
+        for (_, handle) in engine.torrents() {
+            if handle.stats().finished {
+                continue;
+            }
+            if let Ok(listing) = engine.listing_for(&handle) {
+                busy.extend(listing.files.iter().map(|f| handle.output_folder().join(&f.path)));
+            }
+        }
+        busy
+    }
+
+    /// Look again for episodes to set default tracks on, now.
+    pub(super) fn recheck_defaults(&mut self) {
+        self.lib.last_defaults = None;
+    }
+
+    /// Every few seconds: set default tracks on episodes that need it, one
+    /// at a time in the background. Nothing is removed from the files.
+    pub(super) fn apply_defaults(&mut self) {
+        if self.lib.applying || self.lib.last_defaults.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+            return;
+        }
+        self.lib.last_defaults = Some(Instant::now());
+        let mut work: Vec<(u64, String, PathBuf, LangPrefs)> = Vec::new();
+        for series in &self.library.series {
+            let prefs = self.prefs_for(series);
+            for (rel, path) in self.pending_defaults(series) {
+                work.push((series.anilist_id, rel, path, prefs.clone()));
+            }
+        }
+        if work.is_empty() {
+            return;
+        }
+        self.lib.applying = true;
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            for (anilist_id, rel, path, prefs) in work {
+                let result = crate::mkv::probe(&path).and_then(|info| {
+                    let on = crate::prefs::pick_defaults(&info.tracks, &prefs);
+                    crate::mkv::set_default_tracks(&path, &on)
+                });
+                match &result {
+                    Ok(edit) => tracing::info!("default tracks of {}: {edit:?}", path.display()),
+                    Err(e) => tracing::warn!("couldn't set the default tracks of {}: {e:#}", path.display()),
+                }
+                let Some((len, modified)) = stamp(&path) else { continue };
+                let applied = Applied { key: prefs.key(), len, modified, error: result.err().map(|e| format!("{e:#}")) };
+                let _ = tx.send(Msg::DefaultsApplied { anilist_id, rel, applied });
+                ctx.request_repaint();
+            }
+            let _ = tx.send(Msg::DefaultsDone);
+            ctx.request_repaint();
+        });
+    }
+
+    pub(super) fn handle_defaults_applied(&mut self, anilist_id: u64, rel: String, applied: Applied) {
+        if let Some(series) = self.library.find_mut(anilist_id) {
+            series.applied.insert(rel, applied);
+            self.library.save_or_warn();
+        }
+    }
+
+    pub(super) fn defaults_done(&mut self) {
+        self.lib.applying = false;
     }
 
     /// Folders never removed, even when a move empties them.

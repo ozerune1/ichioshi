@@ -115,6 +115,8 @@ enum Msg {
     DebridAccount { seq: u64, provider: crate::debrid::Provider, result: Result<crate::debrid::Account, String> },
     NzbLookup { hash: String, links: Vec<NzbLink> },
     Moved { key: String, name: String, result: Result<Vec<(PathBuf, PathBuf)>, String> },
+    DefaultsApplied { anilist_id: u64, rel: String, applied: crate::library::Applied },
+    DefaultsDone,
     UsenetChecked { id: u64, seq: u64, result: Result<(), String> },
     Info(String),
     Error(String),
@@ -684,6 +686,8 @@ impl App {
                 msg @ Msg::DebridAccount { .. } => self.handle_debrid_msg(msg),
                 msg @ (Msg::NzbLookup { .. } | Msg::UsenetChecked { .. }) => self.handle_usenet_msg(msg),
                 Msg::Moved { key, name, result } => self.handle_moved(key, name, result),
+                Msg::DefaultsApplied { anilist_id, rel, applied } => self.handle_defaults_applied(anilist_id, rel, applied),
+                Msg::DefaultsDone => self.defaults_done(),
             }
         }
     }
@@ -1941,6 +1945,7 @@ impl eframe::App for App {
         self.sync_engine();
         self.request_nzb_lookups();
         self.tidy_library();
+        self.apply_defaults();
         let mut actions = Vec::new();
 
         egui::Panel::top("top_bar").show(ui, |ui| self.top_bar(ui, &mut actions));

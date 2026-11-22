@@ -1113,3 +1113,60 @@ fn moves_old_downloads_into_the_library() {
     assert!(downloads.exists(), "the downloads folder stays");
     assert!(h.state().settings.migrated);
 }
+
+/// Episodes in the library get default tracks from the language
+/// preferences (the library's, then the series' own), with every track
+/// kept; files that aren't Matroska are noted, not retried.
+#[test]
+#[ignore = "renders screenshots"]
+fn library_episodes_get_default_tracks() {
+    use crate::library::NewSeries;
+    use crate::prefs::{LangPrefs, SubType};
+
+    let base = screens_dir("library-defaults-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+    let library = base.join("downloads");
+    let folder = {
+        let a = h.state_mut();
+        let new = NewSeries { anilist_id: 9, english: Some("Show".into()), ..Default::default() };
+        a.library.add(&new, &library).folder.clone()
+    };
+    std::fs::create_dir_all(&folder).unwrap();
+    // Like a real WEB-DL: everything "default", languages partly in names.
+    let tracks = [
+        (1, 1, "und", "Video", None),
+        (2, 2, "jpn", "Japanese", None),
+        (3, 2, "und", "English", None),
+        (4, 17, "und", "English (Full Subtitle)", None),
+        (5, 17, "und", "English (Signs)", Some(0)),
+        (6, 17, "spa", "Spanish", None),
+    ];
+    for ep in ["Show - 01.mkv", "Show - 02.mkv"] {
+        std::fs::write(folder.join(ep), crate::mkv::tests::with_tracks(&tracks)).unwrap();
+    }
+    std::fs::write(folder.join("Show - 03.mp4"), b"not matroska").unwrap();
+    let defaults = |name: &str| -> Vec<u64> {
+        let info = crate::mkv::probe(&folder.join(name)).unwrap();
+        assert_eq!(info.tracks.len(), 6, "every track kept");
+        info.tracks.iter().filter(|t| t.default).map(|t| t.number).collect()
+    };
+    let done = |a: &App| a.library.find(9).is_some_and(|s| a.pending_defaults(s).is_empty());
+
+    // The library's preferences: Japanese audio, full English subtitles.
+    wait_until(&mut h, "defaults set", done);
+    assert_eq!(defaults("Show - 01.mkv"), [1, 2, 4]);
+    assert_eq!(defaults("Show - 02.mkv"), [1, 2, 4]);
+    let applied = h.state().library.find(9).unwrap().applied.clone();
+    assert!(applied["Show - 03.mp4"].error.is_some(), "not Matroska: noted");
+
+    // This series as an English dub: English audio, signs only.
+    {
+        let a = h.state_mut();
+        a.library.find_mut(9).unwrap().prefs = Some(LangPrefs { audio: "eng".into(), subtitles: Some("eng".into()), sub_type: SubType::Auto });
+        a.recheck_defaults();
+    }
+    wait_until(&mut h, "defaults changed", done);
+    assert_eq!(defaults("Show - 01.mkv"), [1, 3, 5]);
+    assert_eq!(defaults("Show - 02.mkv"), [1, 3, 5]);
+}

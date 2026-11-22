@@ -957,8 +957,41 @@ fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A small Matroska file with named tracks `(number, type, language,
+    /// name, explicit FlagDefault)`, padding after the track list, and a
+    /// cluster of video blocks.
+    pub(crate) fn with_tracks(entries: &[(u64, u64, &str, &str, Option<u64>)]) -> Vec<u8> {
+        let mut seg = element(INFO, &uint_element(0x2A_D7B1, 1_000_000));
+        let mut tracks = Vec::new();
+        for &(n, kind, lang, name, default) in entries {
+            let codec: &[u8] = match kind {
+                1 => b"V_MPEG4/ISO/AVC",
+                2 => b"A_AAC",
+                _ => b"S_TEXT/ASS",
+            };
+            let mut f = uint_element(TRACK_NUMBER, n);
+            f.extend(uint_element(TRACK_UID, n + 100));
+            f.extend(uint_element(TRACK_TYPE, kind));
+            f.extend(element(CODEC_ID, codec));
+            f.extend(element(LANGUAGE, lang.as_bytes()));
+            f.extend(element(NAME, name.as_bytes()));
+            if let Some(d) = default {
+                f.extend(uint_element(FLAG_DEFAULT, d));
+            }
+            tracks.extend(element(TRACK_ENTRY, &f));
+        }
+        seg.extend(element(TRACKS, &tracks));
+        seg.extend(void(256));
+        let mut cluster = uint_element(TIMESTAMP, 0);
+        cluster.extend(element(SIMPLE_BLOCK, &[0x81, 0, 0, 0x80, 1, 2, 3]));
+        seg.extend(element(CLUSTER, &cluster));
+        let mut file = element(EBML, &element(DOC_TYPE, b"matroska"));
+        file.extend(element(SEGMENT, &seg));
+        file
+    }
 
     /// A small Matroska file: tracks `(number, type, explicit FlagDefault)`,
     /// `void` bytes of padding after the track list (0 for none), then a
