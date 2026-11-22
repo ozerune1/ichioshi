@@ -265,6 +265,37 @@ pub(crate) mod tests {
         ok.then_some(out)
     }
 
+    /// A plain clip `secs` long, without chapters (small: 320x240).
+    pub(crate) fn plain_sample(dir: &Path, secs: u32) -> Option<std::path::PathBuf> {
+        std::fs::create_dir_all(dir).ok()?;
+        let out = dir.join(format!("plain-{secs}.mkv"));
+        let ok = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                &format!("testsrc2=s=320x240:r=24:d={secs}"),
+            ])
+            .args(["-f", "lavfi", "-i", &format!("sine=f=440:d={secs}")])
+            .args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "flac",
+            ])
+            .arg(&out)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(out)
+    }
+
     #[test]
     fn describes_tracks_and_chapters() {
         let dir = tempfile::tempdir().unwrap();

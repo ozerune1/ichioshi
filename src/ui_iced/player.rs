@@ -80,6 +80,10 @@ pub struct Player {
     pub skipped: HashSet<usize>,
 }
 
+/// How far "Skip 85s" (and the J and L keys) go: an anime opening's usual
+/// length.
+pub const SKIP: f64 = 85.0;
+
 /// "1:23", "1:02:03".
 pub fn clock(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -309,47 +313,78 @@ impl Player {
             || self.active.elapsed() < Duration::from_millis(2500);
         let mut layers = vec![Element::from(base)];
 
-        // Skip the opening or ending, whenever it's on.
-        if let Some((_, chapter, end)) = self.current_part() {
-            let last = (end - self.duration()).abs() < 0.5;
-            let label = match chapter.part {
-                Part::Opening => Some(("Skip opening  ⏵", Msg::SkipPart)),
-                Part::Ending if last && next.is_some() => Some(("Next episode  ⏵", Msg::Next)),
-                Part::Ending => Some(("Skip ending  ⏵", Msg::SkipPart)),
-                _ => None,
-            };
-            if let Some((label, msg)) = label {
-                let b = button(text(label).size(15).font(SEMI).color(Color::WHITE))
-                    .padding([11, 20])
-                    .on_press(Message::Player(msg))
-                    .style(|_, _| button::Style {
-                        background: Some(fill_color(Color {
-                            a: 0.75,
-                            ..Color::BLACK
-                        })),
-                        text_color: Color::WHITE,
-                        border: Border {
-                            color: Color::WHITE.scale_alpha(0.35),
-                            width: 1.0,
-                            radius: 10.0.into(),
-                        },
-                        ..button::Style::default()
-                    });
-                let gap = if show { 120.0 } else { 40.0 };
-                layers.push(
-                    container(b)
-                        .width(Fill)
-                        .height(Fill)
-                        .align_x(Alignment::End)
-                        .align_y(Alignment::End)
-                        .padding(iced::Padding {
-                            bottom: gap,
-                            right: 32.0,
-                            ..Default::default()
-                        })
-                        .into(),
-                );
+        // Skip the opening or ending, whenever it's on; without chapters
+        // that say where they are, 85 seconds (an opening's usual length).
+        let named = self
+            .chapters
+            .iter()
+            .any(|c| matches!(c.part, Part::Opening | Part::Ending));
+        let label = match self.current_part() {
+            Some((_, chapter, end)) if named => {
+                let last = (end - self.duration()).abs() < 0.5;
+                match chapter.part {
+                    Part::Opening => Some(("Skip opening  ⏵", Msg::SkipPart)),
+                    Part::Ending if last && next.is_some() => Some(("Next episode  ⏵", Msg::Next)),
+                    Part::Ending => Some(("Skip ending  ⏵", Msg::SkipPart)),
+                    _ => None,
+                }
             }
+            _ if !named && show && self.duration() - self.position() > SKIP => {
+                Some(("Skip 85s  ⏵", Msg::SeekBy(SKIP)))
+            }
+            _ => None,
+        };
+        if let Some((label, msg)) = label {
+            let b = button(text(label).size(15).font(SEMI).color(Color::WHITE))
+                .padding([11, 20])
+                .on_press(Message::Player(msg))
+                .style(|_, _| button::Style {
+                    background: Some(fill_color(Color {
+                        a: 0.75,
+                        ..Color::BLACK
+                    })),
+                    text_color: Color::WHITE,
+                    border: Border {
+                        color: Color::WHITE.scale_alpha(0.35),
+                        width: 1.0,
+                        radius: 10.0.into(),
+                    },
+                    ..button::Style::default()
+                });
+            let gap = if show { 120.0 } else { 40.0 };
+            let b: Element<'a, Message> = if label.starts_with("Skip 85s") {
+                iced::widget::tooltip(
+                    b,
+                    container(
+                        text("No chapters say where the opening is: 85 seconds on (L)")
+                            .size(12)
+                            .color(TEXT),
+                    )
+                    .padding(8)
+                    .style(|_| container::Style {
+                        background: Some(fill_color(Color::BLACK.scale_alpha(0.85))),
+                        border: rounded(6.0),
+                        ..Default::default()
+                    }),
+                    iced::widget::tooltip::Position::Top,
+                )
+                .into()
+            } else {
+                b.into()
+            };
+            layers.push(
+                container(b)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::End)
+                    .align_y(Alignment::End)
+                    .padding(iced::Padding {
+                        bottom: gap,
+                        right: 32.0,
+                        ..Default::default()
+                    })
+                    .into(),
+            );
         }
 
         // At the end, with nothing playing next: what's next.

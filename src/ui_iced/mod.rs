@@ -424,8 +424,8 @@ impl App {
             Key::Named(Named::Space) | Key::Character("k") => Msg::TogglePause,
             Key::Named(Named::ArrowRight) => Msg::SeekBy(5.0),
             Key::Named(Named::ArrowLeft) => Msg::SeekBy(-5.0),
-            Key::Character("l") => Msg::SeekBy(85.0),
-            Key::Character("j") => Msg::SeekBy(-85.0),
+            Key::Character("l") => Msg::SeekBy(player::SKIP),
+            Key::Character("j") => Msg::SeekBy(-player::SKIP),
             Key::Named(Named::ArrowUp) => {
                 Msg::Volume(self.player.as_ref().map_or(100.0, |p| p.volume) + 5.0)
             }
@@ -546,6 +546,57 @@ mod tests {
         }
     }
 
+    /// Whether the app as drawn now shows `label`.
+    fn shows(app: &App, label: &str) -> bool {
+        let settings = iced::Settings {
+            default_font: INTER,
+            ..Default::default()
+        };
+        let mut ui = iced_test::Simulator::with_size(settings, (1440.0, 900.0), app.view());
+        ui.find(label).is_ok()
+    }
+
+    /// Without chapters, "Skip 85s" jumps an opening's usual length, and
+    /// goes away when there's less than that left.
+    #[test]
+    #[ignore = "needs GStreamer and ffmpeg"]
+    fn skips_85_seconds_without_chapters() {
+        if !crate::gst_video::available() {
+            eprintln!("skipping: no GStreamer");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let mut library = Library::load(state.join("library.json"), dir.path());
+        let new = crate::library::NewSeries {
+            anilist_id: 9,
+            english: Some("Show".into()),
+            ..Default::default()
+        };
+        let folder = library.add(&new, dir.path()).folder.clone();
+        let Some(sample) = crate::gst_video::tests::plain_sample(&dir.path().join("sample"), 120)
+        else {
+            return;
+        };
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::copy(&sample, folder.join("Show - 01.mkv")).unwrap();
+        library.save_or_warn();
+
+        let mut app = App::new(&state);
+        let _ = app.update(Message::Play(9, 1));
+        wait(&mut app, "playing", |a| {
+            a.player.as_ref().unwrap().position() > 0.3
+        });
+        assert!(app.player.as_ref().unwrap().chapters.is_empty());
+        assert!(!shows(&app, "Skip opening  ⏵"));
+        click(&mut app, "Skip 85s  ⏵");
+        wait(&mut app, "85 seconds on", |a| {
+            a.player.as_ref().unwrap().position() >= 85.0
+        });
+        let _ = app.update(Message::Player(player::Msg::Moved));
+        assert!(!shows(&app, "Skip 85s  ⏵"), "less than 85 seconds left");
+    }
+
     fn wait(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(20);
         while !done(app) {
@@ -633,10 +684,12 @@ mod tests {
             "the file's default tracks"
         );
 
-        // In the opening: skip it from the button.
+        // In the opening: skip it from the button (chapters say where it is,
+        // so no 85-second skip).
         wait(&mut app, "playing", |a| {
             a.player.as_ref().unwrap().position() > 0.5
         });
+        assert!(!shows(&app, "Skip 85s  ⏵"));
         snapshot(&app, &out.join("1-opening"));
         click(&mut app, "Skip opening  ⏵");
         wait(&mut app, "past the opening", |a| {
