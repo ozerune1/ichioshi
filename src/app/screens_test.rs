@@ -404,17 +404,17 @@ fn render_drive_ui() {
     let rect = h.get_by_label(last).rect();
     assert!(rect.bottom() <= bottom, "last setup step unreachable: {rect:?} vs window bottom {bottom}");
 
-    // Wider windows: every step fits left of the Downloads panel.
+    // Wider windows: every step fits in the window.
     for (w, hgt) in [(1920.0, 1080.0), (1920.0, 560.0), (1600.0, 900.0), (2560.0, 1440.0)] {
         h.set_size(egui::vec2(w, hgt));
         h.run_steps(8);
         save(&mut h, &base, &format!("drive-1d-{w}x{hgt}.png"));
-        let downloads = h.get_by_label("Downloads").rect().left();
+        let right = h.state().ctx.content_rect().right();
         for step in super::drive_ui::SETUP_STEPS {
             let node = h.get_by_label(step);
             node.scroll_to_me();
             let rect = node.rect();
-            assert!(rect.right() <= downloads, "{w}x{hgt}: “{step}” runs under the Downloads panel: {rect:?}");
+            assert!(rect.right() <= right, "{w}x{hgt}: “{step}” runs off the window: {rect:?}");
         }
     }
     h.state_mut().playlist.clear();
@@ -648,6 +648,8 @@ fn downloads_through_a_debrid_service() {
     wait_until(&mut h, "TorBox fetching", |a| {
         a.debrid.manager.views().first().is_some_and(|v| matches!(v.live.phase, Phase::Remote { .. }))
     });
+    click(&mut h, "Downloads (1)");
+    h.run_steps(3);
     save(&mut h, &base, "debrid-3-service-fetching.png");
     assert!(h.query_by_label("TorBox: 62%").is_some());
 
@@ -670,6 +672,8 @@ fn downloads_through_a_debrid_service() {
     assert!(h.query_by_label("Update download").is_some());
 
     // Remux… opens the remux page with the downloaded episodes.
+    click(&mut h, "Downloads");
+    h.run_steps(3);
     click(&mut h, "Remux…");
     h.run_steps(3);
     let Page::Remux(rp) = &h.state().page else { panic!("remux page") };
@@ -715,6 +719,8 @@ fn torrents_wait_for_the_vpn() {
     let offline = |a: &App| matches!(a.engine, EngineState::Ready(_)) && a.engine_offline();
     wait_until(&mut h, "waiting", |a| offline(a) && a.vpn.waiting.as_deref() == Some("PIA is disconnected"));
     assert!(h.state().engine().unwrap().session().get_dht().is_none(), "no DHT while offline");
+    click(&mut h, "Downloads");
+    h.run_steps(3);
     save(&mut h, &base, "vpn-1-waiting.png");
     assert!(h.query_by_label("⏸ Torrents are waiting for the VPN").is_some());
     assert!(h.state().download_ready().unwrap_err().contains("waiting for the VPN"));
@@ -911,6 +917,7 @@ fn downloads_from_usenet() {
         h.step();
         std::thread::sleep(Duration::from_millis(10));
     }
+    h.state_mut().page = Page::Downloads;
     h.run_steps(2);
     save(&mut h, &base, "usenet-3-downloading.png");
     assert!(h.query_by_label_contains("Downloading from Usenet (AnimeTosho)").is_some());

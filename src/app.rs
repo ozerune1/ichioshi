@@ -187,6 +187,7 @@ enum Action {
     UsenetOpenProviders,
     UsenetCheck(u64),
     GoLibrary,
+    GoDownloads,
     OpenSeries(u64),
     AddToLibrary,
     RemoveSeries { id: u64, delete_files: bool },
@@ -223,6 +224,8 @@ enum EngineState {
 enum Page {
     Home,
     Results,
+    /// Everything downloading (and whatever's not in the library).
+    Downloads,
     Anime(AnimePage),
     Files(FilesPage),
     Remux(RemuxPage),
@@ -737,7 +740,7 @@ impl App {
                     Page::Files(FilesPage { back: Some(ap), .. }) => Page::Anime(ap),
                     Page::Anime(AnimePage { from_library: true, .. }) => Page::Home,
                     Page::Remux(RemuxPage { back: Some(ap), .. }) => Page::Anime(ap),
-                    Page::Files(_) | Page::Anime(_) | Page::Remux(_) | Page::Playlist(_) => self.home_or_results(),
+                    Page::Files(_) | Page::Anime(_) | Page::Remux(_) | Page::Playlist(_) | Page::Downloads => self.home_or_results(),
                     other => other,
                 };
             }
@@ -827,6 +830,10 @@ impl App {
             Action::GoLibrary => {
                 self.cancel_listing();
                 self.page = Page::Home;
+            }
+            Action::GoDownloads => {
+                self.cancel_listing();
+                self.page = Page::Downloads;
             }
             Action::OpenSeries(id) => self.open_series(id),
             Action::AddToLibrary => self.add_to_library(),
@@ -1212,6 +1219,11 @@ impl App {
             if ui.selectable_label(matches!(self.page, Page::Home), "Library").clicked() {
                 actions.push(Action::GoLibrary);
             }
+            let active = self.active_downloads();
+            let label = if active > 0 { format!("Downloads ({active})") } else { "Downloads".to_owned() };
+            if ui.selectable_label(matches!(self.page, Page::Downloads), label).clicked() {
+                actions.push(Action::GoDownloads);
+            }
             ui.add_space(8.0);
             let search = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
@@ -1360,6 +1372,20 @@ impl App {
         });
     }
 
+    /// Downloads under way (or waiting).
+    fn active_downloads(&self) -> usize {
+        let torrents = self.engine().map_or(0, |e| e.torrents().iter().filter(|(_, h)| !h.stats().finished).count());
+        let debrid = self.debrid.manager.views().iter().filter(|v| v.live.active()).count();
+        let usenet = self
+            .usenet
+            .manager
+            .views()
+            .iter()
+            .filter(|v| v.live.active() || v.live.phase == crate::usenet::jobs::Phase::Queued)
+            .count();
+        torrents + debrid + usenet
+    }
+
     fn downloads_panel(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         ui.add_space(6.0);
         ui.heading("Downloads");
@@ -1397,7 +1423,7 @@ impl App {
         }
         if jobs.is_empty() && usenet_jobs.is_empty() && torrents.is_empty() {
             if !matches!(self.engine, EngineState::Starting | EngineState::WaitingForVpn(_)) {
-                ui.weak("Nothing here yet. Search for an anime, pick a release and choose episodes.");
+                ui.weak("Nothing downloading. Finished downloads go into your library.");
             }
             return;
         }
@@ -2033,10 +2059,6 @@ impl eframe::App for App {
 
         egui::Panel::top("top_bar").show(ui, |ui| self.top_bar(ui, &mut actions));
         egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::right("downloads")
-            .resizable(true)
-            .default_size(400.0)
-            .show(ui, |ui| self.downloads_panel(ui, &mut actions));
 
         // Take the page out so the page functions can borrow it next to `self`.
         let mut page = std::mem::replace(&mut self.page, Page::Home);
@@ -2047,6 +2069,7 @@ impl eframe::App for App {
             Page::Files(fp) => self.files_page(ui, fp, &mut actions),
             Page::Remux(rp) => self.remux_page(ui, rp, &mut actions),
             Page::Playlist(pp) => self.playlist_page(ui, pp, &mut actions),
+            Page::Downloads => self.downloads_panel(ui, &mut actions),
         });
         self.page = page;
 
