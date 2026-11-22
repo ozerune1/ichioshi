@@ -26,7 +26,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, watch};
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 pub enum Service {
     #[default]
     Pia,
@@ -92,12 +94,16 @@ impl Service {
         match self {
             Service::Pia => Forwarding::PiaApp,
             Service::ProtonVpn => Forwarding::NatPmp(Ipv4Addr::new(10, 2, 0, 1)),
-            Service::CyberGhost | Service::Windscribe | Service::AirVpn | Service::TorGuard | Service::Other => {
-                Forwarding::Manual
-            }
-            Service::Mullvad | Service::NordVpn | Service::ExpressVpn | Service::Surfshark | Service::Ivpn => {
-                Forwarding::None
-            }
+            Service::CyberGhost
+            | Service::Windscribe
+            | Service::AirVpn
+            | Service::TorGuard
+            | Service::Other => Forwarding::Manual,
+            Service::Mullvad
+            | Service::NordVpn
+            | Service::ExpressVpn
+            | Service::Surfshark
+            | Service::Ivpn => Forwarding::None,
         }
     }
 
@@ -136,7 +142,10 @@ pub struct Config {
 
 impl Config {
     pub fn load(path: &Path) -> Self {
-        std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -144,7 +153,9 @@ impl Config {
     }
 
     pub fn manual_port(&self) -> Option<u16> {
-        (self.service.forwarding() == Forwarding::Manual).then(|| self.ports.get(&self.service).copied()).flatten()
+        (self.service.forwarding() == Forwarding::Manual)
+            .then(|| self.ports.get(&self.service).copied())
+            .flatten()
     }
 }
 
@@ -193,7 +204,9 @@ pub fn interfaces() -> Vec<Interface> {
         let ifa = unsafe { &*cur };
         cur = ifa.ifa_next;
         // SAFETY: interface names are NUL-terminated.
-        let name = unsafe { CStr::from_ptr(ifa.ifa_name) }.to_string_lossy().into_owned();
+        let name = unsafe { CStr::from_ptr(ifa.ifa_name) }
+            .to_string_lossy()
+            .into_owned();
         let flags = ifa.ifa_flags as libc::c_int;
         let i = match list.iter().position(|i| i.name == name) {
             Some(i) => i,
@@ -201,7 +214,14 @@ pub fn interfaces() -> Vec<Interface> {
                 let c_name = std::ffi::CString::new(name.clone()).unwrap_or_default();
                 // SAFETY: a valid C string.
                 let index = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
-                list.push(Interface { name, index, ipv4: None, up: false, tunnel: false, loopback: false });
+                list.push(Interface {
+                    name,
+                    index,
+                    ipv4: None,
+                    up: false,
+                    tunnel: false,
+                    loopback: false,
+                });
                 list.len() - 1
             }
         };
@@ -210,10 +230,14 @@ pub fn interfaces() -> Vec<Interface> {
         entry.tunnel |= flags & libc::IFF_POINTOPOINT != 0;
         entry.loopback |= flags & libc::IFF_LOOPBACK != 0;
         // SAFETY: ifa_addr is null or points to a sockaddr of its family.
-        if !ifa.ifa_addr.is_null() && i32::from(unsafe { (*ifa.ifa_addr).sa_family }) == libc::AF_INET {
+        if !ifa.ifa_addr.is_null()
+            && i32::from(unsafe { (*ifa.ifa_addr).sa_family }) == libc::AF_INET
+        {
             // SAFETY: an AF_INET address is a sockaddr_in.
             let sin = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
-            entry.ipv4.get_or_insert(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)));
+            entry
+                .ipv4
+                .get_or_insert(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)));
         }
     }
     // SAFETY: the list from getifaddrs, freed once.
@@ -221,7 +245,8 @@ pub fn interfaces() -> Vec<Interface> {
     // WireGuard and tun devices have no link-layer address (ARPHRD_NONE).
     #[cfg(target_os = "linux")]
     for i in &mut list {
-        let kind = std::fs::read_to_string(format!("/sys/class/net/{}/type", i.name)).unwrap_or_default();
+        let kind =
+            std::fs::read_to_string(format!("/sys/class/net/{}/type", i.name)).unwrap_or_default();
         i.tunnel |= kind.trim() == "65534";
     }
     list
@@ -233,7 +258,11 @@ pub fn interfaces() -> Vec<Interface> {
 }
 
 /// Whether torrents can be bound to a network interface here.
-pub const SUPPORTED: bool = cfg!(any(target_os = "linux", target_os = "android", target_os = "macos"));
+pub const SUPPORTED: bool = cfg!(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos"
+));
 
 /// The local address the system uses to reach the internet. With a
 /// full-tunnel VPN, it's the VPN's. No packet is sent.
@@ -247,7 +276,11 @@ pub fn route_ip() -> Option<Ipv4Addr> {
 }
 
 /// Find the VPN's interface among `interfaces`, or say why there isn't one.
-pub fn pick<'a>(config: &Config, interfaces: &'a [Interface], route: Option<Ipv4Addr>) -> Result<&'a Interface, String> {
+pub fn pick<'a>(
+    config: &Config,
+    interfaces: &'a [Interface],
+    route: Option<Ipv4Addr>,
+) -> Result<&'a Interface, String> {
     let service = config.service.name();
     if let Some(name) = &config.interface {
         return match interfaces.iter().find(|i| &i.name == name) {
@@ -267,16 +300,27 @@ pub fn pick<'a>(config: &Config, interfaces: &'a [Interface], route: Option<Ipv4
     if let Some(i) = candidates.iter().find(|i| i.name.starts_with("wgpia")) {
         return Ok(i);
     }
-    if let Some(i) = candidates.iter().find(|i| i.ipv4 == route && route.is_some()) {
+    if let Some(i) = candidates
+        .iter()
+        .find(|i| i.ipv4 == route && route.is_some())
+    {
         return Ok(i);
     }
     match candidates.as_slice() {
-        [] if config.service == Service::Other => Err("No VPN connection found. Connect your VPN first.".to_owned()),
-        [] => Err(format!("No {service} connection found. Connect {service} first.")),
+        [] if config.service == Service::Other => {
+            Err("No VPN connection found. Connect your VPN first.".to_owned())
+        }
+        [] => Err(format!(
+            "No {service} connection found. Connect {service} first."
+        )),
         [one] => Ok(one),
         several => Err(format!(
             "Found several VPN connections ({}). Choose one under Network interface in Settings.",
-            several.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")
+            several
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
@@ -290,7 +334,13 @@ pub enum Status {
     Checking,
     /// No usable VPN connection: torrents wait. The text says why.
     Down { reason: String, fix: Option<Fix> },
-    Up { interface: String, index: u32, ip: Ipv4Addr, port: Port, fix: Option<Fix> },
+    Up {
+        interface: String,
+        index: u32,
+        ip: Ipv4Addr,
+        port: Port,
+        fix: Option<Fix>,
+    },
 }
 
 /// A forwarded port.
@@ -329,13 +379,21 @@ pub struct Network {
 
 impl Network {
     pub fn offline(loopback: &str) -> Self {
-        Network { interface: Some(loopback.to_owned()), index: 0, port: None, offline: true }
+        Network {
+            interface: Some(loopback.to_owned()),
+            index: 0,
+            port: None,
+            offline: true,
+        }
     }
 }
 
 /// The loopback interface's name (`lo`, or `lo0` on macOS).
 pub fn loopback() -> Option<String> {
-    interfaces().into_iter().find(|i| i.loopback).map(|i| i.name)
+    interfaces()
+        .into_iter()
+        .find(|i| i.loopback)
+        .map(|i| i.name)
 }
 
 impl Status {
@@ -345,8 +403,16 @@ impl Status {
             Status::Off => Ok(Network::default()),
             Status::Checking => Err("Looking for the VPN…".to_owned()),
             Status::Down { reason, .. } => Err(reason.clone()),
-            Status::Up { port: Port::Requesting, .. } => Err("Waiting for the forwarded port…".to_owned()),
-            Status::Up { interface, index, port, .. } => Ok(Network {
+            Status::Up {
+                port: Port::Requesting,
+                ..
+            } => Err("Waiting for the forwarded port…".to_owned()),
+            Status::Up {
+                interface,
+                index,
+                port,
+                ..
+            } => Ok(Network {
                 interface: Some(interface.clone()),
                 index: *index,
                 port: match port {
@@ -420,13 +486,33 @@ pub struct Monitor {
 
 impl Monitor {
     /// Start watching. `notify` is called whenever the status changes.
-    pub fn start(rt: &tokio::runtime::Handle, config: Config, env: Env, notify: impl Fn() + Send + Sync + 'static) -> Self {
-        let first = if config.enabled { Status::Checking } else { Status::Off };
+    pub fn start(
+        rt: &tokio::runtime::Handle,
+        config: Config,
+        env: Env,
+        notify: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let first = if config.enabled {
+            Status::Checking
+        } else {
+            Status::Off
+        };
         let (status_tx, status) = watch::channel(first);
         let (config, config_rx) = watch::channel(config);
         let kick = Arc::new(Notify::new());
-        rt.spawn(run(env.clone(), config_rx, status_tx, kick.clone(), Box::new(notify)));
-        Self { config, status, kick, env }
+        rt.spawn(run(
+            env.clone(),
+            config_rx,
+            status_tx,
+            kick.clone(),
+            Box::new(notify),
+        ));
+        Self {
+            config,
+            status,
+            kick,
+            env,
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -457,7 +543,11 @@ async fn run(
     let mut watch = Watch::default();
     loop {
         let config = config_rx.borrow_and_update().clone();
-        let status = if config.enabled { watch.check(&env, &config).await } else { Status::Off };
+        let status = if config.enabled {
+            watch.check(&env, &config).await
+        } else {
+            Status::Off
+        };
         // Settings may have changed during the check; look again with them.
         if config_rx.has_changed().unwrap_or(false) {
             continue;
@@ -504,11 +594,17 @@ impl Watch {
             Some(Ok(state)) if !state.connected() => {
                 self.link = None;
                 let fix = (state.connection == "Disconnected").then_some(Fix::PiaConnect);
-                return Status::Down { reason: format!("PIA is {}", state.connection.to_lowercase()), fix };
+                return Status::Down {
+                    reason: format!("PIA is {}", state.connection.to_lowercase()),
+                    fix,
+                };
             }
             Some(Err(e)) => {
                 self.link = None;
-                return Status::Down { reason: format!("Couldn't check the PIA app ({e:#})"), fix: None };
+                return Status::Down {
+                    reason: format!("Couldn't check the PIA app ({e:#})"),
+                    fix: None,
+                };
             }
             _ => {}
         }
@@ -534,7 +630,9 @@ impl Watch {
                 Some(Ok(state)) => match state.port {
                     pia::PortForward::Port(p) => Port::Open(p),
                     pia::PortForward::Attempting if waiting => Port::Requesting,
-                    pia::PortForward::Attempting => Port::Unavailable("PIA is still asking for a port".to_owned()),
+                    pia::PortForward::Attempting => {
+                        Port::Unavailable("PIA is still asking for a port".to_owned())
+                    }
                     pia::PortForward::Inactive => {
                         fix = Some(Fix::PiaForwardPorts);
                         Port::None(if state.request_forwarding {
@@ -543,26 +641,38 @@ impl Watch {
                             "Port forwarding is off in the PIA app".to_owned()
                         })
                     }
-                    pia::PortForward::Failed => Port::Unavailable("PIA couldn't get a forwarded port".to_owned()),
-                    pia::PortForward::Unavailable => {
-                        Port::Unavailable("This PIA region doesn't forward ports (US regions don't)".to_owned())
+                    pia::PortForward::Failed => {
+                        Port::Unavailable("PIA couldn't get a forwarded port".to_owned())
                     }
+                    pia::PortForward::Unavailable => Port::Unavailable(
+                        "This PIA region doesn't forward ports (US regions don't)".to_owned(),
+                    ),
                     pia::PortForward::Other(s) => Port::Unavailable(format!("PIA says “{s}”")),
                 },
                 Some(Err(_)) => unreachable!("handled above"),
             },
             Forwarding::NatPmp(gateway) => {
-                let gateway = env.natpmp.unwrap_or(SocketAddr::from((gateway, natpmp::PORT)));
+                let gateway = env
+                    .natpmp
+                    .unwrap_or(SocketAddr::from((gateway, natpmp::PORT)));
                 self.natpmp(gateway, &interface).await
             }
             Forwarding::Manual => match config.manual_port() {
                 Some(p) => Port::Open(p),
                 None => Port::None("No forwarded port entered".to_owned()),
             },
-            Forwarding::None => Port::None(format!("{} doesn't offer port forwarding", service.name())),
+            Forwarding::None => {
+                Port::None(format!("{} doesn't offer port forwarding", service.name()))
+            }
         };
         let ip = interface.ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED);
-        Status::Up { interface: interface.name, index: interface.index, ip, port, fix }
+        Status::Up {
+            interface: interface.name,
+            index: interface.index,
+            ip,
+            port,
+            fix,
+        }
     }
 
     /// Get or renew the NAT-PMP mapping when it's due.
@@ -570,7 +680,10 @@ impl Watch {
         let now = Instant::now();
         let n = &mut self.natpmp;
         if n.index != interface.index {
-            *n = NatPmp { index: interface.index, ..Default::default() };
+            *n = NatPmp {
+                index: interface.index,
+                ..Default::default()
+            };
         }
         if n.next.is_none_or(|t| now >= t) {
             match natpmp::map_both(gateway, Some(&interface.name)).await {
@@ -592,7 +705,9 @@ impl Watch {
         }
         match (n.port, &n.error) {
             (Some(p), _) => Port::Open(p),
-            (None, Some(e)) => Port::Unavailable(format!("No forwarded port ({e}). Use a P2P server with NAT-PMP on")),
+            (None, Some(e)) => Port::Unavailable(format!(
+                "No forwarded port ({e}). Use a P2P server with NAT-PMP on"
+            )),
             (None, None) => Port::Requesting,
         }
     }
@@ -622,7 +737,14 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn iface(name: &str, index: u32, ip: [u8; 4], tunnel: bool) -> Interface {
-        Interface { name: name.into(), index, ipv4: Some(ip.into()), up: true, tunnel, loopback: name == "lo" }
+        Interface {
+            name: name.into(),
+            index,
+            ipv4: Some(ip.into()),
+            up: true,
+            tunnel,
+            loopback: name == "lo",
+        }
     }
 
     fn this_machine() -> Vec<Interface> {
@@ -636,18 +758,37 @@ pub(crate) mod tests {
 
     #[test]
     fn picks_the_vpn_interface() {
-        let pia = Config { enabled: true, service: Service::Pia, ..Default::default() };
-        let other = Config { enabled: true, service: Service::Other, ..Default::default() };
+        let pia = Config {
+            enabled: true,
+            service: Service::Pia,
+            ..Default::default()
+        };
+        let other = Config {
+            enabled: true,
+            service: Service::Other,
+            ..Default::default()
+        };
         let home = Some(Ipv4Addr::new(192, 168, 1, 20));
 
         // Mesh networks are not VPNs for this.
         let mut list = this_machine();
-        assert_eq!(pick(&pia, &list, home).unwrap_err(), "No PIA connection found. Connect PIA first.");
-        assert_eq!(pick(&other, &list, home).unwrap_err(), "No VPN connection found. Connect your VPN first.");
+        assert_eq!(
+            pick(&pia, &list, home).unwrap_err(),
+            "No PIA connection found. Connect PIA first."
+        );
+        assert_eq!(
+            pick(&other, &list, home).unwrap_err(),
+            "No VPN connection found. Connect your VPN first."
+        );
 
         // PIA over OpenVPN.
         list.push(iface("tun0", 20, [10, 13, 112, 6], true));
-        assert_eq!(pick(&pia, &list, Some(Ipv4Addr::new(10, 13, 112, 6))).unwrap().name, "tun0");
+        assert_eq!(
+            pick(&pia, &list, Some(Ipv4Addr::new(10, 13, 112, 6)))
+                .unwrap()
+                .name,
+            "tun0"
+        );
         // PIA over WireGuard wins over another tunnel.
         list.push(iface("wgpia0", 21, [10, 5, 1, 2], true));
         assert_eq!(pick(&pia, &list, home).unwrap().name, "wgpia0");
@@ -656,24 +797,42 @@ pub(crate) mod tests {
         let mut list = this_machine();
         list.push(iface("wg0", 30, [10, 2, 0, 2], true));
         list.push(iface("tun1", 31, [10, 8, 0, 6], true));
-        assert_eq!(pick(&other, &list, Some(Ipv4Addr::new(10, 8, 0, 6))).unwrap().name, "tun1");
-        assert!(pick(&other, &list, home).unwrap_err().starts_with("Found several VPN connections (wg0, tun1)"));
+        assert_eq!(
+            pick(&other, &list, Some(Ipv4Addr::new(10, 8, 0, 6)))
+                .unwrap()
+                .name,
+            "tun1"
+        );
+        assert!(
+            pick(&other, &list, home)
+                .unwrap_err()
+                .starts_with("Found several VPN connections (wg0, tun1)")
+        );
         // A tunnel without an address, or down, isn't connected.
         list.retain(|i| i.name != "tun1");
         list[4].ipv4 = None;
         assert!(pick(&other, &list, home).is_err());
 
         // A chosen interface is used as is (even a mesh one), if connected.
-        let chosen = Config { interface: Some("tailscale0".into()), ..other.clone() };
+        let chosen = Config {
+            interface: Some("tailscale0".into()),
+            ..other.clone()
+        };
         assert_eq!(pick(&chosen, &list, home).unwrap().name, "tailscale0");
-        let gone = Config { interface: Some("wg9".into()), ..other };
+        let gone = Config {
+            interface: Some("wg9".into()),
+            ..other
+        };
         assert_eq!(pick(&gone, &list, home).unwrap_err(), "wg9 isn't connected");
     }
 
     #[test]
     fn lists_this_computers_interfaces() {
         let list = interfaces();
-        let lo = list.iter().find(|i| i.loopback).expect("a loopback interface");
+        let lo = list
+            .iter()
+            .find(|i| i.loopback)
+            .expect("a loopback interface");
         assert_eq!(lo.ipv4, Some(Ipv4Addr::LOCALHOST));
         assert!(lo.index > 0 && lo.up && !lo.tunnel);
     }
@@ -705,45 +864,133 @@ pub(crate) mod tests {
         let piactl = pia::tests::fake_piactl(dir.path(), "Disconnected", "Inactive", false);
         let probe = Arc::new(FakeProbe::default());
         *probe.interfaces.lock().unwrap() = this_machine();
-        let config = Config { enabled: true, service: Service::Pia, ..Default::default() };
-        let m = Monitor::start(&tokio::runtime::Handle::current(), config.clone(), env(&probe, Some(piactl)), || {});
+        let config = Config {
+            enabled: true,
+            service: Service::Pia,
+            ..Default::default()
+        };
+        let m = Monitor::start(
+            &tokio::runtime::Handle::current(),
+            config.clone(),
+            env(&probe, Some(piactl)),
+            || {},
+        );
 
         let s = until(&m, "down", |s| matches!(s, Status::Down { .. })).await;
-        assert_eq!(s, Status::Down { reason: "PIA is disconnected".into(), fix: Some(Fix::PiaConnect) });
+        assert_eq!(
+            s,
+            Status::Down {
+                reason: "PIA is disconnected".into(),
+                fix: Some(Fix::PiaConnect)
+            }
+        );
         assert_eq!(s.network().unwrap_err(), "PIA is disconnected");
 
         // Connected, asking for a port: torrents wait for it a moment…
         pia::tests::set(dir.path(), "connectionstate", "Connected");
         pia::tests::set(dir.path(), "portforward", "Attempting");
-        probe.interfaces.lock().unwrap().push(iface("tun0", 40, [10, 13, 112, 6], true));
+        probe
+            .interfaces
+            .lock()
+            .unwrap()
+            .push(iface("tun0", 40, [10, 13, 112, 6], true));
         let s = until(&m, "requesting", |s| matches!(s, Status::Up { .. })).await;
-        assert!(matches!(&s, Status::Up { port: Port::Requesting, .. }), "{s:?}");
+        assert!(
+            matches!(
+                &s,
+                Status::Up {
+                    port: Port::Requesting,
+                    ..
+                }
+            ),
+            "{s:?}"
+        );
         assert!(s.network().is_err());
         // …then go ahead without it.
-        let s = until(&m, "gave up waiting", |s| matches!(s, Status::Up { port: Port::Unavailable(_), .. })).await;
-        assert_eq!(s.network().unwrap(), Network { interface: Some("tun0".into()), index: 40, port: None, offline: false });
+        let s = until(&m, "gave up waiting", |s| {
+            matches!(
+                s,
+                Status::Up {
+                    port: Port::Unavailable(_),
+                    ..
+                }
+            )
+        })
+        .await;
+        assert_eq!(
+            s.network().unwrap(),
+            Network {
+                interface: Some("tun0".into()),
+                index: 40,
+                port: None,
+                offline: false
+            }
+        );
 
         // The port arrives.
         pia::tests::set(dir.path(), "portforward", "47001");
-        let s = until(&m, "port", |s| matches!(s, Status::Up { port: Port::Open(_), .. })).await;
-        assert_eq!(s.network().unwrap(), Network { interface: Some("tun0".into()), index: 40, port: Some(47001), offline: false });
+        let s = until(&m, "port", |s| {
+            matches!(
+                s,
+                Status::Up {
+                    port: Port::Open(_),
+                    ..
+                }
+            )
+        })
+        .await;
+        assert_eq!(
+            s.network().unwrap(),
+            Network {
+                interface: Some("tun0".into()),
+                index: 40,
+                port: Some(47001),
+                offline: false
+            }
+        );
 
         // PIA reconnects: a new tunnel.
-        probe.interfaces.lock().unwrap().retain(|i| i.name != "tun0");
+        probe
+            .interfaces
+            .lock()
+            .unwrap()
+            .retain(|i| i.name != "tun0");
         pia::tests::set(dir.path(), "connectionstate", "Reconnecting");
-        until(&m, "reconnecting", |s| *s == Status::Down { reason: "PIA is reconnecting".into(), fix: None }).await;
-        probe.interfaces.lock().unwrap().push(iface("tun0", 41, [10, 13, 9, 9], true));
+        until(&m, "reconnecting", |s| {
+            *s == Status::Down {
+                reason: "PIA is reconnecting".into(),
+                fix: None,
+            }
+        })
+        .await;
+        probe
+            .interfaces
+            .lock()
+            .unwrap()
+            .push(iface("tun0", 41, [10, 13, 9, 9], true));
         pia::tests::set(dir.path(), "connectionstate", "Connected");
         let s = until(&m, "back", |s| matches!(s, Status::Up { index: 41, .. })).await;
         assert_eq!(s.network().unwrap().port, Some(47001));
 
         // Forwarding off in PIA: offered as a fix.
         pia::tests::set(dir.path(), "portforward", "Inactive");
-        let s = until(&m, "no port", |s| matches!(s, Status::Up { port: Port::None(_), .. })).await;
+        let s = until(&m, "no port", |s| {
+            matches!(
+                s,
+                Status::Up {
+                    port: Port::None(_),
+                    ..
+                }
+            )
+        })
+        .await;
         assert_eq!(s.fix(), Some(Fix::PiaForwardPorts));
 
         // Turning the VPN requirement off.
-        m.set_config(Config { enabled: false, ..config });
+        m.set_config(Config {
+            enabled: false,
+            ..config
+        });
         until(&m, "off", |s| *s == Status::Off).await;
     }
 
@@ -758,13 +1005,29 @@ pub(crate) mod tests {
         *probe.interfaces.lock().unwrap() = vec![lo];
         let mut env = env(&probe, None);
         env.natpmp = Some(gateway);
-        let config = Config { enabled: true, service: Service::ProtonVpn, ..Default::default() };
+        let config = Config {
+            enabled: true,
+            service: Service::ProtonVpn,
+            ..Default::default()
+        };
         let m = Monitor::start(&tokio::runtime::Handle::current(), config, env, || {});
         let s = until(&m, "port", |s| matches!(s, Status::Up { .. })).await;
-        assert_eq!(s.network().unwrap(), Network { interface: Some("lo".into()), index: 1, port: Some(36_000), offline: false });
+        assert_eq!(
+            s.network().unwrap(),
+            Network {
+                interface: Some("lo".into()),
+                index: 1,
+                port: Some(36_000),
+                offline: false
+            }
+        );
         // Not renewed on every check, only every 45 s.
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2, "one TCP and one UDP request");
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one TCP and one UDP request"
+        );
     }
 
     /// What this computer looks like to the monitor (read-only: interfaces,
@@ -777,7 +1040,11 @@ pub(crate) mod tests {
         }
         println!("route: {:?}", route_ip());
         for service in [Service::Pia, Service::Other] {
-            let config = Config { enabled: true, service, ..Default::default() };
+            let config = Config {
+                enabled: true,
+                service,
+                ..Default::default()
+            };
             let status = Watch::default().check(&Env::default(), &config).await;
             println!("{}: {status:?}", service.name());
         }
@@ -785,7 +1052,10 @@ pub(crate) mod tests {
 
     #[test]
     fn manual_ports_only_for_services_that_have_them() {
-        let mut c = Config { service: Service::AirVpn, ..Default::default() };
+        let mut c = Config {
+            service: Service::AirVpn,
+            ..Default::default()
+        };
         c.ports.insert(Service::AirVpn, 41_000);
         c.ports.insert(Service::Mullvad, 1);
         assert_eq!(c.manual_port(), Some(41_000));
@@ -798,7 +1068,12 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vpn.json");
         assert_eq!(Config::load(&path), Config::default());
-        let mut c = Config { enabled: true, service: Service::ProtonVpn, interface: Some("wg0".into()), ..Default::default() };
+        let mut c = Config {
+            enabled: true,
+            service: Service::ProtonVpn,
+            interface: Some("wg0".into()),
+            ..Default::default()
+        };
         c.ports.insert(Service::AirVpn, 41_000);
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path), c);

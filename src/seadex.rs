@@ -287,6 +287,8 @@ query ($id: Int) {
     nextAiringEpisode { episode airingAt }
     coverImage { large extraLarge }
     bannerImage
+    streamingEpisodes { title }
+    airingSchedule(perPage: 50) { nodes { episode airingAt } }
   }
 }
 "#;
@@ -320,16 +322,26 @@ pub async fn anilist_details(client: &reqwest::Client, id: u64) -> Result<crate:
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         bail!("AniList is busy; try again in a minute");
     }
-    let body: serde_json::Value = resp.json().await.with_context(|| format!("unexpected response from AniList (HTTP {status})"))?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .with_context(|| format!("unexpected response from AniList (HTTP {status})"))?;
     if let Some(e) = body["errors"].get(0) {
-        bail!("AniList error: {}", e["message"].as_str().unwrap_or("unknown"));
+        bail!(
+            "AniList error: {}",
+            e["message"].as_str().unwrap_or("unknown")
+        );
     }
     let m = &body["data"]["Media"];
     if !m.is_object() {
         bail!("AniList has no anime {id}");
     }
     let text = |v: &serde_json::Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
-    let list = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(text).collect()).unwrap_or_default();
+    let list = |v: &serde_json::Value| {
+        v.as_array()
+            .map(|a| a.iter().filter_map(text).collect())
+            .unwrap_or_default()
+    };
     let date = |d: &serde_json::Value| {
         let year = d["year"].as_i64()?;
         Some(match (d["month"].as_i64(), d["day"].as_i64()) {
@@ -338,7 +350,49 @@ pub async fn anilist_details(client: &reqwest::Client, id: u64) -> Result<crate:
             _ => year.to_string(),
         })
     };
+    // "Episode 3 - Killing Magic", as streaming sites list them.
+    static STREAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^episode\s+(\d+)\s*[-–:]\s*(.+)$").unwrap()
+    });
+    let mut episodes: std::collections::BTreeMap<u32, crate::library::EpisodeInfo> =
+        Default::default();
+    for e in m["streamingEpisodes"].as_array().into_iter().flatten() {
+        let Some(c) = e["title"]
+            .as_str()
+            .and_then(|t| STREAMED.captures(t.trim()))
+        else {
+            continue;
+        };
+        let Ok(number) = c[1].parse::<u32>() else {
+            continue;
+        };
+        let entry = episodes
+            .entry(number)
+            .or_insert_with(|| crate::library::EpisodeInfo {
+                number,
+                ..Default::default()
+            });
+        entry.title.get_or_insert_with(|| c[2].trim().to_owned());
+    }
+    for n in m["airingSchedule"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let (Some(number), Some(at)) = (n["episode"].as_u64(), n["airingAt"].as_i64()) else {
+            continue;
+        };
+        let number = number as u32;
+        episodes
+            .entry(number)
+            .or_insert_with(|| crate::library::EpisodeInfo {
+                number,
+                ..Default::default()
+            })
+            .airs = Some(at);
+    }
     Ok(crate::library::Details {
+        episode_list: episodes.into_values().collect(),
         native: text(&m["title"]["native"]),
         synonyms: list(&m["synonyms"]),
         description: text(&m["description"]).map(|d| plain_text(&d)),
@@ -351,20 +405,135 @@ pub async fn anilist_details(client: &reqwest::Client, id: u64) -> Result<crate:
         season: text(&m["season"]),
         year: m["seasonYear"].as_i64().map(|v| v as i32),
         source: text(&m["source"]),
-        studios: m["studios"]["nodes"].as_array().map(|a| a.iter().filter_map(|n| text(&n["name"])).collect()).unwrap_or_default(),
+        studios: m["studios"]["nodes"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|n| text(&n["name"])).collect())
+            .unwrap_or_default(),
         start_date: date(&m["startDate"]),
         end_date: date(&m["endDate"]),
-        next_episode: m["nextAiringEpisode"]["episode"].as_u64().zip(m["nextAiringEpisode"]["airingAt"].as_i64()).map(|(e, t)| (e as u32, t)),
+        next_episode: m["nextAiringEpisode"]["episode"]
+            .as_u64()
+            .zip(m["nextAiringEpisode"]["airingAt"].as_i64())
+            .map(|(e, t)| (e as u32, t)),
         cover: text(&m["coverImage"]["extraLarge"]).or_else(|| text(&m["coverImage"]["large"])),
         banner: text(&m["bannerImage"]),
         fetched: chrono::Utc::now().timestamp(),
     })
 }
 
+/// Where Kitsu requests go instead (tests).
+#[cfg(test)]
+pub static KITSU_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn kitsu_url() -> String {
+    #[cfg(test)]
+    if let Some(base) = KITSU_BASE.lock().unwrap().as_ref() {
+        return base.clone();
+    }
+    "https://kitsu.io/api/edge".to_owned()
+}
+
+/// Episode titles and air dates from Kitsu (which has them for many shows
+/// AniList doesn't), for an AniList ID. Up to 200 episodes.
+pub async fn kitsu_episodes(
+    client: &reqwest::Client,
+    anilist_id: u64,
+) -> Result<Vec<crate::library::EpisodeInfo>> {
+    let base = kitsu_url();
+    let mapping: serde_json::Value = client
+        .get(format!("{base}/mappings"))
+        .query(&[
+            ("filter[externalSite]", "anilist/anime"),
+            ("filter[externalId]", &anilist_id.to_string()),
+            ("include", "item"),
+        ])
+        .send()
+        .await
+        .context("could not reach Kitsu")?
+        .error_for_status()?
+        .json()
+        .await?;
+    let Some(kitsu_id) = mapping["included"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|i| i["type"] == "anime")
+        .and_then(|i| i["id"].as_str())
+        .map(str::to_owned)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for page in 0..10 {
+        let resp: serde_json::Value = client
+            .get(format!("{base}/anime/{kitsu_id}/episodes"))
+            .query(&[
+                ("page[limit]", "20"),
+                ("page[offset]", &(page * 20).to_string()),
+                ("sort", "number"),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let data = resp["data"].as_array().cloned().unwrap_or_default();
+        for e in &data {
+            let a = &e["attributes"];
+            let Some(number) = a["number"].as_u64() else {
+                continue;
+            };
+            let title = a["canonicalTitle"]
+                .as_str()
+                .or_else(|| a["titles"]["en"].as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
+            let airs = a["airdate"]
+                .as_str()
+                .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                .and_then(|d| d.and_hms_opt(12, 0, 0))
+                .map(|t| t.and_utc().timestamp());
+            out.push(crate::library::EpisodeInfo {
+                number: number as u32,
+                title: title.map(str::to_owned),
+                airs,
+            });
+        }
+        if data.len() < 20 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Fill in titles and air times AniList doesn't have from `more`.
+pub fn merge_episodes(
+    list: &mut Vec<crate::library::EpisodeInfo>,
+    more: Vec<crate::library::EpisodeInfo>,
+) {
+    for m in more {
+        match list.iter_mut().find(|e| e.number == m.number) {
+            Some(e) => {
+                e.title = e.title.take().or(m.title);
+                e.airs = e.airs.or(m.airs);
+            }
+            None => list.push(m),
+        }
+    }
+    list.sort_by_key(|e| e.number);
+}
+
 /// AniList descriptions are light HTML: line breaks, italics, entities.
 fn plain_text(html: &str) -> String {
-    static TAG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)<br\s*/?>\r?\n?|<[^>]+>").unwrap());
-    let text = TAG.replace_all(html, |c: &regex::Captures| if c[0].to_lowercase().starts_with("<br") { "\n" } else { "" });
+    static TAG: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)<br\s*/?>\r?\n?|<[^>]+>").unwrap());
+    let text = TAG.replace_all(html, |c: &regex::Captures| {
+        if c[0].to_lowercase().starts_with("<br") {
+            "\n"
+        } else {
+            ""
+        }
+    });
     let text = text
         .replace("&amp;", "&")
         .replace("&quot;", "\"")
@@ -423,7 +592,11 @@ pub async fn fetch_entries(client: &reqwest::Client, ids: &[u64]) -> Result<Hash
     let per_page = ids.len().to_string();
 
     #[cfg(test)]
-    let url = SEADEX_BASE.lock().unwrap().clone().unwrap_or_else(|| SEADEX_ENTRIES_URL.to_owned());
+    let url = SEADEX_BASE
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| SEADEX_ENTRIES_URL.to_owned());
     #[cfg(not(test))]
     let url = SEADEX_ENTRIES_URL;
     let resp = client
@@ -468,10 +641,17 @@ mod tests {
     #[test]
     fn descriptions_become_plain_text() {
         let html = "Frieren &amp; co. go <i>north</i>.<br><br>\n<br>\nIt&#039;s &quot;slow&quot;.<br>\n(Source: Crunchyroll)";
-        assert_eq!(plain_text(html), "Frieren & co. go north.\n\nIt's \"slow\".\n(Source: Crunchyroll)");
+        assert_eq!(
+            plain_text(html),
+            "Frieren & co. go north.\n\nIt's \"slow\".\n(Source: Crunchyroll)"
+        );
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "the lock orders whole tests, each on its own runtime"
+    )]
     async fn reads_anilist_details() {
         use crate::mock_http::{mock, reply};
         let base = mock(|req| {
@@ -484,20 +664,83 @@ mod tests {
                 "seasonYear": 2023, "source": "MANGA", "studios": {"nodes": [{"name": "Madhouse"}]},
                 "startDate": {"year": 2023, "month": 9, "day": 29}, "endDate": {"year": null, "month": null, "day": null},
                 "nextAiringEpisode": {"episode": 5, "airingAt": 1800000000},
-                "coverImage": {"large": "l.png", "extraLarge": "xl.png"}, "bannerImage": "b.png"}}}))
+                "coverImage": {"large": "l.png", "extraLarge": "xl.png"}, "bannerImage": "b.png",
+                "streamingEpisodes": [{"title": "Episode 2 - It Didn't Have to Be Magic..."}, {"title": "Episode 1 - The Journey's End"}, {"title": "Trailer"}],
+                "airingSchedule": {"nodes": [{"episode": 1, "airingAt": 1695999600}, {"episode": 5, "airingAt": 1800000000}]}}}}))
         })
         .await;
+        let _net = crate::mock_http::mocked();
         *ANILIST_BASE.lock().unwrap() = Some(base);
         let d = anilist_details(&reqwest::Client::new(), 154587).await;
         *ANILIST_BASE.lock().unwrap() = None;
         let d = d.unwrap();
         assert_eq!(d.description.as_deref(), Some("An elf mage."));
-        assert_eq!((d.score, d.episodes, d.year), (Some(90), Some(28), Some(2023)));
+        assert_eq!(
+            (d.score, d.episodes, d.year),
+            (Some(90), Some(28), Some(2023))
+        );
         assert_eq!(d.studios, ["Madhouse"]);
         assert_eq!(d.start_date.as_deref(), Some("2023-09-29"));
         assert_eq!(d.end_date, None);
         assert_eq!(d.next_episode, Some((5, 1_800_000_000)));
         assert_eq!(d.cover.as_deref(), Some("xl.png"));
+        let eps: Vec<(u32, Option<&str>, Option<i64>)> = d
+            .episode_list
+            .iter()
+            .map(|e| (e.number, e.title.as_deref(), e.airs))
+            .collect();
+        assert_eq!(
+            eps,
+            [
+                (1, Some("The Journey's End"), Some(1695999600)),
+                (2, Some("It Didn't Have to Be Magic..."), None),
+                (5, None, Some(1800000000))
+            ]
+        );
+        assert_eq!(d.aired(), Some(4), "next is episode 5");
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "the lock orders whole tests, each on its own runtime"
+    )]
+    async fn reads_kitsu_episodes() {
+        use crate::mock_http::{mock, reply};
+        let base = mock(|req| match req.target.split('?').next().unwrap() {
+            "/mappings" => reply(200, serde_json::json!({"data": [{"id": "1"}], "included": [{"type": "anime", "id": "46474"}]})),
+            "/anime/46474/episodes" => reply(200, serde_json::json!({"data": [
+                {"attributes": {"number": 1, "canonicalTitle": "The Journey's End", "airdate": "2023-09-29"}},
+                {"attributes": {"number": 2, "canonicalTitle": null, "titles": {"en": "Magic"}, "airdate": null}}]})),
+            other => panic!("unexpected {other}"),
+        })
+        .await;
+        let _net = crate::mock_http::mocked();
+        *KITSU_BASE.lock().unwrap() = Some(base);
+        let eps = kitsu_episodes(&reqwest::Client::new(), 154587).await;
+        *KITSU_BASE.lock().unwrap() = None;
+        let eps = eps.unwrap();
+        assert_eq!(eps.len(), 2);
+        assert_eq!(
+            (eps[0].title.as_deref(), eps[1].title.as_deref()),
+            (Some("The Journey's End"), Some("Magic"))
+        );
+        assert!(eps[0].airs.is_some() && eps[1].airs.is_none());
+        let mut list = vec![crate::library::EpisodeInfo {
+            number: 2,
+            title: None,
+            airs: Some(5),
+        }];
+        merge_episodes(&mut list, eps);
+        assert_eq!(
+            list.iter()
+                .map(|e| (e.number, e.title.clone(), e.airs.is_some()))
+                .collect::<Vec<_>>(),
+            [
+                (1, Some("The Journey's End".into()), true),
+                (2, Some("Magic".into()), true)
+            ]
+        );
     }
 
     fn release(group: &str, tracker: &str, url: &str, best: bool, dual: bool) -> Release {

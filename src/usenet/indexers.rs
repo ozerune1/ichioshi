@@ -42,10 +42,20 @@ pub struct Indexers {
 
 impl Indexers {
     pub fn new(http: reqwest::Client) -> Self {
-        Self::with_bases(http, "https://feed.animetosho.net", "https://api.tsukihime.org", "https://storage.tsukihime.org")
+        Self::with_bases(
+            http,
+            "https://feed.animetosho.net",
+            "https://api.tsukihime.org",
+            "https://storage.tsukihime.org",
+        )
     }
 
-    pub fn with_bases(http: reqwest::Client, animetosho: &str, tsukihime_api: &str, tsukihime_storage: &str) -> Self {
+    pub fn with_bases(
+        http: reqwest::Client,
+        animetosho: &str,
+        tsukihime_api: &str,
+        tsukihime_storage: &str,
+    ) -> Self {
         Self {
             http,
             animetosho: animetosho.trim_end_matches('/').to_owned(),
@@ -74,7 +84,13 @@ impl Indexers {
     }
 
     async fn get_json(&self, url: &str) -> Result<Option<Value>> {
-        let resp = self.http.get(url).timeout(Duration::from_secs(20)).send().await.context("no answer")?;
+        let resp = self
+            .http
+            .get(url)
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await
+            .context("no answer")?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -85,31 +101,58 @@ impl Indexers {
     }
 
     async fn animetosho(&self, hash: &str) -> Result<Option<String>> {
-        let Some(v) = self.get_json(&format!("{}/json?show=torrent&btih={hash}", self.animetosho)).await? else {
+        let Some(v) = self
+            .get_json(&format!(
+                "{}/json?show=torrent&btih={hash}",
+                self.animetosho
+            ))
+            .await?
+        else {
             return Ok(None);
         };
         // An unknown hash gets an empty object; a release still being
         // mirrored has status "processing".
         let complete = v["status"].as_str() == Some("complete");
-        let same = v["info_hash"].as_str().is_some_and(|h| h.eq_ignore_ascii_case(hash));
-        Ok(v["nzb_url"].as_str().filter(|u| complete && same && !u.is_empty()).map(str::to_owned))
+        let same = v["info_hash"]
+            .as_str()
+            .is_some_and(|h| h.eq_ignore_ascii_case(hash));
+        Ok(v["nzb_url"]
+            .as_str()
+            .filter(|u| complete && same && !u.is_empty())
+            .map(str::to_owned))
     }
 
     async fn tsukihime(&self, hash: &str, nyaa_id: Option<u64>) -> Result<Option<String>> {
-        let mut found = self.get_json(&format!("{}/v1/torrents/btih/{hash}", self.tsukihime_api)).await?;
+        let mut found = self
+            .get_json(&format!("{}/v1/torrents/btih/{hash}", self.tsukihime_api))
+            .await?;
         if found.is_none()
             && let Some(id) = nyaa_id
         {
-            found = self.get_json(&format!("{}/v1/torrents/nyaa/{id}", self.tsukihime_api)).await?;
+            found = self
+                .get_json(&format!("{}/v1/torrents/nyaa/{id}", self.tsukihime_api))
+                .await?;
         }
         let Some(v) = found else { return Ok(None) };
-        let flag = |x: &Value| x.as_u64().or_else(|| x.as_str().and_then(|s| s.parse().ok())) == Some(1);
-        let id = v["id"].as_u64().map(|i| i.to_string()).or_else(|| v["id"].as_str().map(str::to_owned));
-        let same = v["btih"].as_str().is_some_and(|h| h.eq_ignore_ascii_case(hash));
+        let flag = |x: &Value| {
+            x.as_u64()
+                .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
+                == Some(1)
+        };
+        let id = v["id"]
+            .as_u64()
+            .map(|i| i.to_string())
+            .or_else(|| v["id"].as_str().map(str::to_owned));
+        let same = v["btih"]
+            .as_str()
+            .is_some_and(|h| h.eq_ignore_ascii_case(hash));
         Ok(match id {
             Some(id) if flag(&v["has_nzb"]) && v["state"].as_str() == Some("completed") && same => {
                 // Only the ID matters to the storage server; the name is cosmetic.
-                Some(format!("{}/nzbs/{id}/{hash}.nzb.gz", self.tsukihime_storage))
+                Some(format!(
+                    "{}/nzbs/{id}/{hash}.nzb.gz",
+                    self.tsukihime_storage
+                ))
             }
             _ => None,
         })
@@ -140,7 +183,9 @@ impl Indexers {
             }
             return unpack(name, resp.bytes().await?.to_vec());
         }
-        Err(anyhow::Error::new(Unusable(format!("{name} doesn't have the NZB any more"))))
+        Err(anyhow::Error::new(Unusable(format!(
+            "{name} doesn't have the NZB any more"
+        ))))
     }
 }
 
@@ -160,21 +205,30 @@ impl std::error::Error for Unusable {}
 fn unpack(name: &str, bytes: Vec<u8>) -> Result<Vec<u8>> {
     let text = if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut out = Vec::new();
-        if flate2::read::GzDecoder::new(bytes.as_slice()).read_to_end(&mut out).is_err() {
-            return Err(anyhow::Error::new(Unusable(format!("{name}'s NZB is cut off"))));
+        if flate2::read::GzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut out)
+            .is_err()
+        {
+            return Err(anyhow::Error::new(Unusable(format!(
+                "{name}'s NZB is cut off"
+            ))));
         }
         out
     } else {
         bytes
     };
-    if !String::from_utf8_lossy(&text).trim_end().ends_with("</nzb>") {
-        return Err(anyhow::Error::new(Unusable(format!("{name}'s NZB is cut off"))));
+    if !String::from_utf8_lossy(&text)
+        .trim_end()
+        .ends_with("</nzb>")
+    {
+        return Err(anyhow::Error::new(Unusable(format!(
+            "{name}'s NZB is cut off"
+        ))));
     }
     Ok(text)
 }
 
-impl Indexers {
-}
+impl Indexers {}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -187,7 +241,11 @@ pub(crate) mod tests {
 
     /// Both indexers on one mock server: AnimeTosho under /at, TsukiHime's
     /// API under /tk and its storage under /tks. `nzb` is served for both.
-    pub(crate) async fn mock_indexers(at_status: &'static str, tk_has_nzb: bool, nzb: Vec<u8>) -> Indexers {
+    pub(crate) async fn mock_indexers(
+        at_status: &'static str,
+        tk_has_nzb: bool,
+        nzb: Vec<u8>,
+    ) -> Indexers {
         let base = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let b = base.clone();
         let url = mock(move |req| {
@@ -222,7 +280,12 @@ pub(crate) mod tests {
         })
         .await;
         *base.lock().unwrap() = url.clone();
-        Indexers::with_bases(reqwest::Client::new(), &format!("{url}/at"), &format!("{url}/tk"), &format!("{url}/tks"))
+        Indexers::with_bases(
+            reqwest::Client::new(),
+            &format!("{url}/at"),
+            &format!("{url}/tk"),
+            &format!("{url}/tks"),
+        )
     }
 
     #[tokio::test]
@@ -230,8 +293,15 @@ pub(crate) mod tests {
         let nzb = b"<nzb>\n</nzb>\n".to_vec();
         let idx = mock_indexers("complete", true, nzb.clone()).await;
         let links = idx.lookup(&HASH.to_uppercase(), Some(2189234)).await;
-        assert_eq!(links.iter().map(|l| l.indexer).collect::<Vec<_>>(), [Indexer::AnimeTosho, Indexer::TsukiHime]);
-        assert!(links[1].url.ends_with(&format!("/tks/nzbs/41407/{HASH}.nzb.gz")));
+        assert_eq!(
+            links.iter().map(|l| l.indexer).collect::<Vec<_>>(),
+            [Indexer::AnimeTosho, Indexer::TsukiHime]
+        );
+        assert!(
+            links[1]
+                .url
+                .ends_with(&format!("/tks/nzbs/41407/{HASH}.nzb.gz"))
+        );
         for link in &links {
             assert_eq!(idx.fetch_nzb(link).await.unwrap(), nzb, "{link:?}");
         }
@@ -250,7 +320,10 @@ pub(crate) mod tests {
             assert!(e.downcast_ref::<Unusable>().is_some(), "{e:#}");
             assert!(e.to_string().ends_with("NZB is cut off"), "{e}");
         }
-        let gone = NzbLink { indexer: Indexer::AnimeTosho, url: links[0].url.replace("706852", "1") };
+        let gone = NzbLink {
+            indexer: Indexer::AnimeTosho,
+            url: links[0].url.replace("706852", "1"),
+        };
         let e = idx.fetch_nzb(&gone).await.unwrap_err();
         assert_eq!(e.to_string(), "AnimeTosho doesn't have the NZB any more");
         assert!(e.downcast_ref::<Unusable>().is_some());
@@ -264,7 +337,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn an_indexer_that_is_down_has_none() {
-        let idx = Indexers::with_bases(reqwest::Client::new(), "http://127.0.0.1:9", "http://127.0.0.1:9", "http://127.0.0.1:9");
+        let idx = Indexers::with_bases(
+            reqwest::Client::new(),
+            "http://127.0.0.1:9",
+            "http://127.0.0.1:9",
+            "http://127.0.0.1:9",
+        );
         assert!(idx.lookup(HASH, Some(1)).await.is_empty());
     }
 
@@ -272,13 +350,25 @@ pub(crate) mod tests {
     #[tokio::test]
     #[ignore = "network"]
     async fn real_indexers() {
-        let idx = Indexers::new(reqwest::Client::builder().user_agent("seadex-downloader-test").build().unwrap());
+        let idx = Indexers::new(
+            reqwest::Client::builder()
+                .user_agent("seadex-downloader-test")
+                .build()
+                .unwrap(),
+        );
         let links = idx.lookup(HASH, Some(2189234)).await;
         println!("{links:?}");
         assert!(links.iter().any(|l| l.indexer == Indexer::TsukiHime));
         for link in &links {
             let files = crate::usenet::nzb::parse(&idx.fetch_nzb(link).await.unwrap()).unwrap();
-            println!("{}: {:?}", link.indexer.name(), files.iter().map(|f| (&f.name, f.segments.len())).collect::<Vec<_>>());
+            println!(
+                "{}: {:?}",
+                link.indexer.name(),
+                files
+                    .iter()
+                    .map(|f| (&f.name, f.segments.len()))
+                    .collect::<Vec<_>>()
+            );
             assert!(files.iter().any(|f| f.name.ends_with(".mkv")));
             assert!(files.iter().any(|f| f.is_par2()));
         }

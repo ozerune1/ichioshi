@@ -61,20 +61,35 @@ macro_rules! re {
 
 re!(GROUP_BRACKET, r"^\s*\[([^\]]+)\]");
 re!(LEADING_BRACKETS, r"^\s*(?:\[[^\]]*\]\s*)+");
-re!(GROUP_SCENE, r"-([A-Za-z0-9][A-Za-z0-9_.]*)\s*(?:[(\[][^)\]]*[)\]]\s*)*$");
-re!(SXXEYY, r"(?i)\bS(\d{1,2})E(\d{1,4})(?:v\d)?(?:\s*[-~]\s*(?:S\d{1,2})?E?(\d{1,4}))?\b");
+re!(
+    GROUP_SCENE,
+    r"-([A-Za-z0-9][A-Za-z0-9_.]*)\s*(?:[(\[][^)\]]*[)\]]\s*)*$"
+);
+re!(
+    SXXEYY,
+    r"(?i)\bS(\d{1,2})E(\d{1,4})(?:v\d)?(?:\s*[-~]\s*(?:S\d{1,2})?E?(\d{1,4}))?\b"
+);
 re!(SEASON_RANGE, r"(?i)\bS(\d{1,2})\s*[-~]\s*S?(\d{1,2})\b");
 re!(SEASON_SHORT, r"(?i)\bS(\d{1,2})(?:v\d)?\b");
 re!(SEASON_WORD, r"(?i)\bSeason\s*(\d{1,2})\b");
 re!(SEASON_ORDINAL, r"(?i)\b(\d{1,2})(?:st|nd|rd|th)\s+Season\b");
 re!(EP_RANGE_PAREN, r"[(\[](\d{1,4})\s*[-~]\s*(\d{1,4})[)\]]");
-re!(EP_RANGE_DASH, r"\s-\s(\d{1,4})\s*[-~]\s*(\d{1,4})(?:\s|$|[(\[])");
+re!(
+    EP_RANGE_DASH,
+    r"\s-\s(\d{1,4})\s*[-~]\s*(\d{1,4})(?:\s|$|[(\[])"
+);
 re!(EP_SINGLE_DASH, r"\s-\s(\d{1,4})(?:v\d)?(?:\s|$|[(\[])");
 re!(EP_WORD, r"(?i)\b(?:(?:EP|Episode)\s?|E)(\d{1,4})\b");
 re!(RESOLUTION, r"(?i)(2160|1080|720|576|480)[pi]\b");
 re!(UHD, r"(?i)\b(4K|UHD)\b");
-re!(BLURAY, r"(?i)\b(blu-?ray|bd|bdrip|bd-rip|bdremux|bdmv|remux|dvd|dvdrip)\b|(?i)\bbd\d{3,4}p\b");
-re!(WEB, r"(?i)\b(web|web-?dl|web-?rip|webrip|cr|amzn|nf|dsnp|hidive|adn|b-global|bilibili|baha|funi|yt)\b");
+re!(
+    BLURAY,
+    r"(?i)\b(blu-?ray|bd|bdrip|bd-rip|bdremux|bdmv|remux|dvd|dvdrip)\b|(?i)\bbd\d{3,4}p\b"
+);
+re!(
+    WEB,
+    r"(?i)\b(web|web-?dl|web-?rip|webrip|cr|amzn|nf|dsnp|hidive|adn|b-global|bilibili|baha|funi|yt)\b"
+);
 re!(DUAL_AUDIO, r"(?i)dual[ ._-]?audio|\bDUAL\b");
 re!(MULTI_AUDIO, r"(?i)multi[ ._-]?audio|\bMULTi\b");
 re!(DUB, r"(?i)\b(english\s+dub|dubbed|dub)\b");
@@ -84,7 +99,10 @@ re!(NON_ALNUM, r"[^\p{L}\p{N}]+");
 /// Lowercase, drop apostrophes, and turn other punctuation into single spaces,
 /// so `Frieren: Beyond Journey's End` and `Frieren Beyond Journeys End` compare equal.
 pub fn normalize(s: &str) -> String {
-    let no_apostrophes: String = s.chars().filter(|c| !matches!(c, '\'' | '’' | '`')).collect();
+    let no_apostrophes: String = s
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '’' | '`'))
+        .collect();
     NON_ALNUM
         .replace_all(&no_apostrophes.to_lowercase(), " ")
         .trim()
@@ -277,64 +295,93 @@ mod tests {
 
     #[test]
     fn season_words_and_bd() {
-        let p = parse("[Erai-raws] Sousou no Frieren 2nd Season [1080p CR WEBRip HEVC AAC][MultiSub] (unofficial batch)");
+        let p = parse(
+            "[Erai-raws] Sousou no Frieren 2nd Season [1080p CR WEBRip HEVC AAC][MultiSub] (unofficial batch)",
+        );
         assert_eq!(p.seasons, Some((2, 2)));
         assert_eq!(p.series, "sousou no frieren");
         assert!(p.batch_word);
 
-        let p = parse("[DB] Sousou no Frieren 2nd Season | Frieren: Beyond Journey's End Season 2 [Dual Audio 10bit BD1080p][HEVC-x265]");
+        let p = parse(
+            "[DB] Sousou no Frieren 2nd Season | Frieren: Beyond Journey's End Season 2 [Dual Audio 10bit BD1080p][HEVC-x265]",
+        );
         assert_eq!(p.source, Source::Bluray);
         assert_eq!(p.resolution, Some(1080));
         assert!(p.dual_audio);
 
-        let p = parse("[AUTISM] Sousou no Frieren - S01v2 (BD Remux 1080p AVC FLAC/TrueHD/AAC 2.0/5.1) [Dual-Audio]");
+        let p = parse(
+            "[AUTISM] Sousou no Frieren - S01v2 (BD Remux 1080p AVC FLAC/TrueHD/AAC 2.0/5.1) [Dual-Audio]",
+        );
         assert_eq!(p.seasons, Some((1, 1)));
         assert_eq!(p.episodes, None);
         assert_eq!(p.series, "sousou no frieren");
 
-        let p = parse("[Judas] Sousou no Frieren (Frieren Beyond Journey`s End) (Season 02) [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs] (Batch)");
+        let p = parse(
+            "[Judas] Sousou no Frieren (Frieren Beyond Journey`s End) (Season 02) [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs] (Batch)",
+        );
         assert_eq!(p.seasons, Some((2, 2)));
     }
 
     #[test]
     fn dash_episode_with_bracket_after() {
-        let p = parse("[Piyoko] Sousou no Frieren - Marumaru no Mahou (Mini Anime) - 24 [WEB 1080p YT VP9 AAC 2.0]");
+        let p = parse(
+            "[Piyoko] Sousou no Frieren - Marumaru no Mahou (Mini Anime) - 24 [WEB 1080p YT VP9 AAC 2.0]",
+        );
         assert_eq!(p.single_episode(), Some(24));
         assert_eq!(p.source, Source::Web);
     }
 
     #[test]
     fn dub_only() {
-        let p = parse("[Yameii] Frieren: Beyond Journey's End - S02E10 [English Dub] [CR WEB-DL 1080p H264 AAC] [60B4DD4F]");
+        let p = parse(
+            "[Yameii] Frieren: Beyond Journey's End - S02E10 [English Dub] [CR WEB-DL 1080p H264 AAC] [60B4DD4F]",
+        );
         assert!(p.dub_only);
         assert_eq!(p.single_episode(), Some(10));
     }
 
     #[test]
     fn splits_anilist_seasons() {
-        assert_eq!(split_season("Sousou no Frieren 2nd Season"), ("Sousou no Frieren".into(), Some(2)));
+        assert_eq!(
+            split_season("Sousou no Frieren 2nd Season"),
+            ("Sousou no Frieren".into(), Some(2))
+        );
         assert_eq!(
             split_season("Frieren: Beyond Journey’s End Season 2"),
             ("Frieren: Beyond Journey’s End".into(), Some(2))
         );
         assert_eq!(split_season("Overlord II"), ("Overlord".into(), Some(2)));
-        assert_eq!(split_season("Dr. Stone: Science Future Part 2"), ("Dr. Stone: Science Future".into(), None));
-        assert_eq!(split_season("Sousou no Frieren"), ("Sousou no Frieren".into(), None));
+        assert_eq!(
+            split_season("Dr. Stone: Science Future Part 2"),
+            ("Dr. Stone: Science Future".into(), None)
+        );
+        assert_eq!(
+            split_season("Sousou no Frieren"),
+            ("Sousou no Frieren".into(), None)
+        );
     }
 
     #[test]
     fn bare_episode_markers() {
         assert_eq!(parse("Show E07 [1080p]").single_episode(), Some(7));
         assert_eq!(parse("E01").single_episode(), Some(1));
-        assert_eq!(parse("Show - 03 [1080p E-AC-3 EAC3]").single_episode(), Some(3));
+        assert_eq!(
+            parse("Show - 03 [1080p E-AC-3 EAC3]").single_episode(),
+            Some(3)
+        );
         assert_eq!(parse("Show S01 [1080p WEB E-AC-3]").episodes, None);
     }
 
     #[test]
     fn builds_anilist_queries() {
-        assert_eq!(anilist_query("The Ramparts of Ice Season 2 [VARYG]"), "the ramparts of ice season 2");
         assert_eq!(
-            anilist_query("Mobile.Suit.Gundam.The.Witch.from.Mercury.S01.1080p.BluRay.Remux-DemiHuman"),
+            anilist_query("The Ramparts of Ice Season 2 [VARYG]"),
+            "the ramparts of ice season 2"
+        );
+        assert_eq!(
+            anilist_query(
+                "Mobile.Suit.Gundam.The.Witch.from.Mercury.S01.1080p.BluRay.Remux-DemiHuman"
+            ),
             "mobile suit gundam the witch from mercury"
         );
         assert_eq!(anilist_query("[PMR] Frieren (BD 1080p)"), "frieren");
@@ -342,7 +389,66 @@ mod tests {
 
     #[test]
     fn normalizes() {
-        assert_eq!(normalize("Frieren: Beyond Journey’s End"), "frieren beyond journeys end");
-        assert_eq!(normalize("  Re:Zero -Starting Life-  "), "re zero starting life");
+        assert_eq!(
+            normalize("Frieren: Beyond Journey’s End"),
+            "frieren beyond journeys end"
+        );
+        assert_eq!(
+            normalize("  Re:Zero -Starting Life-  "),
+            "re zero starting life"
+        );
+    }
+}
+
+/// The episode a video file holds, from its name ("Show - 07 [1080p].mkv",
+/// "Show.S01E07.1080p.mkv"); `None` for openings, endings, OVAs, specials
+/// and the like.
+pub fn episode_of_file(name: &str) -> Option<u32> {
+    static EXTRA: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(NC ?(?:OP|ED)|OVA|OAD|SP ?\d|Specials?|Menu|PV|CM|Preview|Trailer|Creditless|Opening|Ending)\b").unwrap()
+    });
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    if EXTRA.is_match(stem) {
+        return None;
+    }
+    parse(stem).single_episode()
+}
+
+#[cfg(test)]
+mod episode_tests {
+    use super::episode_of_file;
+
+    #[test]
+    fn reads_episode_numbers_from_file_names() {
+        for (name, ep) in [
+            ("Show - 01.mkv", Some(1)),
+            (
+                "The.Way.of.the.Househusband.S01E01.Episode.1.1080p.NF.WEB-DL.DDP5.1.H.264-ZigZag.mkv",
+                Some(1),
+            ),
+            (
+                "[Erai-raws] Ojisan wa Kawaii Mono ga Osuki - 08 [480p CR WEB-DL AVC AAC][MultiSub][EC4CCA8C].mkv",
+                Some(8),
+            ),
+            (
+                "The.Laid-Off.Cheat-Granting.Mage.Enjoys.a.Second.Lease.on.Life.2026.S01E06.1080p.CR.WEB-DL.DUAL.DDP2.0.H.264-AnoZu.mkv",
+                Some(6),
+            ),
+            ("Frieren: Beyond Journey’s End - 03.mkv", Some(3)),
+            (
+                "[SubsPlease] Ojisan wa Kawaii Mono ga Osuki. - 08 (1080p) [1C1B1F5D].mkv",
+                Some(8),
+            ),
+            ("Show - 03v2.mkv", Some(3)),
+            (
+                "[DragsterPS] The Way of the Househusband S01E01 [1080p] [Multi-Audio] [Multi-Sub] [B11F2F18].mkv",
+                Some(1),
+            ),
+            ("NCOP.mkv", None),
+            ("[Group] Show - NCED 2 [1080p].mkv", None),
+            ("[Group] Show - OVA 01 [1080p].mkv", None),
+        ] {
+            assert_eq!(episode_of_file(name), ep, "{name}");
+        }
     }
 }

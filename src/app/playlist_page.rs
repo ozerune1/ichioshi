@@ -43,7 +43,11 @@ fn items_for(mut paths: Vec<PathBuf>) -> (Vec<Item>, Vec<String>) {
     let mut items = Vec::new();
     let mut errors = Vec::new();
     for path in paths {
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         match crate::mkv::probe(&path) {
             Ok(info) => {
                 let title = info.title.filter(|t| !t.trim().is_empty()).unwrap_or(stem);
@@ -80,7 +84,10 @@ impl App {
                     self.set_error(format!("Couldn't add {}", errors.join("; ")));
                 } else if offered > 0 {
                     let skipped = offered - added;
-                    let mut text = format!("Added {added} episode{} to the playlist", if added == 1 { "" } else { "s" });
+                    let mut text = format!(
+                        "Added {added} episode{} to the playlist",
+                        if added == 1 { "" } else { "s" }
+                    );
                     if skipped > 0 {
                         text.push_str(&format!(" ({skipped} already in it)"));
                     }
@@ -88,14 +95,21 @@ impl App {
                 }
             }
             Msg::PlaylistExportProgress { seq, fraction } => {
-                if let Page::Playlist(PlaylistPage { export: Some(run), .. }) = &mut self.page
+                if let Page::Playlist(PlaylistPage {
+                    export: Some(run), ..
+                }) = &mut self.page
                     && run.seq == seq
                 {
                     run.progress = fraction;
                 }
             }
             Msg::PlaylistExportDone { seq, result } => {
-                let Page::Playlist(PlaylistPage { export: Some(run), .. }) = &mut self.page else { return };
+                let Page::Playlist(PlaylistPage {
+                    export: Some(run), ..
+                }) = &mut self.page
+                else {
+                    return;
+                };
                 if run.seq != seq {
                     return;
                 }
@@ -132,18 +146,34 @@ impl App {
                 .set_directory(&start)
                 .pick_files()
                 .await;
-            let paths: Vec<PathBuf> = picked.unwrap_or_default().into_iter().map(|f| f.path().to_owned()).collect();
-            let (items, errors) = tokio::task::spawn_blocking(move || items_for(paths)).await.unwrap_or_default();
+            let paths: Vec<PathBuf> = picked
+                .unwrap_or_default()
+                .into_iter()
+                .map(|f| f.path().to_owned())
+                .collect();
+            let (items, errors) = tokio::task::spawn_blocking(move || items_for(paths))
+                .await
+                .unwrap_or_default();
             Msg::PlaylistAdd { items, errors }
         });
     }
 
     pub(super) fn pick_export_folder(&mut self) {
-        let Page::Playlist(pp) = &self.page else { return };
+        let Page::Playlist(pp) = &self.page else {
+            return;
+        };
         let start = PathBuf::from(pp.out_dir.trim());
-        let start = start.ancestors().find(|p| p.is_dir()).map(|p| p.to_owned()).unwrap_or_else(|| self.download_dir());
+        let start = start
+            .ancestors()
+            .find(|p| p.is_dir())
+            .map(|p| p.to_owned())
+            .unwrap_or_else(|| self.download_dir());
         self.spawn(async move {
-            let picked = rfd::AsyncFileDialog::new().set_title("Export the playlist to").set_directory(&start).pick_folder().await;
+            let picked = rfd::AsyncFileDialog::new()
+                .set_title("Export the playlist to")
+                .set_directory(&start)
+                .pick_folder()
+                .await;
             Msg::PlaylistFolderPicked(picked.map(|f| f.path().to_owned()))
         });
     }
@@ -152,13 +182,20 @@ impl App {
         self.playlist_seq += 1;
         let seq = self.playlist_seq;
         let items = self.playlist.items.clone();
-        let Page::Playlist(pp) = &mut self.page else { return };
+        let Page::Playlist(pp) = &mut self.page else {
+            return;
+        };
         if pp.export.as_ref().is_some_and(ExportRun::running) || items.is_empty() {
             return;
         }
         let dest = PathBuf::from(pp.out_dir.trim());
         let cancel = Arc::new(AtomicBool::new(false));
-        pp.export = Some(ExportRun { seq, cancel: cancel.clone(), progress: 0.0, result: None });
+        pp.export = Some(ExportRun {
+            seq,
+            cancel: cancel.clone(),
+            progress: 0.0,
+            result: None,
+        });
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         self.rt.spawn_blocking(move || {
             let send = |msg| {
@@ -172,17 +209,28 @@ impl App {
                     send(Msg::PlaylistExportProgress { seq, fraction });
                 }
             });
-            send(Msg::PlaylistExportDone { seq, result: result.map_err(|e| format!("{e:#}")) });
+            send(Msg::PlaylistExportDone {
+                seq,
+                result: result.map_err(|e| format!("{e:#}")),
+            });
         });
     }
 
     pub(super) fn cancel_export(&mut self) {
-        if let Page::Playlist(PlaylistPage { export: Some(run), .. }) = &self.page {
+        if let Page::Playlist(PlaylistPage {
+            export: Some(run), ..
+        }) = &self.page
+        {
             run.cancel.store(true, Ordering::Relaxed);
         }
     }
 
-    pub(super) fn playlist_page(&self, ui: &mut Ui, pp: &mut PlaylistPage, actions: &mut Vec<Action>) {
+    pub(super) fn playlist_page(
+        &self,
+        ui: &mut Ui,
+        pp: &mut PlaylistPage,
+        actions: &mut Vec<Action>,
+    ) {
         let exporting = pp.export.as_ref().is_some_and(ExportRun::running);
         let items = &self.playlist.items;
         egui::Panel::top("playlist_header")
@@ -226,7 +274,10 @@ impl App {
         // setup steps open); the episode list keeps the rest.
         let footer_max = (ui.available_height() * 0.66).max(160.0);
         let names = playlist::export_names(items);
-        let sizes: Vec<Option<u64>> = items.iter().map(|i| std::fs::metadata(&i.path).ok().map(|m| m.len())).collect();
+        let sizes: Vec<Option<u64>> = items
+            .iter()
+            .map(|i| std::fs::metadata(&i.path).ok().map(|m| m.len()))
+            .collect();
         let missing = sizes.iter().filter(|s| s.is_none()).count();
         let total: u64 = sizes.iter().flatten().sum();
 
@@ -335,6 +386,11 @@ impl App {
 #[cfg(test)]
 impl PlaylistPage {
     pub(super) fn exported_for_test(&mut self, path: PathBuf) {
-        self.export = Some(ExportRun { seq: 0, cancel: Arc::new(AtomicBool::new(false)), progress: 1.0, result: Some(Ok(path)) });
+        self.export = Some(ExportRun {
+            seq: 0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress: 1.0,
+            result: Some(Ok(path)),
+        });
     }
 }

@@ -30,7 +30,12 @@ fn files_on_disk(dir: &std::path::Path) -> Vec<String> {
             if path.is_dir() {
                 walk(base, &path, out);
             } else {
-                out.push(path.strip_prefix(base).unwrap().to_string_lossy().into_owned());
+                out.push(
+                    path.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
     }
@@ -57,7 +62,11 @@ async fn sintel_torrent() -> Vec<u8> {
 async fn wait_finished(handle: &crate::engine::TorrentHandle) {
     let deadline = Instant::now() + Duration::from_secs(240);
     while !handle.stats().finished {
-        assert!(Instant::now() < deadline, "download timed out: {}", handle.stats());
+        assert!(
+            Instant::now() < deadline,
+            "download timed out: {}",
+            handle.stats()
+        );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
@@ -71,8 +80,15 @@ fn client() -> reqwest::Client {
 
 #[tokio::test]
 #[ignore = "network"]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "the lock orders whole tests, each on its own runtime"
+)]
 async fn search_finds_seadex_entry_with_nyaa_release() {
-    let results = seadex::search(&client(), "Sousou no Frieren").await.unwrap();
+    let _net = crate::mock_http::real();
+    let results = seadex::search(&client(), "Sousou no Frieren")
+        .await
+        .unwrap();
     let frieren = results
         .iter()
         .find(|a| a.anilist_id == FRIEREN)
@@ -80,32 +96,57 @@ async fn search_finds_seadex_entry_with_nyaa_release() {
     let entry = frieren.entry.as_ref().expect("Frieren has a SeaDex entry");
     let best = entry.best_nyaa(false).expect("a Nyaa release");
     let r = &entry.releases[best];
-    println!("best on Nyaa: {} (nyaa {:?}, {} files)", r.group, r.nyaa_id(), r.files.len());
+    println!(
+        "best on Nyaa: {} (nyaa {:?}, {} files)",
+        r.group,
+        r.nyaa_id(),
+        r.files.len()
+    );
     assert!(r.nyaa_id().is_some());
     // Results with an entry are listed first.
-    let first_without = results.iter().position(|a| a.entry.is_none()).unwrap_or(results.len());
+    let first_without = results
+        .iter()
+        .position(|a| a.entry.is_none())
+        .unwrap_or(results.len());
     assert!(results[first_without..].iter().all(|a| a.entry.is_none()));
 }
 
 #[tokio::test]
 #[ignore = "network"]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "the lock orders whole tests, each on its own runtime"
+)]
 async fn nyaa_torrent_lists_the_files_seadex_describes() {
+    let _net = crate::mock_http::real();
     let http = client();
     let entries = seadex::fetch_entries(&http, &[FRIEREN]).await.unwrap();
     let entry = &entries[&FRIEREN];
     let release = &entry.releases[entry.best_nyaa(false).unwrap()];
 
-    let bytes = nyaa::fetch_torrent(&http, release.nyaa_id().unwrap()).await.unwrap();
+    let bytes = nyaa::fetch_torrent(&http, release.nyaa_id().unwrap())
+        .await
+        .unwrap();
     let dir = scratch_dir("list");
-    let engine = Engine::start(&dir.join("state"), dir.join("dl"), &Default::default()).await.unwrap();
+    let engine = Engine::start(&dir.join("state"), dir.join("dl"), &Default::default())
+        .await
+        .unwrap();
     let listing = engine.inspect(Source::TorrentFile(bytes)).await.unwrap();
 
-    println!("{} ({} files, multi_file={})", listing.name, listing.files.len(), listing.multi_file);
+    println!(
+        "{} ({} files, multi_file={})",
+        listing.name,
+        listing.files.len(),
+        listing.multi_file
+    );
     for f in listing.files.iter().take(5) {
         println!("  [{}] {} ({} bytes)", f.index, f.path, f.len);
     }
     assert_eq!(listing.files.len(), release.files.len());
-    assert_eq!(listing.files.iter().map(|f| f.len).sum::<u64>(), release.total_size());
+    assert_eq!(
+        listing.files.iter().map(|f| f.len).sum::<u64>(),
+        release.total_size()
+    );
     assert!(listing.existing.is_none());
     // Listing must not leave anything downloading.
     assert!(engine.torrents().is_empty());
@@ -131,7 +172,9 @@ async fn downloads_only_the_selected_file() {
         .to_vec();
 
     let dir = scratch_dir("download");
-    let engine = Engine::start(&dir.join("state"), dir.join("dl"), &Default::default()).await.unwrap();
+    let engine = Engine::start(&dir.join("state"), dir.join("dl"), &Default::default())
+        .await
+        .unwrap();
     let listing = engine.inspect(Source::TorrentFile(bytes)).await.unwrap();
     for f in &listing.files {
         println!("  [{}] {} ({} bytes)", f.index, f.path, f.len);
@@ -140,7 +183,11 @@ async fn downloads_only_the_selected_file() {
     let big = listing.files.iter().max_by_key(|f| f.len).unwrap().clone();
     let out = listing.output_folder(&dir.join("dl"));
     engine
-        .download(listing.torrent_bytes.clone(), Some(vec![small.index]), out.clone())
+        .download(
+            listing.torrent_bytes.clone(),
+            Some(vec![small.index]),
+            out.clone(),
+        )
         .await
         .unwrap();
 
@@ -150,7 +197,10 @@ async fn downloads_only_the_selected_file() {
     loop {
         let stats = handle.stats();
         if stats.finished {
-            println!("finished: {} of {} selected bytes", stats.progress_bytes, stats.total_bytes);
+            println!(
+                "finished: {} of {} selected bytes",
+                stats.progress_bytes, stats.total_bytes
+            );
             break;
         }
         assert!(Instant::now() < deadline, "timed out; last stats: {stats}");
@@ -176,19 +226,34 @@ async fn downloads_only_the_selected_file() {
 async fn selecting_a_neighbour_later_downloads_its_sliver_again() {
     let bytes = sintel_torrent().await;
     let dir = scratch_dir("reselect");
-    let engine = Engine::start(&dir.join("state"), dir.join("dl"), &Default::default()).await.unwrap();
-    let listing = engine.inspect(Source::TorrentFile(bytes.clone())).await.unwrap();
+    let engine = Engine::start(&dir.join("state"), dir.join("dl"), &Default::default())
+        .await
+        .unwrap();
+    let listing = engine
+        .inspect(Source::TorrentFile(bytes.clone()))
+        .await
+        .unwrap();
     let index = |name: &str| listing.files.iter().find(|f| f.path == name).unwrap().index;
     let (en, es) = (index("Sintel.en.srt"), index("Sintel.es.srt"));
     let out = listing.output_folder(&dir.join("dl"));
 
-    engine.download(bytes.clone(), Some(vec![en]), out.clone()).await.unwrap();
+    engine
+        .download(bytes.clone(), Some(vec![en]), out.clone())
+        .await
+        .unwrap();
     let (_, handle) = engine.torrents().pop().unwrap();
     wait_finished(&handle).await;
-    assert_eq!(files_on_disk(&out), vec!["Sintel.en.srt"], "es.srt's sliver was deleted");
+    assert_eq!(
+        files_on_disk(&out),
+        vec!["Sintel.en.srt"],
+        "es.srt's sliver was deleted"
+    );
 
     // Now also select es.srt, which shares en.srt's piece.
-    engine.download(bytes.clone(), Some(vec![en, es]), out.clone()).await.unwrap();
+    engine
+        .download(bytes.clone(), Some(vec![en, es]), out.clone())
+        .await
+        .unwrap();
     let (_, handle) = engine.torrents().pop().unwrap();
     wait_finished(&handle).await;
     assert_eq!(files_on_disk(&out), vec!["Sintel.en.srt", "Sintel.es.srt"]);
@@ -197,14 +262,29 @@ async fn selecting_a_neighbour_later_downloads_its_sliver_again() {
 
     // Compare with a fresh download of just es.srt.
     let fresh_dir = scratch_dir("reselect-fresh");
-    let fresh = Engine::start(&fresh_dir.join("state"), fresh_dir.join("dl"), &Default::default()).await.unwrap();
+    let fresh = Engine::start(
+        &fresh_dir.join("state"),
+        fresh_dir.join("dl"),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
     let fresh_out = listing.output_folder(&fresh_dir.join("dl"));
-    fresh.download(bytes, Some(vec![es]), fresh_out.clone()).await.unwrap();
+    fresh
+        .download(bytes, Some(vec![es]), fresh_out.clone())
+        .await
+        .unwrap();
     let (_, fresh_handle) = fresh.torrents().pop().unwrap();
     wait_finished(&fresh_handle).await;
     let expected = std::fs::read(fresh_out.join("Sintel.es.srt")).unwrap();
-    assert!(reselected == expected, "re-selected file differs from a fresh download");
-    assert!(String::from_utf8_lossy(&reselected).contains("-->"), "looks like an .srt");
+    assert!(
+        reselected == expected,
+        "re-selected file differs from a fresh download"
+    );
+    assert!(
+        String::from_utf8_lossy(&reselected).contains("-->"),
+        "looks like an .srt"
+    );
     fresh.stop().await;
 }
 
@@ -224,17 +304,28 @@ async fn session_restores_torrents_after_restart() {
     let dir = scratch_dir("restore");
     let state = dir.join("state");
 
-    let engine = Engine::start(&state, dir.join("dl"), &Default::default()).await.unwrap();
+    let engine = Engine::start(&state, dir.join("dl"), &Default::default())
+        .await
+        .unwrap();
     let listing = engine.inspect(Source::TorrentFile(bytes)).await.unwrap();
     let pick = vec![listing.files[0].index, listing.files[1].index];
     let out = listing.output_folder(&dir.join("dl"));
-    engine.download(listing.torrent_bytes.clone(), Some(pick.clone()), out.clone()).await.unwrap();
+    engine
+        .download(
+            listing.torrent_bytes.clone(),
+            Some(pick.clone()),
+            out.clone(),
+        )
+        .await
+        .unwrap();
     let (_, handle) = engine.torrents().pop().unwrap();
     wait_finished(&handle).await;
     engine.stop().await;
     drop(engine);
 
-    let engine = Engine::start(&state, dir.join("dl"), &Default::default()).await.unwrap();
+    let engine = Engine::start(&state, dir.join("dl"), &Default::default())
+        .await
+        .unwrap();
     let torrents = engine.torrents();
     assert_eq!(torrents.len(), 1, "torrent was not restored");
     let (_, handle) = &torrents[0];
@@ -246,14 +337,29 @@ async fn session_restores_torrents_after_restart() {
     // even though the neighbours' slivers were deleted (a failure here would
     // mean a full re-hash and re-download on every start).
     let deadline = Instant::now() + Duration::from_secs(30);
-    while matches!(handle.stats().state, librqbit::TorrentStatsState::Initializing { .. }) {
+    while matches!(
+        handle.stats().state,
+        librqbit::TorrentStatsState::Initializing { .. }
+    ) {
         assert!(Instant::now() < deadline, "resume check took too long");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(handle.stats().finished, "lost progress across a restart: {}", handle.stats());
+    assert!(
+        handle.stats().finished,
+        "lost progress across a restart: {}",
+        handle.stats()
+    );
     let mut picked: Vec<String> = pick
         .iter()
-        .map(|&i| listing.files.iter().find(|f| f.index == i).unwrap().path.clone())
+        .map(|&i| {
+            listing
+                .files
+                .iter()
+                .find(|f| f.index == i)
+                .unwrap()
+                .path
+                .clone()
+        })
         .collect();
     picked.sort();
     assert_eq!(files_on_disk(&out), picked);
@@ -275,13 +381,27 @@ async fn never_seeds() {
         .unwrap()
         .to_vec();
     let dir = scratch_dir("noseed");
-    let engine = Engine::start(&dir.join("state"), dir.join("dl"), &Default::default()).await.unwrap();
-    assert_eq!(engine.session().listen_addr(), None, "must not accept incoming connections");
+    let engine = Engine::start(&dir.join("state"), dir.join("dl"), &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.session().listen_addr(),
+        None,
+        "must not accept incoming connections"
+    );
 
     let listing = engine.inspect(Source::TorrentFile(bytes)).await.unwrap();
-    let poster = listing.files.iter().find(|f| f.path == "poster.jpg").unwrap().index;
+    let poster = listing
+        .files
+        .iter()
+        .find(|f| f.path == "poster.jpg")
+        .unwrap()
+        .index;
     let out = listing.output_folder(&dir.join("dl"));
-    engine.download(listing.torrent_bytes.clone(), Some(vec![poster]), out).await.unwrap();
+    engine
+        .download(listing.torrent_bytes.clone(), Some(vec![poster]), out)
+        .await
+        .unwrap();
     let (_, handle) = engine.torrents().pop().unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(240);
@@ -292,11 +412,17 @@ async fn never_seeds() {
     // The watcher stops finished torrents within a couple of seconds.
     let deadline = Instant::now() + Duration::from_secs(10);
     while !handle.is_paused() {
-        assert!(Instant::now() < deadline, "finished torrent kept running (seeding)");
+        assert!(
+            Instant::now() < deadline,
+            "finished torrent kept running (seeding)"
+        );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let stats = handle.stats();
-    println!("downloaded {} bytes, uploaded {}", stats.progress_bytes, stats.uploaded_bytes);
+    println!(
+        "downloaded {} bytes, uploaded {}",
+        stats.progress_bytes, stats.uploaded_bytes
+    );
     assert_eq!(stats.uploaded_bytes, 0);
     engine.stop().await;
 }
@@ -305,7 +431,12 @@ async fn never_seeds() {
 /// ranked release for the right season.
 #[tokio::test]
 #[ignore = "network"]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "the lock orders whole tests, each on its own runtime"
+)]
 async fn nyaa_fallback_ranks_shows_without_seadex_entries() {
+    let _net = crate::mock_http::real();
     use crate::fallback::{self, ReleaseKind, SearchPlan};
 
     let http = client();
@@ -331,13 +462,28 @@ async fn nyaa_fallback_ranks_shows_without_seadex_entries() {
     let mut checked = 0;
     for romaji in titles {
         let found = seadex::search(&http, &romaji).await.unwrap();
-        let Some(anime) = found.into_iter().find(|a| a.romaji.as_deref() == Some(romaji.as_str())) else { continue };
-        if anime.entry.as_ref().is_some_and(|e| e.best_nyaa(false).is_some()) {
+        let Some(anime) = found
+            .into_iter()
+            .find(|a| a.romaji.as_deref() == Some(romaji.as_str()))
+        else {
+            continue;
+        };
+        if anime
+            .entry
+            .as_ref()
+            .is_some_and(|e| e.best_nyaa(false).is_some())
+        {
             continue;
         }
         let plan = SearchPlan::for_anime(&anime);
         let releases = fallback::find_releases(&http, &plan, false).await.unwrap();
-        println!("\n{} (queries {:?}, season {:?}): {} releases", anime.title, plan.queries, plan.season, releases.len());
+        println!(
+            "\n{} (queries {:?}, season {:?}): {} releases",
+            anime.title,
+            plan.queries,
+            plan.season,
+            releases.len()
+        );
         for r in releases.iter().take(6) {
             let kind = match &r.kind {
                 ReleaseKind::Torrent { .. } => "torrent",
@@ -354,13 +500,22 @@ async fn nyaa_fallback_ranks_shows_without_seadex_entries() {
                 r.title()
             );
         }
-        let best = releases.first().expect("Nyaa has releases for a popular airing show");
+        let best = releases
+            .first()
+            .expect("Nyaa has releases for a popular airing show");
         assert!(best.usable(), "best release is unusable: {best:?}");
-        assert!(releases.iter().all(|r| !r.title().to_lowercase().ends_with(".zip")));
+        assert!(
+            releases
+                .iter()
+                .all(|r| !r.title().to_lowercase().ends_with(".zip"))
+        );
         checked += 1;
         if checked == 3 {
             break;
         }
     }
-    assert!(checked > 0, "no current-season show without a SeaDex Nyaa release found");
+    assert!(
+        checked > 0,
+        "no current-season show without a SeaDex Nyaa release found"
+    );
 }

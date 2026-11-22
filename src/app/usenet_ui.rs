@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use eframe::egui::{self, RichText, Ui, vec2};
 
-use super::{Action, App, FilesPage, GREEN, Msg, Page, ReleaseKind, fmt_bytes, fmt_duration, fmt_speed};
+use super::{
+    Action, App, FilesPage, GREEN, Msg, Page, ReleaseKind, fmt_bytes, fmt_duration, fmt_speed,
+};
 use crate::usenet::indexers::{Indexers, NzbLink};
 use crate::usenet::jobs::{Manager, Phase, View};
 use crate::usenet::{Config, Provider};
@@ -40,11 +42,18 @@ enum Check {
 }
 
 impl UsenetState {
-    pub(super) fn load(state_dir: &Path, rt: tokio::runtime::Handle, ctx: egui::Context, http: reqwest::Client) -> Self {
+    pub(super) fn load(
+        state_dir: &Path,
+        rt: tokio::runtime::Handle,
+        ctx: egui::Context,
+        http: reqwest::Client,
+    ) -> Self {
         let file = state_dir.join("usenet.json");
         let config = Config::load(&file);
         let indexers = Indexers::new(http);
-        let manager = Manager::load(state_dir, rt, &config, indexers.clone(), move || ctx.request_repaint());
+        let manager = Manager::load(state_dir, rt, &config, indexers.clone(), move || {
+            ctx.request_repaint()
+        });
         Self {
             config,
             file,
@@ -69,7 +78,9 @@ impl UsenetState {
 
     /// The release's NZBs, if it's been looked up (empty: not on Usenet).
     pub(super) fn links(&self, info_hash: &str) -> Option<&[NzbLink]> {
-        self.lookups.get(&info_hash.to_ascii_lowercase())?.as_deref()
+        self.lookups
+            .get(&info_hash.to_ascii_lowercase())?
+            .as_deref()
     }
 }
 
@@ -85,9 +96,15 @@ impl App {
                 (Some(search), _) => {
                     for r in search.releases.iter().take(super::MAX_NYAA_ROWS) {
                         match &r.kind {
-                            ReleaseKind::Torrent { item, .. } => wanted.push((item.info_hash.clone(), Some(item.id))),
+                            ReleaseKind::Torrent { item, .. } => {
+                                wanted.push((item.info_hash.clone(), Some(item.id)))
+                            }
                             ReleaseKind::Episodes(items) => {
-                                wanted.extend(items.iter().map(|(_, item)| (item.info_hash.clone(), Some(item.id))));
+                                wanted.extend(
+                                    items
+                                        .iter()
+                                        .map(|(_, item)| (item.info_hash.clone(), Some(item.id))),
+                                );
                             }
                         }
                     }
@@ -103,7 +120,11 @@ impl App {
             },
             Page::Files(fp) => {
                 if let super::Picker::Episodes { items, .. } = &fp.picker {
-                    wanted.extend(items.iter().map(|(_, item)| (item.info_hash.clone(), Some(item.id))));
+                    wanted.extend(
+                        items
+                            .iter()
+                            .map(|(_, item)| (item.info_hash.clone(), Some(item.id))),
+                    );
                 }
             }
             _ => {}
@@ -140,13 +161,26 @@ impl App {
     }
 
     pub(super) fn usenet_check(&mut self, id: u64) {
-        let Some(provider) = self.usenet.config.providers.iter().find(|p| p.id == id).cloned() else { return };
-        let Some(d) = &mut self.usenet.dialog else { return };
+        let Some(provider) = self
+            .usenet
+            .config
+            .providers
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(d) = &mut self.usenet.dialog else {
+            return;
+        };
         d.seq += 1;
         let seq = d.seq;
         d.checks.insert(id, Check::Running(seq));
         self.spawn(async move {
-            let result = crate::usenet::nntp::check(&provider).await.map_err(|e| format!("{e:#}"));
+            let result = crate::usenet::nntp::check(&provider)
+                .await
+                .map_err(|e| format!("{e:#}"));
             Msg::UsenetChecked { id, seq, result }
         });
     }
@@ -154,13 +188,25 @@ impl App {
     /// The Usenet part of the settings menu.
     pub(super) fn usenet_settings(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         ui.strong("Usenet");
-        let providers: Vec<&Provider> = self.usenet.config.providers.iter().filter(|p| p.usable()).collect();
+        let providers: Vec<&Provider> = self
+            .usenet
+            .config
+            .providers
+            .iter()
+            .filter(|p| p.usable())
+            .collect();
         if providers.is_empty() {
-            ui.weak("Add a Usenet provider to download releases that are on Usenet from there instead.");
+            ui.weak(
+                "Add a Usenet provider to download releases that are on Usenet from there instead.",
+            );
         } else {
             for p in providers {
                 let backup = if p.backup { " · backup" } else { "" };
-                ui.label(format!("{} · {} connections{backup}", p.label(), p.connections));
+                ui.label(format!(
+                    "{} · {} connections{backup}",
+                    p.label(),
+                    p.connections
+                ));
             }
             ui.weak("Releases on Usenet (AnimeTosho, TsukiHime) download from there; the rest as torrents.");
         }
@@ -171,7 +217,9 @@ impl App {
 
     /// The providers dialog: add, edit, check, order.
     pub(super) fn usenet_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let Some(dialog) = &mut self.usenet.dialog else { return };
+        let Some(dialog) = &mut self.usenet.dialog else {
+            return;
+        };
         let mut close = false;
         let mut changed = false;
         let mut check = None;
@@ -287,9 +335,20 @@ impl App {
 
     /// The Usenet part of the status bar.
     pub(super) fn usenet_status(&self, ui: &mut Ui) {
-        let names: Vec<&str> = self.usenet.config.providers.iter().filter(|p| p.usable()).map(Provider::label).collect();
+        let names: Vec<&str> = self
+            .usenet
+            .config
+            .providers
+            .iter()
+            .filter(|p| p.usable())
+            .map(Provider::label)
+            .collect();
         let Some(first) = names.first() else { return };
-        let more = if names.len() > 1 { format!(" +{}", names.len() - 1) } else { String::new() };
+        let more = if names.len() > 1 {
+            format!(" +{}", names.len() - 1)
+        } else {
+            String::new()
+        };
         super::status_dot(ui, GREEN);
         ui.label(RichText::new(format!("Usenet · {first}{more}")).color(GREEN));
     }
@@ -298,7 +357,11 @@ impl App {
         match self.usenet.manager.listing(id) {
             Ok(listing) => {
                 self.cancel_listing();
-                let mut page = FilesPage::new(listing, None, "Change which files this download gets".to_owned());
+                let mut page = FilesPage::new(
+                    listing,
+                    None,
+                    "Change which files this download gets".to_owned(),
+                );
                 page.nzbs = self.usenet.manager.nzbs(id);
                 self.page = Page::Files(page);
             }
@@ -307,56 +370,83 @@ impl App {
     }
 
     pub(super) fn usenet_open_remux(&mut self, id: u64) {
-        let Some(series) = self.usenet.manager.series_files(id, &self.library_dir()) else { return };
+        let Some(series) = self.usenet.manager.series_files(id, &self.library_dir()) else {
+            return;
+        };
         let known = series.info_hashes.iter().find_map(|h| self.library.get(h));
         self.open_remux_series(series, known);
     }
 
     pub(super) fn usenet_remove(&mut self, id: u64, delete_files: bool) {
         self.usenet.manager.remove(id, delete_files);
-        self.set_info(if delete_files { "Removed and deleted its files" } else { "Removed (files kept on disk)" });
+        self.set_info(if delete_files {
+            "Removed and deleted its files"
+        } else {
+            "Removed (files kept on disk)"
+        });
     }
 }
 
 fn provider_form(ui: &mut Ui, p: &mut Provider, save: &mut bool, cancel: &mut bool) {
-    egui::Grid::new("usenet_provider_form").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
-        ui.label("Name");
-        ui.add(egui::TextEdit::singleline(&mut p.name).hint_text("e.g. Eweka").desired_width(300.0));
-        ui.end_row();
-        ui.label("Server");
-        ui.add(egui::TextEdit::singleline(&mut p.host).hint_text("news.example.com").desired_width(300.0));
-        ui.end_row();
-        ui.label("Port");
-        ui.horizontal(|ui| {
-            ui.add(egui::DragValue::new(&mut p.port).range(1..=65535));
-            let was = p.tls;
-            ui.checkbox(&mut p.tls, "Encrypted (TLS)");
-            if p.tls != was {
-                p.port = match (p.tls, p.port) {
-                    (true, 119) => 563,
-                    (false, 563) => 119,
-                    (_, port) => port,
-                };
-            }
+    egui::Grid::new("usenet_provider_form")
+        .num_columns(2)
+        .spacing(vec2(10.0, 6.0))
+        .show(ui, |ui| {
+            ui.label("Name");
+            ui.add(
+                egui::TextEdit::singleline(&mut p.name)
+                    .hint_text("e.g. Eweka")
+                    .desired_width(300.0),
+            );
+            ui.end_row();
+            ui.label("Server");
+            ui.add(
+                egui::TextEdit::singleline(&mut p.host)
+                    .hint_text("news.example.com")
+                    .desired_width(300.0),
+            );
+            ui.end_row();
+            ui.label("Port");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut p.port).range(1..=65535));
+                let was = p.tls;
+                ui.checkbox(&mut p.tls, "Encrypted (TLS)");
+                if p.tls != was {
+                    p.port = match (p.tls, p.port) {
+                        (true, 119) => 563,
+                        (false, 563) => 119,
+                        (_, port) => port,
+                    };
+                }
+            });
+            ui.end_row();
+            ui.label("Username");
+            ui.add(egui::TextEdit::singleline(&mut p.username).desired_width(300.0));
+            ui.end_row();
+            ui.label("Password");
+            ui.add(
+                egui::TextEdit::singleline(&mut p.password)
+                    .password(true)
+                    .desired_width(300.0),
+            );
+            ui.end_row();
+            ui.label("Connections");
+            ui.add(egui::DragValue::new(&mut p.connections).range(1..=100))
+                .on_hover_text("How many your plan allows (often 20–60). More is faster.");
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(
+                &mut p.backup,
+                "Backup (block) account: only for articles the others lack",
+            );
+            ui.end_row();
         });
-        ui.end_row();
-        ui.label("Username");
-        ui.add(egui::TextEdit::singleline(&mut p.username).desired_width(300.0));
-        ui.end_row();
-        ui.label("Password");
-        ui.add(egui::TextEdit::singleline(&mut p.password).password(true).desired_width(300.0));
-        ui.end_row();
-        ui.label("Connections");
-        ui.add(egui::DragValue::new(&mut p.connections).range(1..=100))
-            .on_hover_text("How many your plan allows (often 20–60). More is faster.");
-        ui.end_row();
-        ui.label("");
-        ui.checkbox(&mut p.backup, "Backup (block) account: only for articles the others lack");
-        ui.end_row();
-    });
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui.add_enabled(!p.host.trim().is_empty(), egui::Button::new("Save")).clicked() {
+        if ui
+            .add_enabled(!p.host.trim().is_empty(), egui::Button::new("Save"))
+            .clicked()
+        {
             p.host = p.host.trim().to_owned();
             *save = true;
         }
@@ -373,7 +463,8 @@ pub(super) fn nzb_badge(ui: &mut Ui, links: &[NzbLink]) {
         return;
     }
     let names: Vec<&str> = links.iter().map(|l| l.indexer.name()).collect();
-    ui.colored_label(GREEN, "NZB").on_hover_text(format!("On Usenet: {}", names.join(", ")));
+    ui.colored_label(GREEN, "NZB")
+        .on_hover_text(format!("On Usenet: {}", names.join(", ")));
 }
 
 /// Draw one Usenet download. Returns whether it's busy.
@@ -384,10 +475,23 @@ pub(super) fn usenet_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
     let source = v.source().unwrap_or("Usenet");
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.add(egui::Label::new(RichText::new(&job.name).strong()).truncate()).on_hover_text(&job.name);
-        let fraction = if total == 0 { 0.0 } else { have as f32 / total as f32 };
-        let bar = egui::ProgressBar::new(fraction).text(format!("{:.1}%  ·  {} of {}", fraction * 100.0, fmt_bytes(have), fmt_bytes(total)));
-        ui.add(bar.animate(matches!(v.live.phase, Phase::Fetching | Phase::Repairing(_))));
+        ui.add(egui::Label::new(RichText::new(&job.name).strong()).truncate())
+            .on_hover_text(&job.name);
+        let fraction = if total == 0 {
+            0.0
+        } else {
+            have as f32 / total as f32
+        };
+        let bar = egui::ProgressBar::new(fraction).text(format!(
+            "{:.1}%  ·  {} of {}",
+            fraction * 100.0,
+            fmt_bytes(have),
+            fmt_bytes(total)
+        ));
+        ui.add(bar.animate(matches!(
+            v.live.phase,
+            Phase::Fetching | Phase::Repairing(_)
+        )));
         let detail = match &v.live.phase {
             Phase::Queued => "Waiting for the download before it".to_owned(),
             Phase::Fetching => format!("Getting the NZB from {source}"),
@@ -395,7 +499,10 @@ pub(super) fn usenet_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
                 let mut d = format!("Downloading from Usenet ({source})");
                 if v.live.speed > 0.0 {
                     d.push_str(&format!("  ·  ⬇ {}", fmt_speed(v.live.speed / 1_048_576.0)));
-                    d.push_str(&format!("  ·  {} left", fmt_duration(total.saturating_sub(have) as f64 / v.live.speed)));
+                    d.push_str(&format!(
+                        "  ·  {} left",
+                        fmt_duration(total.saturating_sub(have) as f64 / v.live.speed)
+                    ));
                 }
                 d
             }
@@ -410,7 +517,10 @@ pub(super) fn usenet_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
         if v.live.missing > 0 && !matches!(v.live.phase, Phase::Done) {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                format!("{} articles aren't on any of your providers; they'll be repaired with PAR2", v.live.missing),
+                format!(
+                    "{} articles aren't on any of your providers; they'll be repaired with PAR2",
+                    v.live.missing
+                ),
             );
         }
         if let Phase::Failed(e) = &v.live.phase {
@@ -438,10 +548,18 @@ pub(super) fn usenet_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
                 }
                 Phase::Done => {}
             }
-            if ui.button("Episodes…").on_hover_text("Change which files this download gets").clicked() {
+            if ui
+                .button("Episodes…")
+                .on_hover_text("Change which files this download gets")
+                .clicked()
+            {
                 actions.push(Action::UsenetEditFiles(job.id));
             }
-            if ui.button("Remux…").on_hover_text("Make copies with only the audio and subtitle languages you want").clicked() {
+            if ui
+                .button("Remux…")
+                .on_hover_text("Make copies with only the audio and subtitle languages you want")
+                .clicked()
+            {
                 actions.push(Action::UsenetOpenRemux(job.id));
             }
             if ui.button("🗁 Folder").clicked() {
@@ -449,22 +567,39 @@ pub(super) fn usenet_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
             }
             ui.menu_button("Remove", |ui| {
                 if ui.button("Remove from list (keep files)").clicked() {
-                    actions.push(Action::UsenetRemove { id: job.id, delete_files: false });
+                    actions.push(Action::UsenetRemove {
+                        id: job.id,
+                        delete_files: false,
+                    });
                 }
                 if ui.button("Remove and delete files…").clicked() {
-                    actions.push(Action::UsenetAskDelete { id: job.id, name: job.name.clone() });
+                    actions.push(Action::UsenetAskDelete {
+                        id: job.id,
+                        name: job.name.clone(),
+                    });
                 }
             });
         });
-        egui::CollapsingHeader::new("Files").id_salt(("usenet_files", job.id)).show(ui, |ui| {
-            for (i, f) in job.files.iter().enumerate().filter(|(_, f)| f.wanted) {
-                let fraction = if f.len == 0 { 1.0 } else { (v.live.have[i] as f32 / f.len as f32).min(1.0) };
-                ui.horizontal(|ui| {
-                    ui.add(egui::ProgressBar::new(fraction).desired_width(64.0).text(format!("{:.0}%", fraction * 100.0)));
-                    ui.add(egui::Label::new(RichText::new(&f.path).weak()).truncate()).on_hover_text(&f.path);
-                });
-            }
-        });
+        egui::CollapsingHeader::new("Files")
+            .id_salt(("usenet_files", job.id))
+            .show(ui, |ui| {
+                for (i, f) in job.files.iter().enumerate().filter(|(_, f)| f.wanted) {
+                    let fraction = if f.len == 0 {
+                        1.0
+                    } else {
+                        (v.live.have[i] as f32 / f.len as f32).min(1.0)
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::ProgressBar::new(fraction)
+                                .desired_width(64.0)
+                                .text(format!("{:.0}%", fraction * 100.0)),
+                        );
+                        ui.add(egui::Label::new(RichText::new(&f.path).weak()).truncate())
+                            .on_hover_text(&f.path);
+                    });
+                }
+            });
     });
     v.live.active() || v.live.phase == Phase::Queued
 }

@@ -114,8 +114,15 @@ pub fn export_names(items: &[Item]) -> Vec<String> {
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
-            format!("{}.{ext}", sanitize_filename(&format!("{:0width$}) {}", i + 1, item.title)))
+            let ext = item
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("mkv");
+            format!(
+                "{}.{ext}",
+                sanitize_filename(&format!("{:0width$}) {}", i + 1, item.title))
+            )
         })
         .collect()
 }
@@ -140,14 +147,30 @@ pub fn export(
     if items.is_empty() {
         bail!("the playlist is empty");
     }
-    let missing: Vec<String> = items.iter().filter(|i| !i.path.is_file()).map(|i| i.title.clone()).collect();
+    let missing: Vec<String> = items
+        .iter()
+        .filter(|i| !i.path.is_file())
+        .map(|i| i.title.clone())
+        .collect();
     if !missing.is_empty() {
-        bail!("{} missing: {}", if missing.len() == 1 { "a file is" } else { "files are" }, missing.join(", "));
+        bail!(
+            "{} missing: {}",
+            if missing.len() == 1 {
+                "a file is"
+            } else {
+                "files are"
+            },
+            missing.join(", ")
+        );
     }
-    let sizes: Vec<u64> = items.iter().map(|i| std::fs::metadata(&i.path).map(|m| m.len())).collect::<Result<_, _>>()?;
+    let sizes: Vec<u64> = items
+        .iter()
+        .map(|i| std::fs::metadata(&i.path).map(|m| m.len()))
+        .collect::<Result<_, _>>()?;
     let total = sizes.iter().sum::<u64>().max(1);
 
-    std::fs::create_dir_all(dest_dir).with_context(|| format!("creating {}", dest_dir.display()))?;
+    std::fs::create_dir_all(dest_dir)
+        .with_context(|| format!("creating {}", dest_dir.display()))?;
     let name = export_name(&now);
     let mut zip_path = dest_dir.join(format!("{name}.zip"));
     for n in 2.. {
@@ -172,7 +195,8 @@ pub fn export(
                 .last_modified_time(modified)
                 .unix_permissions(0o644);
             zip.start_file(format!("{name}/{file_name}"), options)?;
-            let mut src = File::open(&item.path).with_context(|| format!("opening {}", item.path.display()))?;
+            let mut src = File::open(&item.path)
+                .with_context(|| format!("opening {}", item.path.display()))?;
             loop {
                 if cancel.load(Ordering::Relaxed) {
                     bail!("cancelled");
@@ -204,7 +228,9 @@ mod tests {
     use chrono::TimeZone;
 
     fn scratch(name: &str) -> PathBuf {
-        let base = std::env::var_os("LIVE_TEST_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let base = std::env::var_os("LIVE_TEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
         let dir = base.join(format!("seadex-playlist-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -212,13 +238,21 @@ mod tests {
     }
 
     fn item(path: &Path, title: &str) -> Item {
-        Item { path: path.to_owned(), title: title.into() }
+        Item {
+            path: path.to_owned(),
+            title: title.into(),
+        }
     }
 
     #[test]
     fn names_are_numbered_and_padded() {
         let items: Vec<Item> = (1..=12)
-            .map(|n| item(Path::new(&format!("/r/Show - {n:02}.mkv")), &format!("Show: Part/Two - {n:02}")))
+            .map(|n| {
+                item(
+                    Path::new(&format!("/r/Show - {n:02}.mkv")),
+                    &format!("Show: Part/Two - {n:02}"),
+                )
+            })
             .collect();
         let names = export_names(&items);
         assert_eq!(names[0], "01) Show: Part-Two - 01.mkv");
@@ -233,11 +267,19 @@ mod tests {
         let dir = scratch("list");
         let file = dir.join("playlist.json");
         let mut p = Playlist::load(file.clone());
-        let (a, b, c) = (item(Path::new("/a.mkv"), "A"), item(Path::new("/b.mkv"), "B"), item(Path::new("/c.mkv"), "C"));
+        let (a, b, c) = (
+            item(Path::new("/a.mkv"), "A"),
+            item(Path::new("/b.mkv"), "B"),
+            item(Path::new("/c.mkv"), "C"),
+        );
         assert_eq!(p.add([a.clone(), b.clone()]), 2);
         assert_eq!(p.add([b.clone(), c.clone()]), 1, "b is already there");
         p.move_item(2, 0);
-        assert_eq!(Playlist::load(file.clone()).items, vec![c.clone(), a.clone(), b.clone()], "saved");
+        assert_eq!(
+            Playlist::load(file.clone()).items,
+            vec![c.clone(), a.clone(), b.clone()],
+            "saved"
+        );
         p.remove(1);
         assert_eq!(p.items, vec![c, b]);
         p.clear();
@@ -251,7 +293,10 @@ mod tests {
         let second = dir.join("Other - 05.mkv");
         std::fs::write(&first, b"first episode").unwrap();
         std::fs::write(&second, vec![7u8; 3 << 20]).unwrap();
-        let items = vec![item(&second, "Other: Thing - 05"), item(&first, "Show - 01")];
+        let items = vec![
+            item(&second, "Other: Thing - 05"),
+            item(&first, "Show - 01"),
+        ];
         let now = Local.with_ymd_and_hms(2026, 11, 21, 16, 45, 3).unwrap();
         let out = dir.join("exports");
 
@@ -260,13 +305,20 @@ mod tests {
         assert_eq!(last, 1.0);
         assert_eq!(zip_path, out.join("2026-11-21 16-45-03.zip"));
         let mut archive = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
-        let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned()).collect();
-        assert_eq!(names, vec![
-            "2026-11-21 16-45-03/",
-            "2026-11-21 16-45-03/1) Other: Thing - 05.mkv",
-            "2026-11-21 16-45-03/2) Show - 01.mkv",
-        ]);
-        let mut entry = archive.by_name("2026-11-21 16-45-03/2) Show - 01.mkv").unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "2026-11-21 16-45-03/",
+                "2026-11-21 16-45-03/1) Other: Thing - 05.mkv",
+                "2026-11-21 16-45-03/2) Show - 01.mkv",
+            ]
+        );
+        let mut entry = archive
+            .by_name("2026-11-21 16-45-03/2) Show - 01.mkv")
+            .unwrap();
         assert_eq!(entry.compression(), CompressionMethod::Stored);
         let mut content = Vec::new();
         entry.read_to_end(&mut content).unwrap();
@@ -277,7 +329,16 @@ mod tests {
         let again = export(&items, &out, now, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!(again, out.join("2026-11-21 16-45-03 (2).zip"));
         // Cancelling leaves nothing behind; missing files are refused up front.
-        assert!(export(&items, &dir.join("cancelled"), now, &AtomicBool::new(true), |_| {}).is_err());
+        assert!(
+            export(
+                &items,
+                &dir.join("cancelled"),
+                now,
+                &AtomicBool::new(true),
+                |_| {}
+            )
+            .is_err()
+        );
         assert!(std::fs::read_dir(dir.join("cancelled")).is_ok_and(|mut d| d.next().is_none()));
         std::fs::remove_file(&first).unwrap();
         let err = export(&items, &out, now, &AtomicBool::new(false), |_| {}).unwrap_err();
@@ -297,16 +358,37 @@ mod tests {
         std::fs::write(&small, b"after the big one").unwrap();
         let items = vec![item(&big, "Big - 01"), item(&small, "Small - 02")];
         let now = Local.with_ymd_and_hms(2026, 11, 21, 9, 0, 0).unwrap();
-        let zip_path = export(&items, &dir.join("out"), now, &AtomicBool::new(false), |_| {}).unwrap();
+        let zip_path = export(
+            &items,
+            &dir.join("out"),
+            now,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
         let check = std::process::Command::new("python3")
             .args(["-I", "-c", "import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print([(i.filename, i.file_size) for i in z.infolist()])"])
             .arg(&zip_path)
             .output()
             .unwrap();
         let listing = String::from_utf8_lossy(&check.stdout);
-        assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
-        assert!(listing.contains(&format!("'2026-11-21 09-00-00/1) Big - 01.mkv', {}", (4u64 << 30) + 12345)), "{listing}");
-        let seven = std::process::Command::new("7z").arg("t").arg(&zip_path).output().unwrap();
+        assert!(
+            check.status.success(),
+            "{}",
+            String::from_utf8_lossy(&check.stderr)
+        );
+        assert!(
+            listing.contains(&format!(
+                "'2026-11-21 09-00-00/1) Big - 01.mkv', {}",
+                (4u64 << 30) + 12345
+            )),
+            "{listing}"
+        );
+        let seven = std::process::Command::new("7z")
+            .arg("t")
+            .arg(&zip_path)
+            .output()
+            .unwrap();
         assert!(String::from_utf8_lossy(&seven.stdout).contains("Everything is Ok"));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -78,7 +78,10 @@ impl Registry {
             None => {
                 torrents.insert(
                     info_hash,
-                    Arc::new(Entry { output_folder: output_folder.to_owned(), wanted: RwLock::new(wanted) }),
+                    Arc::new(Entry {
+                        output_folder: output_folder.to_owned(),
+                        wanted: RwLock::new(wanted),
+                    }),
                 );
             }
         }
@@ -106,7 +109,9 @@ impl Registry {
             output_folder: PathBuf,
             only_files: Option<Vec<usize>>,
         }
-        let Ok(text) = std::fs::read_to_string(session_json) else { return };
+        let Ok(text) = std::fs::read_to_string(session_json) else {
+            return;
+        };
         let saved: Saved = match serde_json::from_str(&text) {
             Ok(s) => s,
             Err(e) => {
@@ -138,7 +143,11 @@ impl SelectiveStorageFactory {
 impl StorageFactory for SelectiveStorageFactory {
     type Storage = Box<dyn TorrentStorage>;
 
-    fn create(&self, shared: &ManagedTorrentShared, metadata: &TorrentMetadata) -> Result<Self::Storage> {
+    fn create(
+        &self,
+        shared: &ManagedTorrentShared,
+        metadata: &TorrentMetadata,
+    ) -> Result<Self::Storage> {
         match self.registry.get(&shared.info_hash) {
             Some(entry) => Ok(Box::new(SelectiveStorage {
                 entry,
@@ -147,7 +156,9 @@ impl StorageFactory for SelectiveStorageFactory {
             })),
             None => {
                 tracing::warn!(info_hash = ?shared.info_hash, "torrent not registered; creating all of its files");
-                Ok(Box::new(FilesystemStorageFactory::default().create(shared, metadata)?))
+                Ok(Box::new(
+                    FilesystemStorageFactory::default().create(shared, metadata)?,
+                ))
             }
         }
     }
@@ -218,12 +229,19 @@ impl SelectiveStorage {
         let l = self.layout.piece_length;
         let (start, end) = (u64::from(piece) * l, (u64::from(piece) + 1) * l);
         self.layout.slots.iter().enumerate().any(|(i, s)| {
-            !s.padding && s.len > 0 && s.offset < end && s.offset + s.len > start && self.entry.is_wanted(i)
+            !s.padding
+                && s.len > 0
+                && s.offset < end
+                && s.offset + s.len > start
+                && self.entry.is_wanted(i)
         })
     }
 
     fn note_pending(&self, slot: &Slot, offset: u64, len: usize) {
-        slot.pending.lock().unwrap().extend(self.pieces(slot, offset, len));
+        slot.pending
+            .lock()
+            .unwrap()
+            .extend(self.pieces(slot, offset, len));
     }
 
     /// Open the file for writing: the real file if it's selected (or already
@@ -244,7 +262,8 @@ impl SelectiveStorage {
         } else {
             std::fs::create_dir_all(&self.layout.output_folder)?;
             Backing::Scratch(
-                tempfile::tempfile_in(&self.layout.output_folder).context("creating a temporary file")?,
+                tempfile::tempfile_in(&self.layout.output_folder)
+                    .context("creating a temporary file")?,
             )
         };
         Ok(())
@@ -262,8 +281,17 @@ impl TorrentStorage for SelectiveStorage {
             .map(|(i, fi)| {
                 let real = output_folder.join(&fi.relative_filename);
                 if !fi.attrs.padding {
-                    let legacy = output_folder.join(LEGACY_PARTS_DIR).join(&fi.relative_filename);
-                    tidy(&real, &legacy, &output_folder, self.entry.is_wanted(i), fi.len, piece_length);
+                    let legacy = output_folder
+                        .join(LEGACY_PARTS_DIR)
+                        .join(&fi.relative_filename);
+                    tidy(
+                        &real,
+                        &legacy,
+                        &output_folder,
+                        self.entry.is_wanted(i),
+                        fi.len,
+                        piece_length,
+                    );
                 }
                 Slot {
                     real,
@@ -275,7 +303,11 @@ impl TorrentStorage for SelectiveStorage {
                 }
             })
             .collect();
-        self.layout = Arc::new(Layout { output_folder, piece_length, slots });
+        self.layout = Arc::new(Layout {
+            output_folder,
+            piece_length,
+            slots,
+        });
         Ok(())
     }
 
@@ -301,7 +333,11 @@ impl TorrentStorage for SelectiveStorage {
             }
         }
         // A deleted sliver: see the module docs for why this reads as zeros.
-        if !self.entry.is_wanted(file_id) && self.pieces(slot, offset, buf.len()).all(|p| self.piece_is_selected(p)) {
+        if !self.entry.is_wanted(file_id)
+            && self
+                .pieces(slot, offset, buf.len())
+                .all(|p| self.piece_is_selected(p))
+        {
             buf.fill(0);
             return Ok(());
         }
@@ -410,7 +446,14 @@ impl TorrentStorage for SelectiveStorage {
 ///   most two pieces of data (a sliver left by librqbit's own storage):
 ///   deleted. Anything else, such as an episode downloaded before it was
 ///   deselected or a small subtitle file, is left alone.
-fn tidy(real: &Path, legacy_part: &Path, root: &Path, wanted: bool, file_len: u64, piece_length: u64) {
+fn tidy(
+    real: &Path,
+    legacy_part: &Path,
+    root: &Path,
+    wanted: bool,
+    file_len: u64,
+    piece_length: u64,
+) {
     let result = (|| -> Result<()> {
         if legacy_part.exists() {
             if wanted && !real.exists() {
@@ -424,7 +467,9 @@ fn tidy(real: &Path, legacy_part: &Path, root: &Path, wanted: bool, file_len: u6
         if wanted {
             return Ok(());
         }
-        let Ok(meta) = std::fs::metadata(real) else { return Ok(()) };
+        let Ok(meta) = std::fs::metadata(real) else {
+            return Ok(());
+        };
         let sliver_only = file_len > 2 * piece_length && bytes_on_disk(&meta) <= 2 * piece_length;
         if meta.is_file() && (meta.len() == 0 || sliver_only) {
             std::fs::remove_file(real)?;
@@ -460,7 +505,8 @@ fn open_rw(path: &Path, create: bool) -> Result<File> {
 
 fn create_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
     Ok(())
 }
@@ -518,7 +564,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("seadex-storage-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("seadex-storage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -531,7 +578,14 @@ mod tests {
         let dir = scratch("tidy");
         let piece = 1024 * 1024;
         let tidy_unselected = |name: &str, len: u64| {
-            tidy(&dir.join(name), &dir.join(LEGACY_PARTS_DIR).join(name), &dir, false, len, piece)
+            tidy(
+                &dir.join(name),
+                &dir.join(LEGACY_PARTS_DIR).join(name),
+                &dir,
+                false,
+                len,
+                piece,
+            )
         };
 
         // An empty placeholder: deleted.
@@ -573,8 +627,22 @@ mod tests {
         std::fs::write(parts.join("Show/E01.mkv"), b"wanted").unwrap();
         std::fs::write(parts.join("Show/E02.mkv"), b"unwanted").unwrap();
 
-        tidy(&dir.join("Show/E01.mkv"), &parts.join("Show/E01.mkv"), &dir, true, 6, 1024);
-        tidy(&dir.join("Show/E02.mkv"), &parts.join("Show/E02.mkv"), &dir, false, 8, 1024);
+        tidy(
+            &dir.join("Show/E01.mkv"),
+            &parts.join("Show/E01.mkv"),
+            &dir,
+            true,
+            6,
+            1024,
+        );
+        tidy(
+            &dir.join("Show/E02.mkv"),
+            &parts.join("Show/E02.mkv"),
+            &dir,
+            false,
+            8,
+            1024,
+        );
         assert_eq!(std::fs::read(dir.join("Show/E01.mkv")).unwrap(), b"wanted");
         assert!(!dir.join("Show/E02.mkv").exists());
         assert!(!parts.exists(), "the hidden folder is gone once empty");
@@ -588,7 +656,10 @@ mod tests {
         std::fs::create_dir_all(root.join("Extras")).unwrap();
         remove_empty_dirs(&root.join("Extras/NCOP.mkv"), &root);
         assert!(!root.join("Extras").exists());
-        assert!(root.exists(), "the output folder itself is kept even when empty");
+        assert!(
+            root.exists(),
+            "the output folder itself is kept even when empty"
+        );
         assert!(parent.exists());
         let _ = std::fs::remove_dir_all(&parent);
     }

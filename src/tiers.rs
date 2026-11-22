@@ -88,7 +88,8 @@ pub struct Tiers {
     tiers: Vec<Tier>,
 }
 
-static TIERS: LazyLock<Tiers> = LazyLock::new(|| Tiers::from_json(FILES).expect("bundled TRaSH tiers are valid"));
+static TIERS: LazyLock<Tiers> =
+    LazyLock::new(|| Tiers::from_json(FILES).expect("bundled TRaSH tiers are valid"));
 
 pub fn tiers() -> &'static Tiers {
     &TIERS
@@ -99,7 +100,9 @@ impl Tiers {
         let mut tiers = Vec::new();
         for json in files {
             let cf: CustomFormat = serde_json::from_str(json)?;
-            let Some(score) = cf.trash_scores.default else { continue };
+            let Some(score) = cf.trash_scores.default else {
+                continue;
+            };
             let mut source = None;
             let mut groups = Vec::new();
             for spec in &cf.specifications {
@@ -113,7 +116,9 @@ impl Tiers {
                         }
                     }
                     "ReleaseTitleSpecification" if !spec.negate => {
-                        let Some(pattern) = spec.fields.value.as_str() else { continue };
+                        let Some(pattern) = spec.fields.value.as_str() else {
+                            continue;
+                        };
                         // Sonarr matches release titles case-insensitively.
                         match Regex::new(&format!("(?i){pattern}")) {
                             Ok(re) => groups.push((spec.name.clone(), re)),
@@ -123,7 +128,12 @@ impl Tiers {
                     _ => {}
                 }
             }
-            tiers.push(Tier { label: tier_label(&cf.name), score, source, groups });
+            tiers.push(Tier {
+                label: tier_label(&cf.name),
+                score,
+                source,
+                groups,
+            });
         }
         Ok(Self { tiers })
     }
@@ -140,7 +150,12 @@ impl Tiers {
                 (None, _) | (_, Source::Unknown) => true,
                 (Some(want), have) => want == have,
             };
-            if !source_fits || !tier.groups.iter().any(|(_, re)| re.is_match(title).unwrap_or(false)) {
+            if !source_fits
+                || !tier
+                    .groups
+                    .iter()
+                    .any(|(_, re)| re.is_match(title).unwrap_or(false))
+            {
                 continue;
             }
             if tier.score < 0 {
@@ -184,10 +199,16 @@ mod tests {
     #[test]
     fn ranks_known_groups() {
         let t = tiers();
-        let r = t.rank("[SubsPlease] Sousou no Frieren S2 (01-10) (1080p) [Batch]", Source::Unknown);
+        let r = t.rank(
+            "[SubsPlease] Sousou no Frieren S2 (01-10) (1080p) [Batch]",
+            Source::Unknown,
+        );
         assert_eq!((r.label.as_str(), r.score), ("Web Tier 05", 200));
 
-        let r = t.rank("Frieren Beyond Journeys End S02 1080p CR WEB-DL DUAL AAC2.0 H 264-VARYG", Source::Web);
+        let r = t.rank(
+            "Frieren Beyond Journeys End S02 1080p CR WEB-DL DUAL AAC2.0 H 264-VARYG",
+            Source::Web,
+        );
         assert_eq!(r.label, "Web Tier 04");
 
         // Same group, different tier depending on source.
@@ -204,14 +225,27 @@ mod tests {
     fn lookaround_patterns_work() {
         let t = tiers();
         // PMR only counts for remuxes; Aergia must not match Aergia-raws.
-        assert_eq!(t.rank("[PMR] Show (BD Remux 1080p)", Source::Bluray).label, "BD Tier 03");
-        assert_eq!(t.rank("[PMR] Show (BD 1080p)", Source::Bluray).label, "Unranked");
-        assert_ne!(t.rank("Show S01 1080p BluRay-Aergia-raws", Source::Bluray).label, "BD Tier 02");
+        assert_eq!(
+            t.rank("[PMR] Show (BD Remux 1080p)", Source::Bluray).label,
+            "BD Tier 03"
+        );
+        assert_eq!(
+            t.rank("[PMR] Show (BD 1080p)", Source::Bluray).label,
+            "Unranked"
+        );
+        assert_ne!(
+            t.rank("Show S01 1080p BluRay-Aergia-raws", Source::Bluray)
+                .label,
+            "BD Tier 02"
+        );
     }
 
     #[test]
     fn low_quality_groups_are_blocked() {
-        let r = tiers().rank("[Anime Time] Show - S02E10 [1080p][HEVC 10bit x265][AAC][Dual-Audio]", Source::Unknown);
+        let r = tiers().rank(
+            "[Anime Time] Show - S02E10 [1080p][HEVC 10bit x265][AAC][Dual-Audio]",
+            Source::Unknown,
+        );
         assert!(r.is_blocked(), "{r:?}");
     }
 }

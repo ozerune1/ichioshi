@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use eframe::egui::{self, RichText, Ui};
 
-use super::{Action, App, EngineState, FilesPage, GREEN, Msg, Page, fmt_bytes, fmt_duration, fmt_speed};
+use super::{
+    Action, App, EngineState, FilesPage, GREEN, Msg, Page, fmt_bytes, fmt_duration, fmt_speed,
+};
 use crate::debrid::jobs::{Manager, Phase, View};
 use crate::debrid::{Account, Config, Provider};
 
@@ -24,8 +26,17 @@ impl DebridState {
     pub(super) fn load(state_dir: &Path, rt: tokio::runtime::Handle, ctx: egui::Context) -> Self {
         let file = state_dir.join("debrid.json");
         let config = Config::load(&file);
-        let manager = Manager::load(state_dir, rt, config.keys.clone(), move || ctx.request_repaint());
-        Self { config, file, manager, account: None, checking: false, seq: 0 }
+        let manager = Manager::load(state_dir, rt, config.keys.clone(), move || {
+            ctx.request_repaint()
+        });
+        Self {
+            config,
+            file,
+            manager,
+            account: None,
+            checking: false,
+            seq: 0,
+        }
     }
 
     fn save(&self) {
@@ -43,7 +54,12 @@ impl DebridState {
 
 impl App {
     pub(super) fn handle_debrid_msg(&mut self, msg: Msg) {
-        if let Msg::DebridAccount { seq, provider, result } = msg {
+        if let Msg::DebridAccount {
+            seq,
+            provider,
+            result,
+        } = msg
+        {
             if seq != self.debrid.seq {
                 return;
             }
@@ -67,7 +83,11 @@ impl App {
         self.debrid.checking = true;
         self.spawn(async move {
             let result = client.account().await.map_err(|e| format!("{e:#}"));
-            Msg::DebridAccount { seq, provider, result }
+            Msg::DebridAccount {
+                seq,
+                provider,
+                result,
+            }
         });
     }
 
@@ -154,14 +174,22 @@ impl App {
 
     /// The service's part of the status bar.
     pub(super) fn debrid_status(&self, ui: &mut Ui) {
-        let Some(name) = self.debrid.service() else { return };
+        let Some(name) = self.debrid.service() else {
+            return;
+        };
         let provider = self.debrid.config.provider;
         let (color, text, hover) = match &self.debrid.account {
-            _ if self.debrid.config.key(provider).is_none() => {
-                (ui.visuals().warn_fg_color, format!("{name}: add your API key in Settings"), None)
-            }
+            _ if self.debrid.config.key(provider).is_none() => (
+                ui.visuals().warn_fg_color,
+                format!("{name}: add your API key in Settings"),
+                None,
+            ),
             Some((p, Ok(a))) if *p == provider => (GREEN, format!("{name} · {}", a.name), None),
-            Some((p, Err(e))) if *p == provider => (ui.visuals().error_fg_color, format!("{name}: key not accepted"), Some(e.clone())),
+            Some((p, Err(e))) if *p == provider => (
+                ui.visuals().error_fg_color,
+                format!("{name}: key not accepted"),
+                Some(e.clone()),
+            ),
             _ => (ui.visuals().text_color(), name.to_owned(), None),
         };
         super::status_dot(ui, color);
@@ -184,13 +212,20 @@ impl App {
     }
 
     pub(super) fn debrid_open_remux(&mut self, id: u64) {
-        let Some(series) = self.debrid.manager.series_files(id, &self.library_dir()) else { return };
+        let Some(series) = self.debrid.manager.series_files(id, &self.library_dir()) else {
+            return;
+        };
         let known = series.info_hashes.iter().find_map(|h| self.library.get(h));
         self.open_remux_series(series, known);
     }
 
     pub(super) fn debrid_remove(&mut self, id: u64, delete_files: bool) {
-        let service = self.debrid.manager.view(id).map(|v| v.job.provider.name()).unwrap_or("the service");
+        let service = self
+            .debrid
+            .manager
+            .view(id)
+            .map(|v| v.job.provider.name())
+            .unwrap_or("the service");
         self.debrid.manager.remove(id, delete_files);
         self.set_info(if delete_files {
             format!("Removed, deleted its files, and removed it from {service}")
@@ -208,10 +243,15 @@ pub(super) fn debrid_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
     let have = v.have_bytes();
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.add(egui::Label::new(RichText::new(&job.name).strong()).truncate()).on_hover_text(&job.name);
+        ui.add(egui::Label::new(RichText::new(&job.name).strong()).truncate())
+            .on_hover_text(&job.name);
 
         let local = |ui: &mut Ui| {
-            let fraction = if total == 0 { 0.0 } else { have as f32 / total as f32 };
+            let fraction = if total == 0 {
+                0.0
+            } else {
+                have as f32 / total as f32
+            };
             ui.add(egui::ProgressBar::new(fraction).text(format!(
                 "{:.1}%  ·  {} of {}",
                 fraction * 100.0,
@@ -222,12 +262,25 @@ pub(super) fn debrid_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
         let mut detail = String::new();
         match &v.live.phase {
             Phase::Adding => {
-                ui.add(egui::ProgressBar::new(0.0).animate(true).text(format!("Sending to {service}…")));
+                ui.add(
+                    egui::ProgressBar::new(0.0)
+                        .animate(true)
+                        .text(format!("Sending to {service}…")),
+                );
                 detail = format!("Adding the torrent to {service}");
             }
-            Phase::Remote { status, progress, speed, seeders } => {
+            Phase::Remote {
+                status,
+                progress,
+                speed,
+                seeders,
+            } => {
                 let p = progress.unwrap_or(0.0);
-                ui.add(egui::ProgressBar::new(p).animate(progress.is_none()).text(format!("{service}: {:.0}%", p * 100.0)));
+                ui.add(
+                    egui::ProgressBar::new(p)
+                        .animate(progress.is_none())
+                        .text(format!("{service}: {:.0}%", p * 100.0)),
+                );
                 detail = format!("{service} is getting it");
                 if !status.is_empty() {
                     detail.push_str(&format!(" · {status}"));
@@ -289,7 +342,11 @@ pub(super) fn debrid_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
                 }
                 Phase::Done => {}
             }
-            if ui.button("Episodes…").on_hover_text("Change which files this download gets").clicked() {
+            if ui
+                .button("Episodes…")
+                .on_hover_text("Change which files this download gets")
+                .clicked()
+            {
                 actions.push(Action::DebridEditFiles(job.id));
             }
             if ui
@@ -305,24 +362,41 @@ pub(super) fn debrid_card(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) -> b
             ui.menu_button("Remove", |ui| {
                 ui.weak(format!("Both also delete it from your {service} account."));
                 if ui.button("Remove from list (keep files)").clicked() {
-                    actions.push(Action::DebridRemove { id: job.id, delete_files: false });
+                    actions.push(Action::DebridRemove {
+                        id: job.id,
+                        delete_files: false,
+                    });
                 }
                 if ui.button("Remove and delete files…").clicked() {
-                    actions.push(Action::DebridAskDelete { id: job.id, name: job.name.clone() });
+                    actions.push(Action::DebridAskDelete {
+                        id: job.id,
+                        name: job.name.clone(),
+                    });
                 }
             });
         });
 
         // Like a torrent's file list: a small progress bar, then the path.
-        egui::CollapsingHeader::new("Files").id_salt(("debrid_files", job.id)).show(ui, |ui| {
-            for (i, f) in job.files.iter().enumerate().filter(|(_, f)| f.wanted) {
-                let fraction = if f.len == 0 { 1.0 } else { v.live.have[i] as f32 / f.len as f32 };
-                ui.horizontal(|ui| {
-                    ui.add(egui::ProgressBar::new(fraction).desired_width(64.0).text(format!("{:.0}%", fraction * 100.0)));
-                    ui.add(egui::Label::new(RichText::new(&f.path).weak()).truncate()).on_hover_text(&f.path);
-                });
-            }
-        });
+        egui::CollapsingHeader::new("Files")
+            .id_salt(("debrid_files", job.id))
+            .show(ui, |ui| {
+                for (i, f) in job.files.iter().enumerate().filter(|(_, f)| f.wanted) {
+                    let fraction = if f.len == 0 {
+                        1.0
+                    } else {
+                        v.live.have[i] as f32 / f.len as f32
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::ProgressBar::new(fraction)
+                                .desired_width(64.0)
+                                .text(format!("{:.0}%", fraction * 100.0)),
+                        );
+                        ui.add(egui::Label::new(RichText::new(&f.path).weak()).truncate())
+                            .on_hover_text(&f.path);
+                    });
+                }
+            });
     });
     v.live.active()
 }

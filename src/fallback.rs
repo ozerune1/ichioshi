@@ -71,13 +71,23 @@ impl NyaaRelease {
 
     pub fn episodes_label(&self) -> String {
         match &self.kind {
-            ReleaseKind::Torrent { episodes: Some((a, b)), .. } if a < b => format!("{a:02}–{b:02}"),
-            ReleaseKind::Torrent { episodes: Some((a, _)), .. } => format!("Episode {a:02}"),
+            ReleaseKind::Torrent {
+                episodes: Some((a, b)),
+                ..
+            } if a < b => format!("{a:02}–{b:02}"),
+            ReleaseKind::Torrent {
+                episodes: Some((a, _)),
+                ..
+            } => format!("Episode {a:02}"),
             ReleaseKind::Torrent { episodes: None, .. } => "Whole release".to_owned(),
             ReleaseKind::Episodes(eps) => {
                 let n = eps.len();
                 let list = compress_ranges(eps.iter().map(|(e, _)| *e));
-                if n == 1 { format!("Episode {list}") } else { format!("{n} episodes ({list})") }
+                if n == 1 {
+                    format!("Episode {list}")
+                } else {
+                    format!("{n} episodes ({list})")
+                }
             }
         }
     }
@@ -104,7 +114,10 @@ impl NyaaRelease {
     /// list its episode range isn't).
     fn episode_count(&self) -> Option<u32> {
         match &self.kind {
-            ReleaseKind::Torrent { episodes: Some((a, b)), .. } => Some(b - a + 1),
+            ReleaseKind::Torrent {
+                episodes: Some((a, b)),
+                ..
+            } => Some(b - a + 1),
             ReleaseKind::Torrent { episodes: None, .. } => None,
             ReleaseKind::Episodes(eps) => Some(eps.len() as u32),
         }
@@ -141,7 +154,10 @@ impl SearchPlan {
             }
         }
         // Seasons only make sense for series; movies and specials are named freely.
-        let is_series = matches!(anime.format.as_deref(), Some("TV" | "TV_SHORT" | "ONA") | None);
+        let is_series = matches!(
+            anime.format.as_deref(),
+            Some("TV" | "TV_SHORT" | "ONA") | None
+        );
         Self {
             queries: names.clone(),
             names,
@@ -151,7 +167,11 @@ impl SearchPlan {
 
     /// A user-typed query: search exactly that, without filtering.
     pub fn custom(query: &str) -> Self {
-        Self { queries: vec![query.trim().to_owned()], names: Vec::new(), season: None }
+        Self {
+            queries: vec![query.trim().to_owned()],
+            names: Vec::new(),
+            season: None,
+        }
     }
 
     pub fn display_query(&self) -> String {
@@ -163,8 +183,17 @@ impl SearchPlan {
 const FILL_IN_GROUPS: usize = 6;
 
 /// Search Nyaa and rank what it finds, best first.
-pub async fn find_releases(client: &reqwest::Client, plan: &SearchPlan, prefer_dual_audio: bool) -> Result<Vec<NyaaRelease>> {
-    let queries: Vec<String> = plan.queries.iter().filter(|q| !q.is_empty()).cloned().collect();
+pub async fn find_releases(
+    client: &reqwest::Client,
+    plan: &SearchPlan,
+    prefer_dual_audio: bool,
+) -> Result<Vec<NyaaRelease>> {
+    let queries: Vec<String> = plan
+        .queries
+        .iter()
+        .filter(|q| !q.is_empty())
+        .cloned()
+        .collect();
     let mut items = Vec::new();
     let mut seen = HashSet::new();
     let mut last_error = None;
@@ -227,17 +256,33 @@ async fn search_all(client: &reqwest::Client, queries: Vec<String>) -> Vec<Resul
         .collect();
     let mut results = Vec::new();
     for task in tasks {
-        results.push(task.await.unwrap_or_else(|e| Err(anyhow::anyhow!("search task failed: {e}"))));
+        results.push(
+            task.await
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("search task failed: {e}"))),
+        );
     }
     results
 }
 
 /// Filter, group and rank search results. Best release first.
-pub fn rank_items(items: Vec<NyaaItem>, plan: &SearchPlan, prefer_dual_audio: bool) -> Vec<NyaaRelease> {
+pub fn rank_items(
+    items: Vec<NyaaItem>,
+    plan: &SearchPlan,
+    prefer_dual_audio: bool,
+) -> Vec<NyaaRelease> {
     let tiers = tiers();
     let mut releases = Vec::new();
     // Single-episode torrents, keyed by everything that makes them "the same release".
-    type Key = (String, String, Option<(u32, u32)>, Option<u32>, Source, bool, bool, bool);
+    type Key = (
+        String,
+        String,
+        Option<(u32, u32)>,
+        Option<u32>,
+        Source,
+        bool,
+        bool,
+        bool,
+    );
     let mut episodic: BTreeMap<Key, Vec<(u32, NyaaItem, Rank)>> = BTreeMap::new();
 
     for item in items {
@@ -277,7 +322,10 @@ pub fn rank_items(items: Vec<NyaaItem>, plan: &SearchPlan, prefer_dual_audio: bo
                 remake: item.remake,
                 trusted: item.trusted,
                 incomplete: false,
-                kind: ReleaseKind::Torrent { episodes: parsed.episodes, item },
+                kind: ReleaseKind::Torrent {
+                    episodes: parsed.episodes,
+                    item,
+                },
             });
         }
     }
@@ -289,7 +337,11 @@ pub fn rank_items(items: Vec<NyaaItem>, plan: &SearchPlan, prefer_dual_audio: bo
         let group = title::parse(&eps[0].1.title)
             .group
             .unwrap_or_else(|| "Unknown group".to_owned());
-        let rank = eps.iter().map(|(_, _, r)| r.clone()).max_by_key(|r| r.score).unwrap();
+        let rank = eps
+            .iter()
+            .map(|(_, _, r)| r.clone())
+            .max_by_key(|r| r.score)
+            .unwrap();
         releases.push(NyaaRelease {
             group,
             rank,
@@ -349,7 +401,9 @@ fn matches_plan(title: &str, plan: &SearchPlan) -> bool {
         return true;
     }
     let padded = format!(" {} ", title::normalize(title));
-    plan.names.iter().any(|n| padded.contains(&format!(" {n} ")))
+    plan.names
+        .iter()
+        .any(|n| padded.contains(&format!(" {n} ")))
 }
 
 fn is_archive(title: &str) -> bool {
@@ -374,7 +428,13 @@ fn compress_ranges(eps: impl IntoIterator<Item = u32>) -> String {
     parts.extend(run);
     parts
         .into_iter()
-        .map(|(a, b)| if a == b { format!("{a:02}") } else { format!("{a:02}–{b:02}") })
+        .map(|(a, b)| {
+            if a == b {
+                format!("{a:02}")
+            } else {
+                format!("{a:02}–{b:02}")
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -417,7 +477,10 @@ mod tests {
             "Sousou no Frieren 2nd Season",
             Some("Frieren: Beyond Journey’s End Season 2"),
         ));
-        assert_eq!(plan.queries, vec!["sousou no frieren", "frieren beyond journeys end"]);
+        assert_eq!(
+            plan.queries,
+            vec!["sousou no frieren", "frieren beyond journeys end"]
+        );
         assert_eq!(plan.season, Some(2));
     }
 
@@ -425,14 +488,38 @@ mod tests {
     fn ranks_by_tier_then_quality_then_coverage() {
         let plan = SearchPlan::for_anime(&anime("Sousou no Frieren 2nd Season", None));
         let items = vec![
-            item(1, "[SubsPlease] Sousou no Frieren S2 (01-10) (1080p) [Batch]", 300),
-            item(2, "[SubsPlease] Sousou no Frieren S2 (01-10) (720p) [Batch]", 500),
-            item(3, "[Erai-raws] Sousou no Frieren 2nd Season - 01 [1080p CR WEBRip HEVC AAC][MultiSub]", 20),
-            item(4, "[Erai-raws] Sousou no Frieren 2nd Season - 02 [1080p CR WEBRip HEVC AAC][MultiSub]", 25),
-            item(5, "[Anime Time] Sousou no Frieren S02 [1080p][HEVC 10bit x265][AAC][Dual-Audio]", 900),
-            item(6, "[SubsPlease] Sousou no Frieren (01-28) (1080p) [Batch]", 1000), // season 1
-            item(7, "[Random] Some Other Show S02 (1080p)", 50),                       // wrong show
-            item(8, "[KOTEX] Sousou no Frieren S2 Subs+Fonts.zip", 50),                // not video
+            item(
+                1,
+                "[SubsPlease] Sousou no Frieren S2 (01-10) (1080p) [Batch]",
+                300,
+            ),
+            item(
+                2,
+                "[SubsPlease] Sousou no Frieren S2 (01-10) (720p) [Batch]",
+                500,
+            ),
+            item(
+                3,
+                "[Erai-raws] Sousou no Frieren 2nd Season - 01 [1080p CR WEBRip HEVC AAC][MultiSub]",
+                20,
+            ),
+            item(
+                4,
+                "[Erai-raws] Sousou no Frieren 2nd Season - 02 [1080p CR WEBRip HEVC AAC][MultiSub]",
+                25,
+            ),
+            item(
+                5,
+                "[Anime Time] Sousou no Frieren S02 [1080p][HEVC 10bit x265][AAC][Dual-Audio]",
+                900,
+            ),
+            item(
+                6,
+                "[SubsPlease] Sousou no Frieren (01-28) (1080p) [Batch]",
+                1000,
+            ), // season 1
+            item(7, "[Random] Some Other Show S02 (1080p)", 50), // wrong show
+            item(8, "[KOTEX] Sousou no Frieren S2 Subs+Fonts.zip", 50), // not video
         ];
         let releases = rank_items(items, &plan, false);
         let summary: Vec<_> = releases
@@ -451,7 +538,9 @@ mod tests {
             ]
         );
         // Erai-raws' two episodes were grouped into one release.
-        let ReleaseKind::Episodes(eps) = &releases[2].kind else { panic!() };
+        let ReleaseKind::Episodes(eps) = &releases[2].kind else {
+            panic!()
+        };
         assert_eq!(eps.iter().map(|(e, _)| *e).collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(releases[2].episodes_label(), "2 episodes (01–02)");
         assert_eq!(releases[2].seeders_label(), "20–25");
@@ -464,7 +553,11 @@ mod tests {
         let plan = SearchPlan::custom("show");
         let mut items = vec![item(1, "[SubsPlease] Show (01-04) (1080p) [Batch]", 300)];
         for ep in 1..=4 {
-            items.push(item(10 + ep, &format!("[Erai-raws] Show - {ep:02} [1080p CR WEBRip HEVC AAC]"), 20));
+            items.push(item(
+                10 + ep,
+                &format!("[Erai-raws] Show - {ep:02} [1080p CR WEBRip HEVC AAC]"),
+                20,
+            ));
         }
         let releases = rank_items(items, &plan, false);
         assert_eq!(releases[0].group, "Erai-raws");
@@ -488,7 +581,10 @@ mod tests {
         // The only usable release wins despite being unranked; unusable ones
         // follow in tier order.
         assert_eq!(releases[0].group, "Nobody");
-        assert_eq!((releases[1].group.as_str(), releases[1].problem()), ("LostYears", Some("No seeders")));
+        assert_eq!(
+            (releases[1].group.as_str(), releases[1].problem()),
+            ("LostYears", Some("No seeders"))
+        );
         assert_eq!(
             (releases[2].group.as_str(), releases[2].problem()),
             ("SubsPlease", Some("Marked as a remake on Nyaa"))
@@ -508,8 +604,13 @@ mod tests {
             false,
         );
         assert_eq!(releases.len(), 1);
-        let ReleaseKind::Episodes(eps) = &releases[0].kind else { panic!() };
-        assert_eq!(eps.iter().map(|(e, i)| (*e, i.id)).collect::<Vec<_>>(), vec![(1, 2), (3, 3)]);
+        let ReleaseKind::Episodes(eps) = &releases[0].kind else {
+            panic!()
+        };
+        assert_eq!(
+            eps.iter().map(|(e, i)| (*e, i.id)).collect::<Vec<_>>(),
+            vec![(1, 2), (3, 3)]
+        );
         assert_eq!(releases[0].episodes_label(), "2 episodes (01, 03)");
     }
 

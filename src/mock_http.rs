@@ -6,6 +6,21 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+/// The web API base URLs (`ANILIST_BASE`, `SEADEX_BASE`, `KITSU_BASE`,
+/// `DOWNLOAD_BASE`) are global: a test pointing them at a mock holds this
+/// exclusively ([`mocked`]), and one using the real sites shares it ([`real`]).
+static NET: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+pub fn mocked() -> std::sync::RwLockWriteGuard<'static, ()> {
+    NET.write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub fn real() -> std::sync::RwLockReadGuard<'static, ()> {
+    NET.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A request as the mock server saw it.
 #[derive(Clone, Debug)]
 pub struct Req {
@@ -17,10 +32,16 @@ pub struct Req {
 
 impl Req {
     pub fn form(&self) -> HashMap<String, String> {
-        url::form_urlencoded::parse(&self.body).into_owned().collect()
+        url::form_urlencoded::parse(&self.body)
+            .into_owned()
+            .collect()
     }
     pub fn query(&self) -> HashMap<String, String> {
-        url::Url::parse(&format!("http://x{}", self.target)).unwrap().query_pairs().into_owned().collect()
+        url::Url::parse(&format!("http://x{}", self.target))
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect()
     }
 }
 
@@ -33,12 +54,20 @@ pub struct Resp {
 impl Resp {
     /// Raw bytes (a file download).
     pub fn binary(status: u16, body: Vec<u8>) -> Self {
-        Resp { status, headers: vec![("Content-Type".into(), "application/octet-stream".into())], body }
+        Resp {
+            status,
+            headers: vec![("Content-Type".into(), "application/octet-stream".into())],
+            body,
+        }
     }
 }
 
 pub fn reply(status: u16, body: serde_json::Value) -> Resp {
-    Resp { status, headers: vec![], body: body.to_string().into_bytes() }
+    Resp {
+        status,
+        headers: vec![],
+        body: body.to_string().into_bytes(),
+    }
 }
 
 /// A tiny HTTP/1.1 server standing in for Google: one request per
@@ -49,7 +78,9 @@ pub async fn mock(handler: impl Fn(&Req) -> Resp + Send + Sync + 'static) -> Str
     let handler = Arc::new(handler);
     tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
             let handler = handler.clone();
             tokio::spawn(async move {
                 let mut data = Vec::new();
@@ -67,12 +98,18 @@ pub async fn mock(handler: impl Fn(&Req) -> Resp + Send + Sync + 'static) -> Str
                 let head = String::from_utf8_lossy(&data[..head_end]).into_owned();
                 let mut lines = head.lines();
                 let mut first = lines.next().unwrap().split_whitespace();
-                let (method, target) = (first.next().unwrap().to_owned(), first.next().unwrap().to_owned());
+                let (method, target) = (
+                    first.next().unwrap().to_owned(),
+                    first.next().unwrap().to_owned(),
+                );
                 let headers: HashMap<String, String> = lines
                     .filter_map(|l| l.split_once(": "))
                     .map(|(k, v)| (k.to_ascii_lowercase(), v.to_owned()))
                     .collect();
-                let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let len: usize = headers
+                    .get("content-length")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
                 while data.len() < head_end + len {
                     let n = stream.read(&mut buf).await.unwrap_or(0);
                     if n == 0 {
@@ -80,10 +117,25 @@ pub async fn mock(handler: impl Fn(&Req) -> Resp + Send + Sync + 'static) -> Str
                     }
                     data.extend_from_slice(&buf[..n]);
                 }
-                let req = Req { method, target, headers, body: data[head_end..].to_vec() };
+                let req = Req {
+                    method,
+                    target,
+                    headers,
+                    body: data[head_end..].to_vec(),
+                };
                 let resp = handler(&req);
-                let mut out = format!("HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n", resp.status, resp.body.len());
-                if resp.status < 300 && !resp.body.is_empty() && !resp.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+                let mut out = format!(
+                    "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+                    resp.status,
+                    resp.body.len()
+                );
+                if resp.status < 300
+                    && !resp.body.is_empty()
+                    && !resp
+                        .headers
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                {
                     out.push_str("Content-Type: application/json\r\n");
                 }
                 for (k, v) in &resp.headers {

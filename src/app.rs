@@ -10,16 +10,18 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use eframe::egui::{self, Align, Key, Layout, RichText, Sense, TextWrapMode, Ui, vec2};
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
+use eframe::egui::{self, Align, Key, Layout, RichText, Sense, TextWrapMode, Ui, vec2};
 use egui_extras::{Column, TableBuilder};
 use librqbit::TorrentStatsState;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{Engine, Listing, Source, TorrentHandle, TorrentId, info_hash_of, sanitize_folder_name};
+use crate::engine::{
+    Engine, Listing, Source, TorrentHandle, TorrentId, info_hash_of, sanitize_folder_name,
+};
 use crate::fallback::{self, NyaaRelease, ReleaseKind, SearchPlan};
-use crate::nyaa::{self, NyaaItem};
 use crate::library::{AnimeRef, Library};
+use crate::nyaa::{self, NyaaItem};
 use crate::playlist::{Item, Playlist};
 use crate::remux::Analysis;
 use crate::seadex::{self, Anime, Release};
@@ -34,9 +36,9 @@ mod remux_page;
 mod usenet_ui;
 mod vpn_ui;
 use debrid_ui::DebridState;
+use drive_ui::DriveState;
 use handover::Handover;
 use library_ui::{LibraryState, PagesState};
-use drive_ui::DriveState;
 use playlist_page::PlaylistPage;
 use remux_page::RemuxPage;
 use usenet_ui::UsenetState;
@@ -45,7 +47,9 @@ use vpn_ui::VpnState;
 /// How many Nyaa releases to list.
 const MAX_NYAA_ROWS: usize = 40;
 
-const VIDEO_EXTENSIONS: &[&str] = &["mkv", "mp4", "m4v", "avi", "webm", "mov", "wmv", "ts", "m2ts"];
+const VIDEO_EXTENSIONS: &[&str] = &[
+    "mkv", "mp4", "m4v", "avi", "webm", "mov", "wmv", "ts", "m2ts",
+];
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -88,41 +92,132 @@ fn default_library_dir() -> PathBuf {
 
 /// Results of background work, sent back to the UI thread.
 enum Msg {
-    Engine { seq: u64, result: Result<Arc<Engine>, String> },
+    Engine {
+        seq: u64,
+        result: Result<Arc<Engine>, String>,
+    },
     VpnFixDone(Result<(), String>),
-    SearchDone { seq: u64, result: Result<Vec<Anime>, String> },
-    ListingDone { seq: u64, subtitle: String, result: Result<Listing, String>, nzbs: Vec<NzbLink> },
-    NyaaDone { seq: u64, result: Result<Vec<NyaaRelease>, String> },
+    SearchDone {
+        seq: u64,
+        result: Result<Vec<Anime>, String>,
+    },
+    ListingDone {
+        seq: u64,
+        subtitle: String,
+        result: Result<Listing, String>,
+        nzbs: Vec<NzbLink>,
+    },
+    NyaaDone {
+        seq: u64,
+        result: Result<Vec<NyaaRelease>, String>,
+    },
     DownloadStarted(Result<String, String>),
     FolderPicked(Option<PathBuf>),
     LibraryFolderPicked(Option<PathBuf>),
-    RemuxProbed { seq: u64, result: Result<Analysis, String> },
-    RemuxTitle { seq: u64, found: Option<AnimeRef> },
-    RemuxSamples { seq: u64, samples: Vec<(crate::remux::TrackSig, crate::remux::SubtitleSample)> },
-    RemuxProgress { seq: u64, index: usize, fraction: f32 },
-    RemuxFileDone { seq: u64, index: usize, result: Result<(), String> },
-    RemuxFinished { seq: u64 },
+    RemuxProbed {
+        seq: u64,
+        result: Result<Analysis, String>,
+    },
+    RemuxTitle {
+        seq: u64,
+        found: Option<AnimeRef>,
+    },
+    RemuxSamples {
+        seq: u64,
+        samples: Vec<(crate::remux::TrackSig, crate::remux::SubtitleSample)>,
+    },
+    RemuxProgress {
+        seq: u64,
+        index: usize,
+        fraction: f32,
+    },
+    RemuxFileDone {
+        seq: u64,
+        index: usize,
+        result: Result<(), String>,
+    },
+    RemuxFinished {
+        seq: u64,
+    },
     RemuxFolderPicked(Option<PathBuf>),
-    PlaylistAdd { items: Vec<Item>, errors: Vec<String> },
-    PlaylistExportProgress { seq: u64, fraction: f32 },
-    PlaylistExportDone { seq: u64, result: Result<PathBuf, String> },
+    PlaylistAdd {
+        items: Vec<Item>,
+        errors: Vec<String>,
+    },
+    PlaylistExportProgress {
+        seq: u64,
+        fraction: f32,
+    },
+    PlaylistExportDone {
+        seq: u64,
+        result: Result<PathBuf, String>,
+    },
     PlaylistFolderPicked(Option<PathBuf>),
     DriveClientFile(Result<crate::gdrive::OAuthClient, String>),
-    DriveSignInUrl { seq: u64, url: String },
-    DriveSignedIn { seq: u64, result: Result<(String, String), String> },
-    DriveFolders { seq: u64, result: Result<Vec<crate::gdrive::Entry>, String>, expired: bool },
-    DriveLinkChecked { result: Result<crate::gdrive::Folder, String>, expired: bool },
-    DriveUploadProgress { seq: u64, fraction: f32 },
-    DriveUploadDone { seq: u64, result: Result<crate::gdrive::Uploaded, String>, expired: bool },
-    DebridAccount { seq: u64, provider: crate::debrid::Provider, result: Result<crate::debrid::Account, String> },
-    NzbLookup { hash: String, links: Vec<NzbLink> },
-    Moved { key: String, name: String, result: Result<Vec<(PathBuf, PathBuf)>, String> },
-    DefaultsApplied { anilist_id: u64, rel: String, applied: crate::library::Applied },
+    DriveSignInUrl {
+        seq: u64,
+        url: String,
+    },
+    DriveSignedIn {
+        seq: u64,
+        result: Result<(String, String), String>,
+    },
+    DriveFolders {
+        seq: u64,
+        result: Result<Vec<crate::gdrive::Entry>, String>,
+        expired: bool,
+    },
+    DriveLinkChecked {
+        result: Result<crate::gdrive::Folder, String>,
+        expired: bool,
+    },
+    DriveUploadProgress {
+        seq: u64,
+        fraction: f32,
+    },
+    DriveUploadDone {
+        seq: u64,
+        result: Result<crate::gdrive::Uploaded, String>,
+        expired: bool,
+    },
+    DebridAccount {
+        seq: u64,
+        provider: crate::debrid::Provider,
+        result: Result<crate::debrid::Account, String>,
+    },
+    NzbLookup {
+        hash: String,
+        links: Vec<NzbLink>,
+    },
+    Moved {
+        key: String,
+        name: String,
+        result: Result<Vec<(PathBuf, PathBuf)>, String>,
+    },
+    DefaultsApplied {
+        anilist_id: u64,
+        rel: String,
+        applied: crate::library::Applied,
+    },
     DefaultsDone,
     HandedOver(Result<String, String>),
-    Details { id: u64, result: Result<crate::library::Details, String> },
-    SeriesEntry { id: u64, result: Result<Option<seadex::Entry>, String> },
-    UsenetChecked { id: u64, seq: u64, result: Result<(), String> },
+    ReleaseFiles {
+        id: u64,
+        result: Result<Listing, String>,
+    },
+    Details {
+        id: u64,
+        result: Result<Box<crate::library::Details>, String>,
+    },
+    SeriesEntry {
+        id: u64,
+        result: Result<Option<seadex::Entry>, String>,
+    },
+    UsenetChecked {
+        id: u64,
+        seq: u64,
+        result: Result<(), String>,
+    },
     Info(String),
     Error(String),
 }
@@ -138,8 +233,14 @@ enum Action {
     EditFiles(TorrentHandle),
     Pause(TorrentHandle),
     Resume(TorrentHandle),
-    Remove { id: TorrentId, delete_files: bool },
-    AskDelete { id: TorrentId, name: String },
+    Remove {
+        id: TorrentId,
+        delete_files: bool,
+    },
+    AskDelete {
+        id: TorrentId,
+        name: String,
+    },
     OpenFolder(PathBuf),
     PickFolder,
     PickLibraryFolder,
@@ -151,7 +252,10 @@ enum Action {
     OpenPlaylist,
     PlaylistAddFiles,
     PlaylistRemove(usize),
-    PlaylistMove { from: usize, to: usize },
+    PlaylistMove {
+        from: usize,
+        to: usize,
+    },
     PlaylistClear,
     PlaylistPickFolder,
     StartExport,
@@ -173,15 +277,27 @@ enum Action {
     DebridCheck,
     DebridPause(u64),
     DebridResume(u64),
-    DebridRemove { id: u64, delete_files: bool },
-    DebridAskDelete { id: u64, name: String },
+    DebridRemove {
+        id: u64,
+        delete_files: bool,
+    },
+    DebridAskDelete {
+        id: u64,
+        name: String,
+    },
     DebridEditFiles(u64),
     DebridOpenRemux(u64),
     VpnFix(crate::vpn::Fix),
     UsenetPause(u64),
     UsenetResume(u64),
-    UsenetRemove { id: u64, delete_files: bool },
-    UsenetAskDelete { id: u64, name: String },
+    UsenetRemove {
+        id: u64,
+        delete_files: bool,
+    },
+    UsenetAskDelete {
+        id: u64,
+        name: String,
+    },
     UsenetEditFiles(u64),
     UsenetOpenRemux(u64),
     UsenetOpenProviders,
@@ -190,11 +306,21 @@ enum Action {
     GoDownloads,
     OpenSeries(u64),
     AddToLibrary,
-    RemoveSeries { id: u64, delete_files: bool },
+    RemoveSeries {
+        id: u64,
+        delete_files: bool,
+    },
     AskRemoveSeries(u64),
     OpenLanguages,
-    SetSeriesPrefs { id: u64, prefs: Option<crate::prefs::LangPrefs> },
-    RemuxLibrary { id: u64, files: Vec<PathBuf> },
+    SetSeriesPrefs {
+        id: u64,
+        prefs: Option<crate::prefs::LangPrefs>,
+    },
+    RemuxLibrary {
+        id: u64,
+        files: Vec<PathBuf>,
+    },
+    DownloadEpisodes(Vec<u32>),
 }
 
 /// What the delete confirmation is about.
@@ -318,16 +444,37 @@ struct FilesPage {
 
 impl FilesPage {
     fn new(listing: Listing, back: Option<AnimePage>, subtitle: String) -> Self {
-        let checked = match listing.existing.as_ref().and_then(|e| e.only_files.as_ref()) {
-            Some(only) => listing.files.iter().map(|f| only.contains(&f.index)).collect(),
+        let checked = match listing
+            .existing
+            .as_ref()
+            .and_then(|e| e.only_files.as_ref())
+        {
+            Some(only) => listing
+                .files
+                .iter()
+                .map(|f| only.contains(&f.index))
+                .collect(),
             None => vec![true; listing.files.len()],
         };
         let rows = listing
             .files
             .iter()
-            .map(|f| Row { label: f.path.clone(), len: f.len, seeders: None })
+            .map(|f| Row {
+                label: f.path.clone(),
+                len: f.len,
+                seeders: None,
+            })
             .collect();
-        Self { back, subtitle, picker: Picker::Files(listing), rows, checked, filter: String::new(), nzbs: Vec::new(), folder: None }
+        Self {
+            back,
+            subtitle,
+            picker: Picker::Files(listing),
+            rows,
+            checked,
+            filter: String::new(),
+            nzbs: Vec::new(),
+            folder: None,
+        }
     }
 
     fn episodes(
@@ -349,7 +496,11 @@ impl FilesPage {
         Self {
             back,
             subtitle,
-            picker: Picker::Episodes { items, title, folder },
+            picker: Picker::Episodes {
+                items,
+                title,
+                folder,
+            },
             rows,
             checked,
             filter: String::new(),
@@ -378,7 +529,9 @@ impl FilesPage {
 
     fn output_folder(&self, library_dir: &Path) -> PathBuf {
         match &self.picker {
-            Picker::Files(listing) if listing.existing.is_some() => listing.output_folder(library_dir),
+            Picker::Files(listing) if listing.existing.is_some() => {
+                listing.output_folder(library_dir)
+            }
             _ if self.folder.is_some() => self.folder.clone().unwrap(),
             Picker::Files(listing) => listing.output_folder(library_dir),
             Picker::Episodes { folder, .. } => library_dir.join(folder),
@@ -387,20 +540,33 @@ impl FilesPage {
 
     /// Checked positions in `rows`.
     fn selected(&self) -> Vec<usize> {
-        self.checked.iter().enumerate().filter(|(_, c)| **c).map(|(i, _)| i).collect()
+        self.checked
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c)
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Torrent file indices to download (file pickers only).
     fn selected_indices(&self) -> Vec<usize> {
         match &self.picker {
-            Picker::Files(listing) => self.selected().into_iter().map(|i| listing.files[i].index).collect(),
+            Picker::Files(listing) => self
+                .selected()
+                .into_iter()
+                .map(|i| listing.files[i].index)
+                .collect(),
             Picker::Episodes { .. } => Vec::new(),
         }
     }
 
     /// Positions in `rows` that match the filter.
     fn visible(&self) -> Vec<usize> {
-        let terms: Vec<String> = self.filter.split_whitespace().map(str::to_lowercase).collect();
+        let terms: Vec<String> = self
+            .filter
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
         self.rows
             .iter()
             .enumerate()
@@ -475,7 +641,11 @@ pub struct App {
 impl App {
     /// `state_dir` holds the torrent engine's state (which torrents are in
     /// the session and how far along they are).
-    pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle, state_dir: PathBuf) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        rt: tokio::runtime::Handle,
+        state_dir: PathBuf,
+    ) -> Self {
         let settings: Settings = cc
             .storage
             .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
@@ -489,7 +659,10 @@ impl App {
         let debrid = DebridState::load(&state_dir, rt.clone(), cc.egui_ctx.clone());
         let vpn = VpnState::load(&state_dir, &rt, cc.egui_ctx.clone());
         let usenet = UsenetState::load(&state_dir, rt.clone(), cc.egui_ctx.clone(), http.clone());
-        let library = Library::load(state_dir.join("library.json"), &expand_home(&settings.library_dir));
+        let library = Library::load(
+            state_dir.join("library.json"),
+            &expand_home(&settings.library_dir),
+        );
 
         let mut app = Self {
             rt,
@@ -518,7 +691,10 @@ impl App {
             remux_seq: 0,
             playlist: Playlist::load(state_dir.join("playlist.json")),
             playlist_seq: 0,
-            drive: DriveState::load(&state_dir, concat!("seadex-downloader/", env!("CARGO_PKG_VERSION"))),
+            drive: DriveState::load(
+                &state_dir,
+                concat!("seadex-downloader/", env!("CARGO_PKG_VERSION")),
+            ),
             debrid,
             vpn,
             usenet,
@@ -544,7 +720,10 @@ impl App {
             let provider = self.debrid.config.provider;
             return match self.debrid.config.key(provider) {
                 Some(_) => Ok(()),
-                None => Err(format!("Add your {} API key in Settings first.", provider.name())),
+                None => Err(format!(
+                    "Add your {} API key in Settings first.",
+                    provider.name()
+                )),
             };
         }
         if let Some(reason) = &self.vpn.waiting {
@@ -554,7 +733,9 @@ impl App {
             EngineState::Ready(_) => Ok(()),
             EngineState::Failed(_) => Err("The torrent engine failed to start.".into()),
             EngineState::WaitingForVpn(_) => Err("Connecting to the VPN…".into()),
-            EngineState::Starting | EngineState::Off => Err("Waiting for the torrent engine…".into()),
+            EngineState::Starting | EngineState::Off => {
+                Err("Waiting for the torrent engine…".into())
+            }
         }
     }
 
@@ -586,7 +767,10 @@ impl App {
     }
 
     fn set_info(&mut self, text: impl Into<String>) {
-        self.status = Some(Status { text: text.into(), error: false });
+        self.status = Some(Status {
+            text: text.into(),
+            error: false,
+        });
     }
 
     fn set_error(&mut self, text: impl Into<String>) {
@@ -596,7 +780,11 @@ impl App {
     }
 
     fn home_or_results(&self) -> Page {
-        if self.last_query.is_empty() { Page::Home } else { Page::Results }
+        if self.last_query.is_empty() {
+            Page::Home
+        } else {
+            Page::Results
+        }
     }
 
     /// Forget any in-flight torrent fetch, so its result can't land on a different page.
@@ -626,7 +814,12 @@ impl App {
                         Err(e) => self.set_error(e),
                     }
                 }
-                Msg::ListingDone { seq, subtitle, result, nzbs } => {
+                Msg::ListingDone {
+                    seq,
+                    subtitle,
+                    result,
+                    nzbs,
+                } => {
                     if seq != self.listing_seq {
                         continue;
                     }
@@ -634,9 +827,12 @@ impl App {
                     match result {
                         Ok(listing) => {
                             if matches!(self.page, Page::Anime(_))
-                                && let Page::Anime(ap) = std::mem::replace(&mut self.page, Page::Home)
+                                && let Page::Anime(ap) =
+                                    std::mem::replace(&mut self.page, Page::Home)
                             {
-                                let folder = self.library.folder_for(&new_series(&ap.anime), &self.library_dir());
+                                let folder = self
+                                    .library
+                                    .folder_for(&new_series(&ap.anime), &self.library_dir());
                                 let mut page = FilesPage::new(listing, Some(ap), subtitle);
                                 page.nzbs = nzbs;
                                 page.folder = Some(folder);
@@ -647,7 +843,12 @@ impl App {
                     }
                 }
                 Msg::NyaaDone { seq, result } => {
-                    let Page::Anime(AnimePage { nyaa: Some(search), .. }) = &mut self.page else { continue };
+                    let Page::Anime(AnimePage {
+                        nyaa: Some(search), ..
+                    }) = &mut self.page
+                    else {
+                        continue;
+                    };
                     if search.seq != seq {
                         continue;
                     }
@@ -672,7 +873,8 @@ impl App {
                         Ok(name) => {
                             self.set_info(format!("Downloading {name}"));
                             if matches!(self.page, Page::Files(_))
-                                && let Page::Files(fp) = std::mem::replace(&mut self.page, Page::Home)
+                                && let Page::Files(fp) =
+                                    std::mem::replace(&mut self.page, Page::Home)
                             {
                                 self.page = match fp.back {
                                     Some(ap) => Page::Anime(ap),
@@ -712,11 +914,18 @@ impl App {
                 | Msg::DriveUploadProgress { .. }
                 | Msg::DriveUploadDone { .. }) => self.handle_drive_msg(msg),
                 msg @ Msg::DebridAccount { .. } => self.handle_debrid_msg(msg),
-                msg @ (Msg::NzbLookup { .. } | Msg::UsenetChecked { .. }) => self.handle_usenet_msg(msg),
+                msg @ (Msg::NzbLookup { .. } | Msg::UsenetChecked { .. }) => {
+                    self.handle_usenet_msg(msg)
+                }
                 Msg::Moved { key, name, result } => self.handle_moved(key, name, result),
-                Msg::DefaultsApplied { anilist_id, rel, applied } => self.handle_defaults_applied(anilist_id, rel, applied),
+                Msg::DefaultsApplied {
+                    anilist_id,
+                    rel,
+                    applied,
+                } => self.handle_defaults_applied(anilist_id, rel, applied),
                 Msg::DefaultsDone => self.defaults_done(),
                 Msg::HandedOver(result) => self.handled_over(result),
+                Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
             }
@@ -738,9 +947,15 @@ impl App {
                 self.cancel_listing();
                 self.page = match std::mem::replace(&mut self.page, Page::Home) {
                     Page::Files(FilesPage { back: Some(ap), .. }) => Page::Anime(ap),
-                    Page::Anime(AnimePage { from_library: true, .. }) => Page::Home,
+                    Page::Anime(AnimePage {
+                        from_library: true, ..
+                    }) => Page::Home,
                     Page::Remux(RemuxPage { back: Some(ap), .. }) => Page::Anime(ap),
-                    Page::Files(_) | Page::Anime(_) | Page::Remux(_) | Page::Playlist(_) | Page::Downloads => self.home_or_results(),
+                    Page::Files(_)
+                    | Page::Anime(_)
+                    | Page::Remux(_)
+                    | Page::Playlist(_)
+                    | Page::Downloads => self.home_or_results(),
                     other => other,
                 };
             }
@@ -785,7 +1000,9 @@ impl App {
                     }
                 });
             }
-            Action::AskDelete { id, name } => self.confirm_delete = Some((DeleteTarget::Torrent(id), name)),
+            Action::AskDelete { id, name } => {
+                self.confirm_delete = Some((DeleteTarget::Torrent(id), name))
+            }
             Action::OpenFolder(path) => {
                 if let Err(e) = open_folder(&path) {
                     self.set_error(format!("Could not open {}: {e}", path.display()));
@@ -822,7 +1039,9 @@ impl App {
             Action::UsenetPause(id) => self.usenet.manager.pause(id),
             Action::UsenetResume(id) => self.usenet.manager.resume(id),
             Action::UsenetRemove { id, delete_files } => self.usenet_remove(id, delete_files),
-            Action::UsenetAskDelete { id, name } => self.confirm_delete = Some((DeleteTarget::Usenet(id), name)),
+            Action::UsenetAskDelete { id, name } => {
+                self.confirm_delete = Some((DeleteTarget::Usenet(id), name))
+            }
             Action::UsenetEditFiles(id) => self.usenet_edit_files(id),
             Action::UsenetOpenRemux(id) => self.usenet_open_remux(id),
             Action::UsenetOpenProviders => self.usenet.dialog = Some(Default::default()),
@@ -846,18 +1065,29 @@ impl App {
             Action::OpenLanguages => self.pages.languages = Some(self.settings.prefs.clone()),
             Action::SetSeriesPrefs { id, prefs } => self.set_series_prefs(id, prefs),
             Action::RemuxLibrary { id, files } => self.remux_library(id, files),
+            Action::DownloadEpisodes(episodes) => self.download_episodes(episodes),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),
             Action::DebridRemove { id, delete_files } => self.debrid_remove(id, delete_files),
-            Action::DebridAskDelete { id, name } => self.confirm_delete = Some((DeleteTarget::Debrid(id), name)),
+            Action::DebridAskDelete { id, name } => {
+                self.confirm_delete = Some((DeleteTarget::Debrid(id), name))
+            }
             Action::DebridEditFiles(id) => self.debrid_edit_files(id),
             Action::DebridOpenRemux(id) => self.debrid_open_remux(id),
             Action::PickLibraryFolder => {
                 let start = self.library_dir();
-                let start = start.ancestors().find(|p| p.is_dir()).map(Path::to_owned).unwrap_or(start);
+                let start = start
+                    .ancestors()
+                    .find(|p| p.is_dir())
+                    .map(Path::to_owned)
+                    .unwrap_or(start);
                 self.spawn(async move {
-                    let picked = rfd::AsyncFileDialog::new().set_title("Library folder").set_directory(&start).pick_folder().await;
+                    let picked = rfd::AsyncFileDialog::new()
+                        .set_title("Library folder")
+                        .set_directory(&start)
+                        .pick_folder()
+                        .await;
                     Msg::LibraryFolderPicked(picked.map(|f| f.path().to_owned()))
                 });
             }
@@ -866,7 +1096,11 @@ impl App {
                     Page::Files(fp) => fp.output_folder(&self.library_dir()),
                     _ => self.library_dir(),
                 };
-                let start = start.ancestors().find(|p| p.is_dir()).map(Path::to_owned).unwrap_or(start);
+                let start = start
+                    .ancestors()
+                    .find(|p| p.is_dir())
+                    .map(Path::to_owned)
+                    .unwrap_or(start);
                 self.spawn(async move {
                     let picked = rfd::AsyncFileDialog::new()
                         .set_title("Save this download in")
@@ -884,10 +1118,18 @@ impl App {
         let dual = self.prefer_dual_audio(anime.anilist_id);
         let chosen = anime.entry.as_ref().and_then(|e| e.best_nyaa(dual));
         // Nothing on SeaDex to download: find the best release on Nyaa instead.
-        let nyaa = chosen.is_none().then(|| NyaaSearch::new(SearchPlan::for_anime(&anime)));
+        let nyaa = chosen
+            .is_none()
+            .then(|| NyaaSearch::new(SearchPlan::for_anime(&anime)));
         let search_now = nyaa.is_some();
         self.cancel_listing();
-        self.page = Page::Anime(AnimePage { anime, chosen, nyaa, from_library, entry_loading: false });
+        self.page = Page::Anime(AnimePage {
+            anime,
+            chosen,
+            nyaa,
+            from_library,
+            entry_loading: false,
+        });
         if search_now {
             self.search_nyaa();
         }
@@ -896,7 +1138,11 @@ impl App {
     /// Whether to pick dual-audio releases for an anime: the setting, or
     /// languages that want a dub.
     fn prefer_dual_audio(&self, anilist_id: u64) -> bool {
-        let prefs = self.library.find(anilist_id).and_then(|s| s.prefs.as_ref()).unwrap_or(&self.settings.prefs);
+        let prefs = self
+            .library
+            .find(anilist_id)
+            .and_then(|s| s.prefs.as_ref())
+            .unwrap_or(&self.settings.prefs);
         self.settings.prefer_dual_audio || prefs.wants_dub()
     }
 
@@ -922,7 +1168,12 @@ impl App {
     fn search_nyaa(&mut self) {
         let Page::Anime(ap) = &self.page else { return };
         let prefer_dual_audio = self.prefer_dual_audio(ap.anime.anilist_id);
-        let Page::Anime(AnimePage { nyaa: Some(search), .. }) = &mut self.page else { return };
+        let Page::Anime(AnimePage {
+            nyaa: Some(search), ..
+        }) = &mut self.page
+        else {
+            return;
+        };
         if search.query.trim().is_empty() {
             return;
         }
@@ -956,19 +1207,28 @@ impl App {
         let Page::Anime(ap) = &self.page else { return };
         let (nyaa_id, info_hash, subtitle) = match &ap.nyaa {
             Some(search) => {
-                let Some(release) = search.chosen.and_then(|i| search.releases.get(i)) else { return };
+                let Some(release) = search.chosen.and_then(|i| search.releases.get(i)) else {
+                    return;
+                };
                 let subtitle = nyaa_release_label(release);
                 match &release.kind {
-                    ReleaseKind::Torrent { item, .. } => (item.id, valid_info_hash(&item.info_hash), subtitle),
+                    ReleaseKind::Torrent { item, .. } => {
+                        (item.id, valid_info_hash(&item.info_hash), subtitle)
+                    }
                     ReleaseKind::Episodes(items) => {
                         let items = items.clone();
                         let group = release.group.clone();
-                        let Page::Anime(ap) = std::mem::replace(&mut self.page, Page::Home) else { unreachable!() };
+                        let Page::Anime(ap) = std::mem::replace(&mut self.page, Page::Home) else {
+                            unreachable!()
+                        };
                         let title = format!("{} · {group}", ap.anime.title);
                         let folder = sanitize_folder_name(&format!("{} [{group}]", ap.anime.title));
                         self.cancel_listing();
-                        let series_folder = self.library.folder_for(&new_series(&ap.anime), &self.library_dir());
-                        let mut page = FilesPage::episodes(items, title, folder, Some(ap), subtitle);
+                        let series_folder = self
+                            .library
+                            .folder_for(&new_series(&ap.anime), &self.library_dir());
+                        let mut page =
+                            FilesPage::episodes(items, title, folder, Some(ap), subtitle);
                         page.folder = Some(series_folder);
                         self.page = Page::Files(page);
                         return;
@@ -976,18 +1236,35 @@ impl App {
                 }
             }
             None => {
-                let Some(release) = chosen_release(ap) else { return };
+                let Some(release) = chosen_release(ap) else {
+                    return;
+                };
                 let Some(id) = release.nyaa_id() else { return };
-                (id, release.info_hash_hex().map(str::to_owned), release_label(release))
+                (
+                    id,
+                    release.info_hash_hex().map(str::to_owned),
+                    release_label(release),
+                )
             }
         };
         let client = self.http.clone();
         // With a Usenet provider, a release on Usenet comes from there.
         let usenet = self.usenet.active().then(|| {
-            let cached = info_hash.as_deref().and_then(|h| self.usenet.links(h)).map(<[NzbLink]>::to_vec);
-            (self.usenet.indexers.clone(), self.usenet.manager.clone(), cached)
+            let cached = info_hash
+                .as_deref()
+                .and_then(|h| self.usenet.links(h))
+                .map(<[NzbLink]>::to_vec);
+            (
+                self.usenet.indexers.clone(),
+                self.usenet.manager.clone(),
+                cached,
+            )
         });
-        let debrid = self.debrid.config.enabled.then(|| self.debrid.manager.clone());
+        let debrid = self
+            .debrid
+            .config
+            .enabled
+            .then(|| self.debrid.manager.clone());
         let engine = self.engine();
 
         self.listing_seq += 1;
@@ -1011,54 +1288,82 @@ impl App {
                     let result: anyhow::Result<Listing> = async {
                         let bytes = nyaa::fetch_torrent(&client, nyaa_id).await?;
                         let mut listing = crate::engine::listing_from_bytes(bytes)?;
-                        listing.existing = info_hash_of(&listing.torrent_bytes).and_then(|h| usenet.existing(&h));
+                        listing.existing =
+                            info_hash_of(&listing.torrent_bytes).and_then(|h| usenet.existing(&h));
                         Ok(listing)
                     }
                     .await;
-                    return Msg::ListingDone { seq, subtitle, result: result.map_err(failed), nzbs: links };
+                    return Msg::ListingDone {
+                        seq,
+                        subtitle,
+                        result: result.map_err(failed),
+                        nzbs: links,
+                    };
                 }
             }
             let result: anyhow::Result<Listing> = match (debrid, engine) {
                 // No BitTorrent: read the .torrent file here.
-                (Some(manager), _) => async {
-                    let bytes = nyaa::fetch_torrent(&client, nyaa_id)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e:#} (debrid downloads need the .torrent file)"))?;
-                    let mut listing = crate::engine::listing_from_bytes(bytes)?;
-                    listing.existing = info_hash_of(&listing.torrent_bytes).and_then(|h| manager.existing(&h));
-                    Ok(listing)
+                (Some(manager), _) => {
+                    async {
+                        let bytes = nyaa::fetch_torrent(&client, nyaa_id).await.map_err(|e| {
+                            anyhow::anyhow!("{e:#} (debrid downloads need the .torrent file)")
+                        })?;
+                        let mut listing = crate::engine::listing_from_bytes(bytes)?;
+                        listing.existing =
+                            info_hash_of(&listing.torrent_bytes).and_then(|h| manager.existing(&h));
+                        Ok(listing)
+                    }
+                    .await
                 }
-                .await,
-                (None, Some(engine)) => async {
-                    let source = match nyaa::fetch_torrent(&client, nyaa_id).await {
-                        Ok(bytes) => Source::TorrentFile(bytes),
-                        Err(e) => match info_hash {
-                            Some(hash) => {
-                                tracing::warn!("{e:#}; trying the magnet link instead");
-                                Source::Magnet(nyaa::magnet(&hash))
-                            }
-                            None => return Err(e),
-                        },
-                    };
-                    engine.inspect(source).await
+                (None, Some(engine)) => {
+                    async {
+                        let source = match nyaa::fetch_torrent(&client, nyaa_id).await {
+                            Ok(bytes) => Source::TorrentFile(bytes),
+                            Err(e) => match info_hash {
+                                Some(hash) => {
+                                    tracing::warn!("{e:#}; trying the magnet link instead");
+                                    Source::Magnet(nyaa::magnet(&hash))
+                                }
+                                None => return Err(e),
+                            },
+                        };
+                        engine.inspect(source).await
+                    }
+                    .await
                 }
-                .await,
-                (None, None) => Err(anyhow::anyhow!("this release isn't on Usenet, and the torrent engine isn't ready")),
+                (None, None) => Err(anyhow::anyhow!(
+                    "this release isn't on Usenet, and the torrent engine isn't ready"
+                )),
             };
-            Msg::ListingDone { seq, subtitle, result: result.map_err(failed), nzbs: Vec::new() }
+            Msg::ListingDone {
+                seq,
+                subtitle,
+                result: result.map_err(failed),
+                nzbs: Vec::new(),
+            }
         });
     }
 
     /// For a picker of one torrent per episode, with Usenet set up: each
     /// episode's NZBs (`None` while being looked up), in row order.
     fn episode_nzbs(&self, fp: &FilesPage) -> Option<Vec<Option<&[NzbLink]>>> {
-        let Picker::Episodes { items, .. } = &fp.picker else { return None };
-        self.usenet.active().then(|| items.iter().map(|(_, i)| self.usenet.links(&i.info_hash)).collect())
+        let Picker::Episodes { items, .. } = &fp.picker else {
+            return None;
+        };
+        self.usenet.active().then(|| {
+            items
+                .iter()
+                .map(|(_, i)| self.usenet.links(&i.info_hash))
+                .collect()
+        })
     }
 
     /// Whether the release on the files page downloads from Usenet.
     fn via_usenet(&self, fp: &FilesPage) -> bool {
-        matches!(fp.picker, Picker::Files(_)) && !fp.nzbs.is_empty() && self.usenet.active() && !fp.existing()
+        matches!(fp.picker, Picker::Files(_))
+            && !fp.nzbs.is_empty()
+            && self.usenet.active()
+            && !fp.existing()
     }
 
     fn start_download(&mut self) {
@@ -1071,8 +1376,13 @@ impl App {
         let output_folder = fp.output_folder(&self.library_dir());
         if let Some(ap) = &fp.back {
             let hashes: Vec<String> = match &fp.picker {
-                Picker::Files(listing) => info_hash_of(&listing.torrent_bytes).into_iter().collect(),
-                Picker::Episodes { items, .. } => selected.iter().map(|&i| items[i].1.info_hash.clone()).collect(),
+                Picker::Files(listing) => {
+                    info_hash_of(&listing.torrent_bytes).into_iter().collect()
+                }
+                Picker::Episodes { items, .. } => selected
+                    .iter()
+                    .map(|&i| items[i].1.info_hash.clone())
+                    .collect(),
             };
             // Downloading something adds its series to the library.
             let new = new_series(&ap.anime);
@@ -1080,133 +1390,182 @@ impl App {
             self.library.record(hashes, &new, &root);
         }
         let Page::Files(fp) = &self.page else { return };
-        let provider = self.debrid.config.provider;
         match &fp.picker {
             Picker::Files(listing) => {
-                let files = fp.selected_indices();
-                let name = listing.name.clone();
-                // A download stays with whatever started it; new ones follow the setting.
-                let hash = info_hash_of(&listing.torrent_bytes).unwrap_or_default();
-                if self.usenet.manager.job_for(&hash).is_some() || self.via_usenet(fp) {
-                    let result = self
-                        .usenet
-                        .manager
-                        .add(listing, &files, output_folder, fp.nzbs.clone())
-                        .map(|()| name)
-                        .map_err(|e| format!("Could not start the download: {e:#}"));
-                    self.starting_download = true;
-                    let _ = self.tx.send(Msg::DownloadStarted(result));
-                    return;
-                }
-                let debrid_job = self.debrid.manager.job_for(&hash).is_some();
-                if debrid_job || (!fp.existing() && self.debrid.config.enabled) {
-                    if !debrid_job && let Err(why) = self.download_ready() {
-                        self.set_error(why);
-                        return;
-                    }
-                    let result = self
-                        .debrid
-                        .manager
-                        .add(provider, listing, &files, output_folder)
-                        .map(|()| name)
-                        .map_err(|e| format!("Could not start the download: {e:#}"));
-                    self.starting_download = true;
-                    let _ = self.tx.send(Msg::DownloadStarted(result));
-                    return;
-                }
-                let Some(engine) = self.engine() else {
-                    self.set_error("The torrent engine isn't ready yet");
-                    return;
-                };
-                let torrent_bytes = listing.torrent_bytes.clone();
-                self.starting_download = true;
-                self.spawn(async move {
-                    let result = engine
-                        .download(torrent_bytes, Some(files), output_folder)
-                        .await
-                        .map(|()| name)
-                        .map_err(|e| format!("Could not start the download: {e:#}"));
-                    Msg::DownloadStarted(result)
-                });
+                let (listing, files, nzbs) =
+                    (listing.clone(), fp.selected_indices(), fp.nzbs.clone());
+                self.download_files(&listing, files, nzbs, output_folder);
             }
             Picker::Episodes { items, title, .. } => {
-                let items: Vec<(u32, NyaaItem)> = selected.iter().map(|&i| items[i].clone()).collect();
+                let items: Vec<(u32, NyaaItem)> =
+                    selected.iter().map(|&i| items[i].clone()).collect();
                 let title = title.clone();
-                let client = self.http.clone();
-                // One torrent per episode: those on Usenet come from there (with
-                // a provider); the rest go to the debrid service, or the engine.
-                let usenet = self.usenet.active().then(|| {
-                    let cached: std::collections::HashMap<String, Vec<NzbLink>> = items
-                        .iter()
-                        .filter_map(|(_, i)| self.usenet.links(&i.info_hash).map(|l| (i.info_hash.to_ascii_lowercase(), l.to_vec())))
-                        .collect();
-                    (self.usenet.indexers.clone(), self.usenet.manager.clone(), cached)
-                });
-                let backend = if self.debrid.config.enabled {
-                    match self.download_ready() {
-                        Ok(()) => Some(Err(self.debrid.manager.clone())),
-                        Err(why) if usenet.is_none() => {
-                            self.set_error(why);
-                            return;
-                        }
-                        Err(_) => None,
-                    }
-                } else {
-                    match self.engine() {
-                        Some(engine) => Some(Ok(engine)),
-                        None if usenet.is_none() => {
-                            self.set_error("The torrent engine isn't ready yet");
-                            return;
-                        }
-                        None => None,
-                    }
-                };
-                self.starting_download = true;
-                self.spawn(async move {
-                    let mut failed = Vec::new();
-                    for (ep, item) in &items {
-                        let result = async {
-                            if let Some((indexers, manager, cached)) = &usenet {
-                                let links = match cached.get(&item.info_hash.to_ascii_lowercase()) {
-                                    Some(links) => links.clone(),
-                                    None => indexers.lookup(&item.info_hash, Some(item.id)).await,
-                                };
-                                if !links.is_empty() {
-                                    let listing = crate::engine::listing_from_bytes(nyaa::fetch_torrent(&client, item.id).await?)?;
-                                    let all: Vec<usize> = listing.files.iter().map(|f| f.index).collect();
-                                    return manager.add(&listing, &all, output_folder.clone(), links);
-                                }
-                            }
-                            let bytes = nyaa::fetch_torrent(&client, item.id).await?;
-                            match &backend {
-                                Some(Ok(engine)) => engine.download(bytes, None, output_folder.clone()).await,
-                                Some(Err(manager)) => {
-                                    let listing = crate::engine::listing_from_bytes(bytes)?;
-                                    let all: Vec<usize> = listing.files.iter().map(|f| f.index).collect();
-                                    manager.add(provider, &listing, &all, output_folder.clone())
-                                }
-                                None => Err(anyhow::anyhow!("not on Usenet, and torrents can't start yet")),
-                            }
-                        }
-                        .await;
-                        if let Err(e) = result {
-                            failed.push(format!("episode {ep:02}: {e:#}"));
-                        }
-                    }
-                    let started = items.len() - failed.len();
-                    let what = if started == 1 { "1 episode".to_owned() } else { format!("{started} episodes") };
-                    Msg::DownloadStarted(if failed.is_empty() {
-                        Ok(format!("{what} of {title}"))
-                    } else {
-                        Err(format!(
-                            "Started {started} of {} episodes. Failed: {}",
-                            items.len(),
-                            failed.join("; ")
-                        ))
-                    })
-                });
+                self.download_episode_torrents(items, title, output_folder);
             }
         }
+    }
+
+    /// Download `files` (torrent file indices) of a torrent into `folder`:
+    /// from Usenet if it's there (and you have a provider), else through the
+    /// debrid service if that's the setting, else BitTorrent here. A torrent
+    /// already downloading stays with whatever is downloading it, and gets
+    /// this selection.
+    fn download_files(
+        &mut self,
+        listing: &Listing,
+        files: Vec<usize>,
+        nzbs: Vec<NzbLink>,
+        folder: PathBuf,
+    ) {
+        let name = listing.name.clone();
+        let hash = info_hash_of(&listing.torrent_bytes).unwrap_or_default();
+        let provider = self.debrid.config.provider;
+        let in_engine = self.engine().is_some_and(|e| e.existing(&hash).is_some());
+        let in_usenet = self.usenet.manager.job_for(&hash).is_some();
+        let in_debrid = self.debrid.manager.job_for(&hash).is_some();
+        let fresh = !in_engine && !in_usenet && !in_debrid;
+        if in_usenet || (fresh && self.usenet.active() && !nzbs.is_empty()) {
+            let result = self
+                .usenet
+                .manager
+                .add(listing, &files, folder, nzbs)
+                .map(|()| name)
+                .map_err(|e| format!("Could not start the download: {e:#}"));
+            self.starting_download = true;
+            let _ = self.tx.send(Msg::DownloadStarted(result));
+            return;
+        }
+        if in_debrid || (fresh && self.debrid.config.enabled) {
+            if !in_debrid && let Err(why) = self.download_ready() {
+                self.set_error(why);
+                return;
+            }
+            let result = self
+                .debrid
+                .manager
+                .add(provider, listing, &files, folder)
+                .map(|()| name)
+                .map_err(|e| format!("Could not start the download: {e:#}"));
+            self.starting_download = true;
+            let _ = self.tx.send(Msg::DownloadStarted(result));
+            return;
+        }
+        let Some(engine) = self.engine() else {
+            self.set_error("The torrent engine isn't ready yet");
+            return;
+        };
+        let torrent_bytes = listing.torrent_bytes.clone();
+        self.starting_download = true;
+        self.spawn(async move {
+            let result = engine
+                .download(torrent_bytes, Some(files), folder)
+                .await
+                .map(|()| name)
+                .map_err(|e| format!("Could not start the download: {e:#}"));
+            Msg::DownloadStarted(result)
+        });
+    }
+
+    /// Download a release that has one torrent per episode: each episode
+    /// from Usenet if it's there, else the debrid service or BitTorrent here.
+    fn download_episode_torrents(
+        &mut self,
+        items: Vec<(u32, NyaaItem)>,
+        title: String,
+        output_folder: PathBuf,
+    ) {
+        let provider = self.debrid.config.provider;
+        let client = self.http.clone();
+        // One torrent per episode: those on Usenet come from there (with
+        // a provider); the rest go to the debrid service, or the engine.
+        let usenet = self.usenet.active().then(|| {
+            let cached: std::collections::HashMap<String, Vec<NzbLink>> = items
+                .iter()
+                .filter_map(|(_, i)| {
+                    self.usenet
+                        .links(&i.info_hash)
+                        .map(|l| (i.info_hash.to_ascii_lowercase(), l.to_vec()))
+                })
+                .collect();
+            (
+                self.usenet.indexers.clone(),
+                self.usenet.manager.clone(),
+                cached,
+            )
+        });
+        let backend = if self.debrid.config.enabled {
+            match self.download_ready() {
+                Ok(()) => Some(Err(self.debrid.manager.clone())),
+                Err(why) if usenet.is_none() => {
+                    self.set_error(why);
+                    return;
+                }
+                Err(_) => None,
+            }
+        } else {
+            match self.engine() {
+                Some(engine) => Some(Ok(engine)),
+                None if usenet.is_none() => {
+                    self.set_error("The torrent engine isn't ready yet");
+                    return;
+                }
+                None => None,
+            }
+        };
+        self.starting_download = true;
+        self.spawn(async move {
+            let mut failed = Vec::new();
+            for (ep, item) in &items {
+                let result = async {
+                    if let Some((indexers, manager, cached)) = &usenet {
+                        let links = match cached.get(&item.info_hash.to_ascii_lowercase()) {
+                            Some(links) => links.clone(),
+                            None => indexers.lookup(&item.info_hash, Some(item.id)).await,
+                        };
+                        if !links.is_empty() {
+                            let listing = crate::engine::listing_from_bytes(
+                                nyaa::fetch_torrent(&client, item.id).await?,
+                            )?;
+                            let all: Vec<usize> = listing.files.iter().map(|f| f.index).collect();
+                            return manager.add(&listing, &all, output_folder.clone(), links);
+                        }
+                    }
+                    let bytes = nyaa::fetch_torrent(&client, item.id).await?;
+                    match &backend {
+                        Some(Ok(engine)) => {
+                            engine.download(bytes, None, output_folder.clone()).await
+                        }
+                        Some(Err(manager)) => {
+                            let listing = crate::engine::listing_from_bytes(bytes)?;
+                            let all: Vec<usize> = listing.files.iter().map(|f| f.index).collect();
+                            manager.add(provider, &listing, &all, output_folder.clone())
+                        }
+                        None => Err(anyhow::anyhow!(
+                            "not on Usenet, and torrents can't start yet"
+                        )),
+                    }
+                }
+                .await;
+                if let Err(e) = result {
+                    failed.push(format!("episode {ep:02}: {e:#}"));
+                }
+            }
+            let started = items.len() - failed.len();
+            let what = if started == 1 {
+                "1 episode".to_owned()
+            } else {
+                format!("{started} episodes")
+            };
+            Msg::DownloadStarted(if failed.is_empty() {
+                Ok(format!("{what} of {title}"))
+            } else {
+                Err(format!(
+                    "Started {started} of {} episodes. Failed: {}",
+                    items.len(),
+                    failed.join("; ")
+                ))
+            })
+        });
     }
 
     // ── Drawing ────────────────────────────────────────────────────────
@@ -1216,12 +1575,22 @@ impl App {
         ui.horizontal(|ui| {
             ui.heading("SeaDex Downloader");
             ui.add_space(8.0);
-            if ui.selectable_label(matches!(self.page, Page::Home), "Library").clicked() {
+            if ui
+                .selectable_label(matches!(self.page, Page::Home), "Library")
+                .clicked()
+            {
                 actions.push(Action::GoLibrary);
             }
             let active = self.active_downloads();
-            let label = if active > 0 { format!("Downloads ({active})") } else { "Downloads".to_owned() };
-            if ui.selectable_label(matches!(self.page, Page::Downloads), label).clicked() {
+            let label = if active > 0 {
+                format!("Downloads ({active})")
+            } else {
+                "Downloads".to_owned()
+            };
+            if ui
+                .selectable_label(matches!(self.page, Page::Downloads), label)
+                .clicked()
+            {
                 actions.push(Action::GoDownloads);
             }
             ui.add_space(8.0);
@@ -1245,17 +1614,28 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Stay open while options are clicked and the key is pasted;
                 // a click outside or Esc closes it.
-                let stay_open = MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-                MenuButton::new("⚙ Settings").config(stay_open).ui(ui, |ui| self.settings_menu(ui, actions));
+                let stay_open =
+                    MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                MenuButton::new("⚙ Settings")
+                    .config(stay_open)
+                    .ui(ui, |ui| self.settings_menu(ui, actions));
                 let playlist = format!("Playlist ({})", self.playlist.items.len());
-                if ui.button(playlist).on_hover_text("Remuxed episodes to export together").clicked() {
+                if ui
+                    .button(playlist)
+                    .on_hover_text("Remuxed episodes to export together")
+                    .clicked()
+                {
                     actions.push(Action::OpenPlaylist);
                 }
                 // Uploads carry on in the background; show them from anywhere.
                 if let Some(fraction) = self.drive.upload_progress() {
                     let left = self.drive.upload_time_left().unwrap_or_default();
-                    ui.add(egui::ProgressBar::new(fraction).desired_width(90.0).text(format!("⬆ {:.0}%", fraction * 100.0)))
-                        .on_hover_text(format!("Uploading to Google Drive: {left}"));
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .desired_width(90.0)
+                            .text(format!("⬆ {:.0}%", fraction * 100.0)),
+                    )
+                    .on_hover_text(format!("Uploading to Google Drive: {left}"));
                     ui.weak(left);
                     ui.ctx().request_repaint_after(Duration::from_secs(1));
                 }
@@ -1298,11 +1678,14 @@ impl App {
         });
         ui.weak("Each series gets its own folder here; downloads go straight into it.");
         ui.separator();
-        ui.checkbox(&mut self.settings.prefer_dual_audio, "Prefer dual-audio releases")
-            .on_hover_text(
-                "Between equally good releases (two SeaDex \"best\" picks, or two Nyaa releases \
+        ui.checkbox(
+            &mut self.settings.prefer_dual_audio,
+            "Prefer dual-audio releases",
+        )
+        .on_hover_text(
+            "Between equally good releases (two SeaDex \"best\" picks, or two Nyaa releases \
                  from the same tier), pick the dual-audio one by default.",
-            );
+        );
         ui.separator();
         if self.debrid.config.enabled {
             ui.weak("Nothing is seeded from this computer (TorBox is also told not to seed).");
@@ -1324,7 +1707,10 @@ impl App {
                 }
                 EngineState::Ready(_) if local && self.vpn.waiting.is_some() => {
                     status_dot(ui, ui.visuals().warn_fg_color);
-                    ui.label(RichText::new("Torrents waiting for the VPN").color(ui.visuals().warn_fg_color));
+                    ui.label(
+                        RichText::new("Torrents waiting for the VPN")
+                            .color(ui.visuals().warn_fg_color),
+                    );
                 }
                 EngineState::Starting => {
                     ui.spinner();
@@ -1337,7 +1723,8 @@ impl App {
                 EngineState::Failed(e) => {
                     let red = ui.visuals().error_fg_color;
                     status_dot(ui, red);
-                    ui.label(RichText::new("Engine failed").color(red)).on_hover_text(e);
+                    ui.label(RichText::new("Engine failed").color(red))
+                        .on_hover_text(e);
                 }
             }
             if local && self.vpn.config.enabled && !matches!(self.engine, EngineState::Off) {
@@ -1374,8 +1761,19 @@ impl App {
 
     /// Downloads under way (or waiting).
     fn active_downloads(&self) -> usize {
-        let torrents = self.engine().map_or(0, |e| e.torrents().iter().filter(|(_, h)| !h.stats().finished).count());
-        let debrid = self.debrid.manager.views().iter().filter(|v| v.live.active()).count();
+        let torrents = self.engine().map_or(0, |e| {
+            e.torrents()
+                .iter()
+                .filter(|(_, h)| !h.stats().finished)
+                .count()
+        });
+        let debrid = self
+            .debrid
+            .manager
+            .views()
+            .iter()
+            .filter(|v| v.live.active())
+            .count();
         let usenet = self
             .usenet
             .manager
@@ -1401,7 +1799,10 @@ impl App {
                 });
             }
             EngineState::Failed(e) => {
-                ui.colored_label(ui.visuals().error_fg_color, format!("Torrent engine failed: {e}"));
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!("Torrent engine failed: {e}"),
+                );
             }
             EngineState::WaitingForVpn(reason) => {
                 ui.horizontal(|ui| {
@@ -1422,7 +1823,10 @@ impl App {
             }
         }
         if jobs.is_empty() && usenet_jobs.is_empty() && torrents.is_empty() {
-            if !matches!(self.engine, EngineState::Starting | EngineState::WaitingForVpn(_)) {
+            if !matches!(
+                self.engine,
+                EngineState::Starting | EngineState::WaitingForVpn(_)
+            ) {
                 ui.weak("Nothing downloading. Finished downloads go into your library.");
             }
             return;
@@ -1481,7 +1885,11 @@ impl App {
                                     ui.weak(alt);
                                 }
                                 ui.label(anime.summary());
-                                ui.label(result_badge(anime, self.settings.prefer_dual_audio || self.settings.prefs.wants_dub()));
+                                ui.label(result_badge(
+                                    anime,
+                                    self.settings.prefer_dual_audio
+                                        || self.settings.prefs.wants_dub(),
+                                ));
                             });
                         });
                     });
@@ -1506,21 +1914,31 @@ impl App {
     }
 
     fn anime_page(&self, ui: &mut Ui, ap: &mut AnimePage, actions: &mut Vec<Action>) {
-        let back = if ap.from_library { "⏴ Library" } else { "⏴ Results" };
+        let back = if ap.from_library {
+            "⏴ Library"
+        } else {
+            "⏴ Results"
+        };
         if ui.button(back).clicked() {
             actions.push(Action::Back);
         }
         ui.add_space(6.0);
         let dual = self.prefer_dual_audio(ap.anime.anilist_id);
-        let AnimePage { anime, chosen, nyaa, entry_loading, .. } = ap;
-        let entry = anime.entry.as_ref();
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                let anime = &ap.anime;
+                let entry = anime.entry.as_ref();
                 ui.horizontal(|ui| {
-                    let details_cover = self.details(anime.anilist_id).and_then(|d| d.cover.as_deref());
-                    cover(ui, anime.cover_large.as_deref().or(details_cover), vec2(130.0, 185.0));
+                    let details_cover = self
+                        .details(anime.anilist_id)
+                        .and_then(|d| d.cover.as_deref());
+                    cover(
+                        ui,
+                        anime.cover_large.as_deref().or(details_cover),
+                        vec2(130.0, 185.0),
+                    );
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
                         ui.heading(&anime.title);
@@ -1535,6 +1953,45 @@ impl App {
                                 ui.hyperlink_to("releases.moe ↗", anime.seadex_url());
                             }
                         });
+                    });
+                });
+                ui.add_space(6.0);
+                self.description_section(ui, anime.anilist_id);
+                ui.add_space(6.0);
+                self.series_library_section(ui, anime, actions);
+                ui.add_space(10.0);
+                // Where downloads come from: the chosen release, which can be changed.
+                let source = match &ap.nyaa {
+                    Some(search) => search
+                        .chosen
+                        .and_then(|i| search.releases.get(i))
+                        .map(nyaa_release_label),
+                    None => chosen_release(ap).map(release_label),
+                };
+                let header = match &source {
+                    Some(label) => format!("Downloads come from: {label}"),
+                    None if ap.entry_loading => "Looking up its releases on SeaDex…".to_owned(),
+                    None => "Release to download from".to_owned(),
+                };
+                let AnimePage {
+                    anime,
+                    chosen,
+                    nyaa,
+                    entry_loading,
+                    ..
+                } = ap;
+                let entry = anime.entry.as_ref();
+                egui::CollapsingHeader::new(RichText::new(header).strong())
+                    // Open until a release is picked, then folded (its own state).
+                    .id_salt(("release", anime.anilist_id, source.is_some()))
+                    .default_open(source.is_none())
+                    .show(ui, |ui| {
+                        if *entry_loading {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Looking up its releases on SeaDex…");
+                            });
+                        }
                         if let Some(entry) = entry {
                             if entry.incomplete {
                                 ui.colored_label(
@@ -1546,36 +2003,28 @@ impl App {
                                 ui.label(format!("Theoretical best: {}", entry.theoretical_best));
                             }
                         }
+                        match (nyaa, entry) {
+                            (Some(search), _) => {
+                                self.nyaa_section(ui, entry.is_some(), search, actions)
+                            }
+                            (None, Some(entry)) => {
+                                self.seadex_section(ui, entry, chosen, dual, actions)
+                            }
+                            (None, None) => {}
+                        }
+                        if let Some(entry) = entry
+                            && !entry.notes.is_empty()
+                        {
+                            ui.add_space(10.0);
+                            egui::CollapsingHeader::new(RichText::new("SeaDex notes").strong())
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.label(&entry.notes);
+                                });
+                        }
                     });
-                });
-                ui.add_space(6.0);
-                self.description_section(ui, anime.anilist_id);
-                ui.add_space(6.0);
-                self.series_library_section(ui, anime, actions);
                 ui.add_space(10.0);
-                if *entry_loading {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Looking up its releases on SeaDex…");
-                    });
-                }
-
-                match (nyaa, entry) {
-                    (Some(search), _) => self.nyaa_section(ui, entry.is_some(), search, actions),
-                    (None, Some(entry)) => self.seadex_section(ui, entry, chosen, dual, actions),
-                    (None, None) => {}
-                }
-
-                if let Some(entry) = entry
-                    && !entry.notes.is_empty()
-                {
-                    ui.add_space(10.0);
-                    egui::CollapsingHeader::new(RichText::new("SeaDex notes").strong())
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            ui.label(&entry.notes);
-                        });
-                }
+                self.episodes_section(ui, ap, actions);
             });
     }
 
@@ -1583,25 +2032,38 @@ impl App {
     fn usenet_cell(&self, ui: &mut Ui, hashes: &[&str]) {
         let found: Vec<Option<&[NzbLink]>> = hashes.iter().map(|h| self.usenet.links(h)).collect();
         if found.iter().any(Option::is_none) {
-            ui.add(egui::Spinner::new().size(12.0)).on_hover_text("Checking the Usenet indexers…");
+            ui.add(egui::Spinner::new().size(12.0))
+                .on_hover_text("Checking the Usenet indexers…");
             return;
         }
         match found.as_slice() {
             [Some(links)] => usenet_ui::nzb_badge(ui, links),
             many => {
-                let on = many.iter().filter(|l| l.is_some_and(|l| !l.is_empty())).count();
+                let on = many
+                    .iter()
+                    .filter(|l| l.is_some_and(|l| !l.is_empty()))
+                    .count();
                 if on == 0 {
                     ui.weak("—");
                 } else {
                     ui.colored_label(GREEN, format!("NZB {on}/{}", many.len()))
-                        .on_hover_text("Episodes on Usenet download from there; the rest as torrents.");
+                        .on_hover_text(
+                            "Episodes on Usenet download from there; the rest as torrents.",
+                        );
                 }
             }
         }
     }
 
-    fn seadex_section(&self, ui: &mut Ui, entry: &seadex::Entry, chosen: &mut Option<usize>, dual: bool, actions: &mut Vec<Action>) {
-        ui.heading("Releases");
+    fn seadex_section(
+        &self,
+        ui: &mut Ui,
+        entry: &seadex::Entry,
+        chosen: &mut Option<usize>,
+        dual: bool,
+        actions: &mut Vec<Action>,
+    ) {
+        ui.label(RichText::new("SeaDex's releases").strong());
         ui.add_space(4.0);
         let usenet = self.usenet.active();
         egui::Grid::new("releases")
@@ -1609,7 +2071,9 @@ impl App {
             .num_columns(if usenet { 8 } else { 7 })
             .spacing(vec2(14.0, 6.0))
             .show(ui, |ui| {
-                for header in ["Release", "SeaDex", "Audio", "Files", "Size", "Tags", "Source"] {
+                for header in [
+                    "Release", "SeaDex", "Audio", "Files", "Size", "Tags", "Source",
+                ] {
                     ui.strong(header);
                 }
                 if usenet {
@@ -1627,7 +2091,11 @@ impl App {
                     } else {
                         ui.weak("Alt");
                     }
-                    ui.label(if r.dual_audio { "Dual audio" } else { "Japanese" });
+                    ui.label(if r.dual_audio {
+                        "Dual audio"
+                    } else {
+                        "Japanese"
+                    });
                     ui.label(r.files.len().to_string());
                     ui.label(fmt_bytes(r.total_size()));
                     ui.label(r.tags.join(", "));
@@ -1636,8 +2104,9 @@ impl App {
                             ui.hyperlink_to("Nyaa ↗", nyaa::view_url(id));
                         }
                         None => {
-                            ui.weak(format!("{} (private)", r.tracker))
-                                .on_hover_text("Private tracker: this app downloads from Nyaa only.");
+                            ui.weak(format!("{} (private)", r.tracker)).on_hover_text(
+                                "Private tracker: this app downloads from Nyaa only.",
+                            );
                         }
                     }
                     if usenet {
@@ -1656,7 +2125,13 @@ impl App {
     }
 
     /// The fallback for anime with nothing on SeaDex to download.
-    fn nyaa_section(&self, ui: &mut Ui, has_entry: bool, search: &mut NyaaSearch, actions: &mut Vec<Action>) {
+    fn nyaa_section(
+        &self,
+        ui: &mut Ui,
+        has_entry: bool,
+        search: &mut NyaaSearch,
+        actions: &mut Vec<Action>,
+    ) {
         ui.heading("Best on Nyaa");
         ui.weak(if has_entry {
             "SeaDex has no Nyaa release for this, so Nyaa releases are ranked by TRaSH Guides release-group tiers."
@@ -1674,7 +2149,10 @@ impl App {
                 actions.push(Action::SearchNyaa);
             }
             let can_search = !search.loading && !search.query.trim().is_empty();
-            if ui.add_enabled(can_search, egui::Button::new("Search Nyaa")).clicked() {
+            if ui
+                .add_enabled(can_search, egui::Button::new("Search Nyaa"))
+                .clicked()
+            {
                 actions.push(Action::SearchNyaa);
             }
             if search.loading {
@@ -1684,13 +2162,21 @@ impl App {
         if search.query.trim() == search.default_plan.display_query()
             && let Some(season) = search.default_plan.season
         {
-            ui.weak(format!("Showing season {season} only. Edit the search to see everything."));
+            ui.weak(format!(
+                "Showing season {season} only. Edit the search to see everything."
+            ));
         }
         if let Some(e) = &search.error {
             ui.colored_label(ui.visuals().error_fg_color, e);
         }
-        if search.searched && !search.loading && search.releases.is_empty() && search.error.is_none() {
-            ui.label("Nothing found on Nyaa. Try another name for the show, e.g. its English title.");
+        if search.searched
+            && !search.loading
+            && search.releases.is_empty()
+            && search.error.is_none()
+        {
+            ui.label(
+                "Nothing found on Nyaa. Try another name for the show, e.g. its English title.",
+            );
         }
 
         if !search.releases.is_empty() {
@@ -1699,11 +2185,15 @@ impl App {
             ui.horizontal(|ui| {
                 self.choose_button(ui, search.chosen.is_some(), actions);
                 if let Some(r) = search.chosen.and_then(|i| search.releases.get(i)) {
-                    ui.add(egui::Label::new(RichText::new(nyaa_release_label(r)).strong()).truncate());
+                    ui.add(
+                        egui::Label::new(RichText::new(nyaa_release_label(r)).strong()).truncate(),
+                    );
                 }
             });
             ui.add_space(6.0);
-            let NyaaSearch { releases, chosen, .. } = search;
+            let NyaaSearch {
+                releases, chosen, ..
+            } = search;
             let usenet = self.usenet.active();
             egui::Grid::new("nyaa_releases")
                 .striped(true)
@@ -1767,7 +2257,10 @@ impl App {
                     }
                 });
             if releases.len() > MAX_NYAA_ROWS {
-                ui.weak(format!("{} lower-ranked releases not shown.", releases.len() - MAX_NYAA_ROWS));
+                ui.weak(format!(
+                    "{} lower-ranked releases not shown.",
+                    releases.len() - MAX_NYAA_ROWS
+                ));
             }
         }
     }
@@ -1775,9 +2268,13 @@ impl App {
     fn choose_button(&self, ui: &mut Ui, has_choice: bool, actions: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             // Releases on Usenet don't need the torrent engine or a debrid key.
-            let ready = if self.usenet.active() { Ok(()) } else { self.download_ready() };
+            let ready = if self.usenet.active() {
+                Ok(())
+            } else {
+                self.download_ready()
+            };
             let enabled = has_choice && ready.is_ok() && !self.loading_listing;
-            let button = egui::Button::new(RichText::new("Choose episodes ⏵").strong()).min_size(vec2(170.0, 32.0));
+            let button = egui::Button::new("Choose files ⏵").min_size(vec2(130.0, 26.0));
             if ui.add_enabled(enabled, button).clicked() {
                 actions.push(Action::ChooseFiles);
             }
@@ -1887,7 +2384,11 @@ impl App {
                         // Picked episodes on Usenet download from there; the rest as torrents.
                         let (on, off) = match self.episode_nzbs(fp) {
                             Some(nzbs) => fp.selected().iter().fold((0, 0), |(on, off), &i| {
-                                if nzbs[i].is_some_and(|l| !l.is_empty()) { (on + 1, off) } else { (on, off + 1) }
+                                if nzbs[i].is_some_and(|l| !l.is_empty()) {
+                                    (on + 1, off)
+                                } else {
+                                    (on, off + 1)
+                                }
                             }),
                             None => (0, count),
                         };
@@ -1897,13 +2398,15 @@ impl App {
                             _ if existing => "Update download".to_owned(),
                             _ if usenet => "⬇ Download from Usenet".to_owned(),
                             service if on > 0 => {
-                                let rest = service.map_or("as torrents".to_owned(), |s| format!("via {s}"));
+                                let rest = service
+                                    .map_or("as torrents".to_owned(), |s| format!("via {s}"));
                                 format!("⬇ Download: {on} from Usenet, {off} {rest}")
                             }
                             Some(service) => format!("⬇ Download via {service}"),
                             None => "⬇ Download".to_owned(),
                         };
-                        let button = egui::Button::new(RichText::new(label).strong()).min_size(vec2(150.0, 32.0));
+                        let button = egui::Button::new(RichText::new(label).strong())
+                            .min_size(vec2(150.0, 32.0));
                         if ui
                             .add_enabled(count > 0 && ready && !self.starting_download, button)
                             .clicked()
@@ -1945,7 +2448,9 @@ impl App {
             };
             let show_seeders = matches!(fp.picker, Picker::Episodes { .. });
             let usenet_hashes: Option<Vec<String>> = match &fp.picker {
-                Picker::Episodes { items, .. } if self.usenet.active() => Some(items.iter().map(|(_, i)| i.info_hash.clone()).collect()),
+                Picker::Episodes { items, .. } if self.usenet.active() => {
+                    Some(items.iter().map(|(_, i)| i.info_hash.clone()).collect())
+                }
                 _ => None,
             };
             let FilesPage { rows, checked, .. } = fp;
@@ -1986,7 +2491,8 @@ impl App {
                         let r = &rows[i];
                         row.col(|ui| {
                             ui.style_mut().wrap_mode = Some(TextWrapMode::Truncate);
-                            ui.checkbox(&mut checked[i], r.label.as_str()).on_hover_text(&r.label);
+                            ui.checkbox(&mut checked[i], r.label.as_str())
+                                .on_hover_text(&r.label);
                         });
                         row.col(|ui| {
                             ui.label(fmt_bytes(r.len));
@@ -2005,7 +2511,9 @@ impl App {
     }
 
     fn delete_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let Some((target, name)) = &self.confirm_delete else { return };
+        let Some((target, name)) = &self.confirm_delete else {
+            return;
+        };
         let (target, name) = (*target, name.clone());
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::unique("confirm_delete")).show(ctx, |ui| {
@@ -2055,6 +2563,7 @@ impl eframe::App for App {
         self.apply_defaults();
         self.refresh_library_stats();
         self.request_details();
+        self.request_release_files();
         let mut actions = Vec::new();
 
         egui::Panel::top("top_bar").show(ui, |ui| self.top_bar(ui, &mut actions));
@@ -2103,7 +2612,12 @@ impl eframe::App for App {
 
 /// Draw one torrent in the downloads panel. Returns whether it is busy
 /// (so the panel refreshes faster).
-fn torrent_card(ui: &mut Ui, id: TorrentId, handle: &TorrentHandle, actions: &mut Vec<Action>) -> bool {
+fn torrent_card(
+    ui: &mut Ui,
+    id: TorrentId,
+    handle: &TorrentHandle,
+    actions: &mut Vec<Action>,
+) -> bool {
     let stats = handle.stats();
     let name = handle.name().unwrap_or_else(|| format!("Torrent #{id}"));
     // Finished torrents are stopped by the engine right away (no seeding).
@@ -2181,10 +2695,16 @@ fn torrent_card(ui: &mut Ui, id: TorrentId, handle: &TorrentHandle, actions: &mu
             }
             ui.menu_button("Remove", |ui| {
                 if ui.button("Remove from list (keep files)").clicked() {
-                    actions.push(Action::Remove { id, delete_files: false });
+                    actions.push(Action::Remove {
+                        id,
+                        delete_files: false,
+                    });
                 }
                 if ui.button("Remove and delete files…").clicked() {
-                    actions.push(Action::AskDelete { id, name: name.clone() });
+                    actions.push(Action::AskDelete {
+                        id,
+                        name: name.clone(),
+                    });
                 }
             });
         });
@@ -2205,7 +2725,11 @@ fn file_progress(ui: &mut Ui, handle: &TorrentHandle, progress: &[u64]) {
                 continue;
             }
             let have = progress.get(i).copied().unwrap_or(0);
-            let fraction = if file.len == 0 { 1.0 } else { have as f32 / file.len as f32 };
+            let fraction = if file.len == 0 {
+                1.0
+            } else {
+                have as f32 / file.len as f32
+            };
             ui.horizontal(|ui| {
                 ui.add(
                     egui::ProgressBar::new(fraction)
@@ -2242,7 +2766,8 @@ fn cover(ui: &mut Ui, url: Option<&str>, size: egui::Vec2) {
         }
         None => {
             let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
         }
     }
 }
@@ -2271,7 +2796,9 @@ fn result_badge(anime: &Anime, prefer_dual_audio: bool) -> RichText {
             let audio = if r.dual_audio { " · dual audio" } else { "" };
             RichText::new(format!("★ {kind} on Nyaa: {}{audio}", r.group)).color(GOLD)
         }
-        None => RichText::new("On SeaDex, but not on Nyaa · will rank Nyaa releases by group").weak(),
+        None => {
+            RichText::new("On SeaDex, but not on Nyaa · will rank Nyaa releases by group").weak()
+        }
     }
 }
 
@@ -2300,7 +2827,11 @@ fn chosen_release(ap: &AnimePage) -> Option<&Release> {
 
 fn release_label(r: &Release) -> String {
     let mut parts = vec![r.group.clone()];
-    parts.push(if r.is_best { "SeaDex best".into() } else { "SeaDex alt".into() });
+    parts.push(if r.is_best {
+        "SeaDex best".into()
+    } else {
+        "SeaDex alt".into()
+    });
     if r.dual_audio {
         parts.push("dual audio".into());
     }
@@ -2398,7 +2929,11 @@ mod tests {
             files: paths
                 .iter()
                 .enumerate()
-                .map(|(i, p)| TorrentFile { index: i * 2, path: (*p).into(), len: 10 })
+                .map(|(i, p)| TorrentFile {
+                    index: i * 2,
+                    path: (*p).into(),
+                    len: 10,
+                })
                 .collect(),
             multi_file: true,
             existing: None,

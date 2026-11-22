@@ -34,12 +34,18 @@ pub(super) async fn account(c: &Client) -> Result<Account> {
     let kind = num(&v["accountType"]).unwrap_or(0);
     let until = match kind {
         1 => num(&v["premiumLeft"])
-            .and_then(|left| chrono::Utc::now().checked_add_signed(chrono::Duration::seconds(left as i64)))
+            .and_then(|left| {
+                chrono::Utc::now().checked_add_signed(chrono::Duration::seconds(left as i64))
+            })
             .map(|d| d.format("%Y-%m-%d").to_string()),
         2 => Some("lifetime".to_owned()),
         _ => None,
     };
-    Ok(Account { name: text(&v["username"]), premium: kind > 0, until })
+    Ok(Account {
+        name: text(&v["username"]),
+        premium: kind > 0,
+        until,
+    })
 }
 
 pub(super) async fn add(c: &Client, torrent: &[u8], name: &str) -> Result<String> {
@@ -50,8 +56,13 @@ pub(super) async fn add(c: &Client, torrent: &[u8], name: &str) -> Result<String
 }
 
 pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
-    let (status, v) = c.send(c.get("/seedbox/list").query(&[("ids", torrent)])).await?;
-    let t = value(c, status, v)?.as_array().and_then(|l| l.first().cloned()).ok_or_else(|| anyhow::Error::new(Gone))?;
+    let (status, v) = c
+        .send(c.get("/seedbox/list").query(&[("ids", torrent)]))
+        .await?;
+    let t = value(c, status, v)?
+        .as_array()
+        .and_then(|l| l.first().cloned())
+        .ok_or_else(|| anyhow::Error::new(Gone))?;
     let files: Vec<RemoteFile> = t["files"]
         .as_array()
         .into_iter()
@@ -63,7 +74,10 @@ pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
                 size: num(&f["size"]).unwrap_or(0),
                 // Only ready files can be downloaded.
                 selected: num(&f["downloadPercent"]) == Some(100),
-                link: f["downloadUrl"].as_str().filter(|u| !u.is_empty()).map(str::to_owned),
+                link: f["downloadUrl"]
+                    .as_str()
+                    .filter(|u| !u.is_empty())
+                    .map(str::to_owned),
             })
         })
         .collect();
@@ -90,7 +104,9 @@ pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
 }
 
 pub(super) async fn delete(c: &Client, torrent: &str) -> Result<()> {
-    let (status, v) = c.send(c.delete_req(&format!("/seedbox/{torrent}/remove"))).await?;
+    let (status, v) = c
+        .send(c.delete_req(&format!("/seedbox/{torrent}/remove")))
+        .await?;
     match value(c, status, v) {
         Ok(_) => Ok(()),
         Err(e) if e.downcast_ref::<Gone>().is_some() => Ok(()),
@@ -138,17 +154,35 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::DebridLink, "key", &base);
-        assert_eq!(c.account().await.unwrap(), Account { name: "me".into(), premium: true, until: Some("lifetime".into()) });
+        assert_eq!(
+            c.account().await.unwrap(),
+            Account {
+                name: "me".into(),
+                premium: true,
+                until: Some("lifetime".into())
+            }
+        );
         let id = c.add(b"t", "Show").await.unwrap();
         match c.status(&id).await.unwrap().state {
-            RemoteState::Working { status, progress, speed, seeders } => {
-                assert_eq!((status.as_str(), progress, speed, seeders), ("downloading", Some(0.5), Some(700), Some(3)));
+            RemoteState::Working {
+                status,
+                progress,
+                speed,
+                seeders,
+            } => {
+                assert_eq!(
+                    (status.as_str(), progress, speed, seeders),
+                    ("downloading", Some(0.5), Some(700), Some(3))
+                );
             }
             other => panic!("{other:?}"),
         }
         let remote = c.status(&id).await.unwrap();
         assert_eq!(remote.state, RemoteState::Ready);
-        assert_eq!(c.link(&id, &remote.files[1]).await.unwrap(), "https://seed20.debrid.link/dl/b");
+        assert_eq!(
+            c.link(&id, &remote.files[1]).await.unwrap(),
+            "https://seed20.debrid.link/dl/b"
+        );
         c.delete(&id).await.unwrap();
     }
 
@@ -161,8 +195,23 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::DebridLink, "k", &base);
-        assert!(c.account().await.unwrap_err().downcast_ref::<BadKey>().is_some());
-        assert!(c.status("x").await.unwrap_err().downcast_ref::<Gone>().is_some());
-        assert_eq!(c.add(b"t", "x").await.unwrap_err().to_string(), "Debrid-Link: the daily limit of new torrents is reached");
+        assert!(
+            c.account()
+                .await
+                .unwrap_err()
+                .downcast_ref::<BadKey>()
+                .is_some()
+        );
+        assert!(
+            c.status("x")
+                .await
+                .unwrap_err()
+                .downcast_ref::<Gone>()
+                .is_some()
+        );
+        assert_eq!(
+            c.add(b"t", "x").await.unwrap_err().to_string(),
+            "Debrid-Link: the daily limit of new torrents is reached"
+        );
     }
 }

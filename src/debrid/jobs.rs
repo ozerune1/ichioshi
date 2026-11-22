@@ -67,7 +67,12 @@ pub enum Phase {
     /// Sending the torrent to the service.
     Adding,
     /// The service is fetching it.
-    Remote { status: String, progress: Option<f32>, speed: Option<u64>, seeders: Option<u64> },
+    Remote {
+        status: String,
+        progress: Option<f32>,
+        speed: Option<u64>,
+        seeders: Option<u64>,
+    },
     /// Downloading the files from the service.
     Downloading,
     Done,
@@ -89,7 +94,10 @@ pub struct Live {
 
 impl Live {
     pub fn active(&self) -> bool {
-        matches!(self.phase, Phase::Adding | Phase::Remote { .. } | Phase::Downloading)
+        matches!(
+            self.phase,
+            Phase::Adding | Phase::Remote { .. } | Phase::Downloading
+        )
     }
 }
 
@@ -149,7 +157,17 @@ impl Manager {
             .read_timeout(Duration::from_secs(90))
             .build()
             .expect("failed to build the HTTP client");
-        Self::load_with(state_dir, rt, keys, notify, http, Timing { poll: Duration::from_secs(4), retry: Duration::from_secs(5) })
+        Self::load_with(
+            state_dir,
+            rt,
+            keys,
+            notify,
+            http,
+            Timing {
+                poll: Duration::from_secs(4),
+                retry: Duration::from_secs(5),
+            },
+        )
     }
 
     fn load_with(
@@ -169,8 +187,14 @@ impl Manager {
         let entries = jobs
             .into_iter()
             .map(|job| {
-                let have: Vec<u64> = job.files.iter().map(|f| on_disk(&job.dest(f), f.len)).collect();
-                let complete = job.wanted().all(|(i, f)| have[i] == f.len && job.dest(f).exists());
+                let have: Vec<u64> = job
+                    .files
+                    .iter()
+                    .map(|f| on_disk(&job.dest(f), f.len))
+                    .collect();
+                let complete = job
+                    .wanted()
+                    .all(|(i, f)| have[i] == f.len && job.dest(f).exists());
                 let phase = if complete {
                     Phase::Done
                 } else if job.paused {
@@ -178,7 +202,16 @@ impl Manager {
                 } else {
                     Phase::Adding
                 };
-                Entry { job, live: Arc::new(Mutex::new(Live { phase, have, speed: 0.0, note: None })), cancel: Arc::default() }
+                Entry {
+                    job,
+                    live: Arc::new(Mutex::new(Live {
+                        phase,
+                        have,
+                        speed: 0.0,
+                        note: None,
+                    })),
+                    cancel: Arc::default(),
+                }
             })
             .collect();
         let manager = Arc::new(Self {
@@ -234,7 +267,9 @@ impl Manager {
     }
 
     fn torrent_path(&self, info_hash: &str) -> PathBuf {
-        self.dir.join("torrents").join(format!("{info_hash}.torrent"))
+        self.dir
+            .join("torrents")
+            .join(format!("{info_hash}.torrent"))
     }
 
     fn save(&self, entries: &[Entry]) {
@@ -250,22 +285,35 @@ impl Manager {
     /// Download `wanted` (torrent file indices) of a torrent through
     /// `provider` into `output_folder`. If the torrent is already a job,
     /// its selection changes instead.
-    pub fn add(self: &Arc<Self>, provider: Provider, listing: &Listing, wanted: &[usize], output_folder: PathBuf) -> Result<()> {
+    pub fn add(
+        self: &Arc<Self>,
+        provider: Provider,
+        listing: &Listing,
+        wanted: &[usize],
+        output_folder: PathBuf,
+    ) -> Result<()> {
         if wanted.is_empty() {
             bail!("no files selected");
         }
-        let info_hash = crate::engine::info_hash_of(&listing.torrent_bytes).context("invalid .torrent file")?;
+        let info_hash =
+            crate::engine::info_hash_of(&listing.torrent_bytes).context("invalid .torrent file")?;
         if let Some(id) = self.job_for(&info_hash) {
             return self.reselect(id, wanted);
         }
         self.client(provider)?;
         let path = self.torrent_path(&info_hash);
         std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::write(&path, &listing.torrent_bytes).with_context(|| format!("could not save {}", path.display()))?;
+        std::fs::write(&path, &listing.torrent_bytes)
+            .with_context(|| format!("could not save {}", path.display()))?;
         let files: Vec<JobFile> = listing
             .files
             .iter()
-            .map(|f| JobFile { index: f.index, path: f.path.clone(), len: f.len, wanted: wanted.contains(&f.index) })
+            .map(|f| JobFile {
+                index: f.index,
+                path: f.path.clone(),
+                len: f.len,
+                wanted: wanted.contains(&f.index),
+            })
             .collect();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let job = Job {
@@ -279,12 +327,21 @@ impl Manager {
             paused: false,
             remote_selection: Vec::new(),
         };
-        let have: Vec<u64> = job.files.iter().map(|f| on_disk(&job.dest(f), f.len)).collect();
+        let have: Vec<u64> = job
+            .files
+            .iter()
+            .map(|f| on_disk(&job.dest(f), f.len))
+            .collect();
         {
             let mut entries = self.entries.lock().unwrap();
             entries.push(Entry {
                 job,
-                live: Arc::new(Mutex::new(Live { phase: Phase::Adding, have, speed: 0.0, note: None })),
+                live: Arc::new(Mutex::new(Live {
+                    phase: Phase::Adding,
+                    have,
+                    speed: 0.0,
+                    note: None,
+                })),
                 cancel: Arc::default(),
             });
             self.save(&entries);
@@ -298,7 +355,10 @@ impl Manager {
     pub fn reselect(self: &Arc<Self>, id: u64, wanted: &[usize]) -> Result<()> {
         {
             let mut entries = self.entries.lock().unwrap();
-            let entry = entries.iter_mut().find(|e| e.job.id == id).context("no such download")?;
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.job.id == id)
+                .context("no such download")?;
             for f in &mut entry.job.files {
                 let was = f.wanted;
                 f.wanted = wanted.contains(&f.index);
@@ -317,7 +377,12 @@ impl Manager {
 
     pub fn job_for(&self, info_hash: &str) -> Option<u64> {
         let info_hash = info_hash.to_ascii_lowercase();
-        self.entries.lock().unwrap().iter().find(|e| e.job.info_hash == info_hash).map(|e| e.job.id)
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.job.info_hash == info_hash)
+            .map(|e| e.job.id)
     }
 
     /// For the file picker: the job's selection and folder, if `info_hash` is a job.
@@ -326,7 +391,13 @@ impl Manager {
         let entries = self.entries.lock().unwrap();
         let job = &entries.iter().find(|e| e.job.info_hash == info_hash)?.job;
         Some(Existing {
-            only_files: Some(job.files.iter().filter(|f| f.wanted).map(|f| f.index).collect()),
+            only_files: Some(
+                job.files
+                    .iter()
+                    .filter(|f| f.wanted)
+                    .map(|f| f.index)
+                    .collect(),
+            ),
             output_folder: job.output_folder.clone(),
         })
     }
@@ -334,7 +405,8 @@ impl Manager {
     /// The torrent's contents with the job's selection, to change it.
     pub fn listing(&self, id: u64) -> Result<Listing> {
         let info_hash = self.view(id).context("no such download")?.job.info_hash;
-        let bytes = std::fs::read(self.torrent_path(&info_hash)).context("the download's .torrent file is missing")?;
+        let bytes = std::fs::read(self.torrent_path(&info_hash))
+            .context("the download's .torrent file is missing")?;
         let mut listing = crate::engine::listing_from_bytes(bytes)?;
         listing.existing = self.existing(&info_hash);
         Ok(listing)
@@ -343,7 +415,14 @@ impl Manager {
     /// All jobs, newest first.
     pub fn views(&self) -> Vec<View> {
         let entries = self.entries.lock().unwrap();
-        entries.iter().rev().map(|e| View { job: e.job.clone(), live: e.live.lock().unwrap().clone() }).collect()
+        entries
+            .iter()
+            .rev()
+            .map(|e| View {
+                job: e.job.clone(),
+                live: e.live.lock().unwrap().clone(),
+            })
+            .collect()
     }
 
     pub fn view(&self, id: u64) -> Option<View> {
@@ -368,7 +447,9 @@ impl Manager {
     pub fn resume(self: &Arc<Self>, id: u64) {
         {
             let mut entries = self.entries.lock().unwrap();
-            let Some(e) = entries.iter_mut().find(|e| e.job.id == id) else { return };
+            let Some(e) = entries.iter_mut().find(|e| e.job.id == id) else {
+                return;
+            };
             e.job.paused = false;
             e.cancel.store(true, Ordering::Relaxed);
             e.cancel = Arc::default();
@@ -381,7 +462,9 @@ impl Manager {
     pub fn remove(&self, id: u64, delete_files: bool) {
         let entry = {
             let mut entries = self.entries.lock().unwrap();
-            let Some(pos) = entries.iter().position(|e| e.job.id == id) else { return };
+            let Some(pos) = entries.iter().position(|e| e.job.id == id) else {
+                return;
+            };
             let entry = entries.remove(pos);
             self.save(&entries);
             entry
@@ -402,7 +485,10 @@ impl Manager {
         if let (Some(remote), Ok(client)) = (job.remote_id, self.client(job.provider)) {
             self.rt.spawn(async move {
                 if let Err(e) = client.delete(&remote).await {
-                    tracing::warn!("could not delete the torrent from {}: {e:#}", client.provider.name());
+                    tracing::warn!(
+                        "could not delete the torrent from {}: {e:#}",
+                        client.provider.name()
+                    );
                 }
             });
         }
@@ -424,7 +510,14 @@ impl Manager {
         let me = views.iter().find(|v| v.job.id == id)?;
         let folder = me.job.output_folder.clone();
         let shared = folder != download_dir;
-        let group: Vec<&View> = if shared { views.iter().filter(|v| v.job.output_folder == folder).collect() } else { vec![me] };
+        let group: Vec<&View> = if shared {
+            views
+                .iter()
+                .filter(|v| v.job.output_folder == folder)
+                .collect()
+        } else {
+            vec![me]
+        };
         let mut files = Vec::new();
         let mut not_ready = 0;
         for v in &group {
@@ -443,16 +536,30 @@ impl Manager {
         files.sort();
         files.dedup();
         let name = if shared && group.len() > 1 {
-            folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| me.job.name.clone())
+            folder
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| me.job.name.clone())
         } else {
             me.job.name.clone()
         };
-        Some(SeriesFiles { name, files, not_ready, info_hashes: group.iter().map(|v| v.job.info_hash.clone()).collect() })
+        Some(SeriesFiles {
+            name,
+            files,
+            not_ready,
+            info_hashes: group.iter().map(|v| v.job.info_hash.clone()).collect(),
+        })
     }
 
     /// Run the job in the background.
     fn start(self: &Arc<Self>, id: u64) {
-        let Some((live, cancel)) = self.entries.lock().unwrap().iter().find(|e| e.job.id == id).map(|e| (e.live.clone(), e.cancel.clone()))
+        let Some((live, cancel)) = self
+            .entries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.job.id == id)
+            .map(|e| (e.live.clone(), e.cancel.clone()))
         else {
             return;
         };
@@ -483,7 +590,12 @@ impl Manager {
 
     fn job(&self, id: u64) -> Result<Job> {
         let entries = self.entries.lock().unwrap();
-        Ok(entries.iter().find(|e| e.job.id == id).context("the download was removed")?.job.clone())
+        Ok(entries
+            .iter()
+            .find(|e| e.job.id == id)
+            .context("the download was removed")?
+            .job
+            .clone())
     }
 
     fn update_job(&self, id: u64, f: impl FnOnce(&mut Job)) {
@@ -512,7 +624,8 @@ impl Manager {
         let provider = self.job(id)?.provider;
         let client = self.client(provider)?;
         let info_hash = self.job(id)?.info_hash;
-        let torrent = std::fs::read(self.torrent_path(&info_hash)).context("the download's .torrent file is missing")?;
+        let torrent = std::fs::read(self.torrent_path(&info_hash))
+            .context("the download's .torrent file is missing")?;
         let mut retries = 0u32;
         let mut re_adds = 0u32;
         loop {
@@ -522,12 +635,19 @@ impl Manager {
             match self.pass(id, &client, &torrent, live, cancel).await {
                 Ok(()) => return Ok(()),
                 Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
-                Err(e) if e.downcast_ref::<BadKey>().is_some() || e.downcast_ref::<Permanent>().is_some() => return Err(e),
+                Err(e)
+                    if e.downcast_ref::<BadKey>().is_some()
+                        || e.downcast_ref::<Permanent>().is_some() =>
+                {
+                    return Err(e);
+                }
                 Err(e) if e.downcast_ref::<Gone>().is_some() => {
                     // Deleted from the account (or it needs other files picked): add it again.
                     re_adds += 1;
                     if re_adds > 3 {
-                        return Err(e.context(format!("{} keeps losing the torrent", provider.name())));
+                        return Err(
+                            e.context(format!("{} keeps losing the torrent", provider.name()))
+                        );
                     }
                     self.update_job(id, |j| j.remote_id = None);
                 }
@@ -537,7 +657,8 @@ impl Manager {
                         return Err(e);
                     }
                     let wait = self.timing.retry * 2u32.pow(retries.min(6) - 1);
-                    live.lock().unwrap().note = Some(format!("{e:#}; retrying in {}s", wait.as_secs().max(1)));
+                    live.lock().unwrap().note =
+                        Some(format!("{e:#}; retrying in {}s", wait.as_secs().max(1)));
                     (self.notify)();
                     sleep_unless(wait, cancel).await;
                 }
@@ -547,10 +668,20 @@ impl Manager {
 
     /// One attempt: make sure the service has the torrent, wait for it, and
     /// download whatever is still missing.
-    async fn pass(&self, id: u64, client: &Client, torrent: &[u8], live: &Mutex<Live>, cancel: &AtomicBool) -> Result<()> {
+    async fn pass(
+        &self,
+        id: u64,
+        client: &Client,
+        torrent: &[u8],
+        live: &Mutex<Live>,
+        cancel: &AtomicBool,
+    ) -> Result<()> {
         let job = self.job(id)?;
         let wanted: Vec<(usize, JobFile)> = job.wanted().map(|(i, f)| (i, f.clone())).collect();
-        let missing: Vec<&(usize, JobFile)> = wanted.iter().filter(|(_, f)| !complete(&job.dest(f), f.len)).collect();
+        let missing: Vec<&(usize, JobFile)> = wanted
+            .iter()
+            .filter(|(_, f)| !complete(&job.dest(f), f.len))
+            .collect();
         if missing.is_empty() {
             return Ok(());
         }
@@ -559,7 +690,10 @@ impl Manager {
             Some(r) => r.clone(),
             None => {
                 self.set_phase(live, Phase::Adding);
-                let r = client.add(torrent, &job.name).await.map_err(permanent_unless_key)?;
+                let r = client
+                    .add(torrent, &job.name)
+                    .await
+                    .map_err(permanent_unless_key)?;
                 self.update_job(id, |j| {
                     j.remote_id = Some(r.clone());
                     j.remote_selection.clear();
@@ -577,23 +711,52 @@ impl Manager {
             let remote = client.status(&remote_id).await?;
             match &remote.state {
                 RemoteState::Ready => break remote,
-                RemoteState::Failed(message) => return Err(anyhow::Error::new(Permanent(message.clone()))),
+                RemoteState::Failed(message) => {
+                    return Err(anyhow::Error::new(Permanent(message.clone())));
+                }
                 RemoteState::NeedsSelection => {
-                    let wanted_paths: Vec<(&str, u64)> = wanted.iter().map(|(_, f)| (f.path.as_str(), f.len)).collect();
+                    let wanted_paths: Vec<(&str, u64)> = wanted
+                        .iter()
+                        .map(|(_, f)| (f.path.as_str(), f.len))
+                        .collect();
                     let matched = match_files(&wanted_paths, &remote.files);
                     if let Some(pos) = matched.iter().position(Option::is_none) {
-                        return Err(Permanent::error(format!("{} doesn't list “{}”", client.provider.name(), wanted[pos].1.path)));
+                        return Err(Permanent::error(format!(
+                            "{} doesn't list “{}”",
+                            client.provider.name(),
+                            wanted[pos].1.path
+                        )));
                     }
-                    let ids: Vec<String> = matched.iter().flatten().map(|&r| remote.files[r].id.clone()).collect();
+                    let ids: Vec<String> = matched
+                        .iter()
+                        .flatten()
+                        .map(|&r| remote.files[r].id.clone())
+                        .collect();
                     client.select(&remote_id, &ids).await?;
-                    self.update_job(id, |j| j.remote_selection = wanted.iter().map(|(_, f)| f.index).collect());
+                    self.update_job(id, |j| {
+                        j.remote_selection = wanted.iter().map(|(_, f)| f.index).collect()
+                    });
                 }
-                RemoteState::Working { status, progress, speed, seeders } => {
+                RemoteState::Working {
+                    status,
+                    progress,
+                    speed,
+                    seeders,
+                } => {
                     self.set_phase(
                         live,
-                        Phase::Remote { status: status.clone(), progress: *progress, speed: *speed, seeders: *seeders },
+                        Phase::Remote {
+                            status: status.clone(),
+                            progress: *progress,
+                            speed: *speed,
+                            seeders: *seeders,
+                        },
                     );
-                    let wait = if polls < 15 { self.timing.poll } else { self.timing.poll * 3 };
+                    let wait = if polls < 15 {
+                        self.timing.poll
+                    } else {
+                        self.timing.poll * 3
+                    };
                     polls += 1;
                     sleep_unless(wait, cancel).await;
                 }
@@ -601,7 +764,10 @@ impl Manager {
         };
 
         // Which of the service's files is which.
-        let wanted_paths: Vec<(&str, u64)> = missing.iter().map(|(_, f)| (f.path.as_str(), f.len)).collect();
+        let wanted_paths: Vec<(&str, u64)> = missing
+            .iter()
+            .map(|(_, f)| (f.path.as_str(), f.len))
+            .collect();
         let matched = match_files(&wanted_paths, &remote.files);
         for (k, m) in matched.iter().enumerate() {
             let selected = m.is_some_and(|r| remote.files[r].selected);
@@ -611,7 +777,11 @@ impl Manager {
                     let _ = client.delete(&remote_id).await;
                     return Err(anyhow::Error::new(Gone));
                 }
-                return Err(Permanent::error(format!("{} doesn't list “{}”", client.provider.name(), missing[k].1.path)));
+                return Err(Permanent::error(format!(
+                    "{} doesn't list “{}”",
+                    client.provider.name(),
+                    missing[k].1.path
+                )));
             }
         }
 
@@ -680,7 +850,9 @@ fn on_disk(dest: &Path, len: u64) -> u64 {
     if complete(dest, len) {
         return len;
     }
-    std::fs::metadata(part_path(dest)).map(|m| m.len().min(len)).unwrap_or(0)
+    std::fs::metadata(part_path(dest))
+        .map(|m| m.len().min(len))
+        .unwrap_or(0)
 }
 
 async fn sleep_unless(duration: Duration, cancel: &AtomicBool) {
@@ -710,7 +882,10 @@ async fn fetch(
         tokio::fs::create_dir_all(dir).await?;
     }
     let part = part_path(dest);
-    let mut have = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
+    let mut have = tokio::fs::metadata(&part)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
     if have > len {
         have = 0;
     }
@@ -719,7 +894,10 @@ async fn fetch(
         if have > 0 {
             req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
         }
-        let mut resp = req.send().await.context("could not reach the download server")?;
+        let mut resp = req
+            .send()
+            .await
+            .context("could not reach the download server")?;
         let status = resp.status();
         let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT
             && resp
@@ -735,7 +913,12 @@ async fn fetch(
         if !status.is_success() {
             bail!("the download server returned HTTP {status}");
         }
-        let mut file = tokio::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&part).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&part)
+            .await?;
         if resumed {
             file.seek(std::io::SeekFrom::Start(have)).await?;
         } else {
@@ -765,7 +948,11 @@ async fn fetch(
             if last.elapsed() >= Duration::from_millis(250) {
                 let elapsed = started.elapsed().as_secs_f64().max(0.001);
                 let average = (have - start_have) as f64 / elapsed;
-                speed = if speed == 0.0 { average } else { speed * 0.7 + average * 0.3 };
+                speed = if speed == 0.0 {
+                    average
+                } else {
+                    speed * 0.7 + average * 0.3
+                };
                 progress(have, speed);
                 last = Instant::now();
             }
@@ -776,7 +963,9 @@ async fn fetch(
             bail!("the download stopped at {have} of {len} bytes");
         }
     }
-    tokio::fs::rename(&part, dest).await.with_context(|| format!("could not finish {}", dest.display()))?;
+    tokio::fs::rename(&part, dest)
+        .await
+        .with_context(|| format!("could not finish {}", dest.display()))?;
     progress(len, 0.0);
     Ok(())
 }
@@ -829,21 +1018,35 @@ pub(crate) mod tests {
     }
 
     pub fn content(seed: u8, len: u64) -> String {
-        (0..len).map(|i| (b'a' + ((i as u8).wrapping_add(seed)) % 26) as char).collect()
+        (0..len)
+            .map(|i| (b'a' + ((i as u8).wrapping_add(seed)) % 26) as char)
+            .collect()
     }
 
     /// Serve `body` honouring a `Range: bytes=N-` header.
     pub fn serve(req: &crate::mock_http::Req, body: &str) -> Resp {
-        match req.headers.get("range").and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.strip_suffix('-')) {
+        match req
+            .headers
+            .get("range")
+            .and_then(|r| r.strip_prefix("bytes="))
+            .and_then(|r| r.strip_suffix('-'))
+        {
             Some(start) => {
                 let start: usize = start.parse().unwrap();
                 Resp {
                     status: 206,
-                    headers: vec![("Content-Range".into(), format!("bytes {start}-{}/{}", body.len() - 1, body.len()))],
+                    headers: vec![(
+                        "Content-Range".into(),
+                        format!("bytes {start}-{}/{}", body.len() - 1, body.len()),
+                    )],
                     body: body.as_bytes()[start..].to_vec(),
                 }
             }
-            None => Resp { status: 200, headers: vec![], body: body.as_bytes().to_vec() },
+            None => Resp {
+                status: 200,
+                headers: vec![],
+                body: body.as_bytes().to_vec(),
+            },
         }
     }
 
@@ -854,15 +1057,29 @@ pub(crate) mod tests {
             if done(&v) {
                 return v;
             }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}: {:?}", v.live);
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}: {:?}",
+                v.live
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
     fn manager(state: &Path, provider: Provider, base: &str) -> Arc<Manager> {
         let keys = BTreeMap::from([(provider, "key".to_owned())]);
-        let timing = Timing { poll: Duration::from_millis(20), retry: Duration::from_millis(20) };
-        let m = Manager::load_with(state, tokio::runtime::Handle::current(), keys, || {}, reqwest::Client::new(), timing);
+        let timing = Timing {
+            poll: Duration::from_millis(20),
+            retry: Duration::from_millis(20),
+        };
+        let m = Manager::load_with(
+            state,
+            tokio::runtime::Handle::current(),
+            keys,
+            || {},
+            reqwest::Client::new(),
+            timing,
+        );
         m.bases.lock().unwrap().insert(provider, base.to_owned());
         m
     }
@@ -887,8 +1104,16 @@ pub(crate) mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn real_debrid_job_end_to_end() {
-        let files = [("Show - 01.mkv", 300_000u64), ("Show - 02.mkv", 200_000), ("Extras/NCOP.mkv", 100_000)];
-        let bodies: Vec<String> = files.iter().enumerate().map(|(i, f)| content(i as u8, f.1)).collect();
+        let files = [
+            ("Show - 01.mkv", 300_000u64),
+            ("Show - 02.mkv", 200_000),
+            ("Extras/NCOP.mkv", 100_000),
+        ];
+        let bodies: Vec<String> = files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| content(i as u8, f.1))
+            .collect();
         let torrent = make_torrent("Show S01", &files);
         let listing = crate::engine::listing_from_bytes(torrent.clone()).unwrap();
 
@@ -966,45 +1191,80 @@ pub(crate) mod tests {
         std::fs::write(part_path(&out.join("Show - 01.mkv")), &bodies[0][..1000]).unwrap();
 
         let m = manager(&state, Provider::RealDebrid, &base);
-        m.add(Provider::RealDebrid, &listing, &[0, 2], out.clone()).unwrap();
+        m.add(Provider::RealDebrid, &listing, &[0, 2], out.clone())
+            .unwrap();
         let id = m.job_for(&listing_hash(&torrent)).unwrap();
-        let v = wait_for(&m, id, "episodes 1 and NCOP", |v| v.live.phase == Phase::Done).await;
+        let v = wait_for(&m, id, "episodes 1 and NCOP", |v| {
+            v.live.phase == Phase::Done
+        })
+        .await;
         assert_eq!(v.have_bytes(), 400_000);
-        assert_eq!(std::fs::read_to_string(out.join("Show - 01.mkv")).unwrap(), bodies[0]);
-        assert_eq!(std::fs::read_to_string(out.join("Extras/NCOP.mkv")).unwrap(), bodies[2]);
+        assert_eq!(
+            std::fs::read_to_string(out.join("Show - 01.mkv")).unwrap(),
+            bodies[0]
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("Extras/NCOP.mkv")).unwrap(),
+            bodies[2]
+        );
         assert!(!out.join("Show - 02.mkv").exists(), "not selected");
         assert!(!part_path(&out.join("Show - 01.mkv")).exists());
         {
             let s = rd.lock().unwrap();
-            assert_eq!(s.selected, ["1,3"], "only the picked files are fetched by Real-Debrid");
-            assert_eq!(s.ranges, ["1:bytes=1000-", "1:bytes=1000-"], "resumed from the partial file, also after the 503");
+            assert_eq!(
+                s.selected,
+                ["1,3"],
+                "only the picked files are fetched by Real-Debrid"
+            );
+            assert_eq!(
+                s.ranges,
+                ["1:bytes=1000-", "1:bytes=1000-"],
+                "resumed from the partial file, also after the 503"
+            );
         }
 
         // Pick episode 2 too: Real-Debrid didn't fetch it, so the torrent is re-added.
-        m.add(Provider::RealDebrid, &listing, &[0, 1, 2], out.clone()).unwrap();
-        let v = wait_for(&m, id, "episode 2", |v| v.live.phase == Phase::Done && v.have_bytes() == 600_000).await;
+        m.add(Provider::RealDebrid, &listing, &[0, 1, 2], out.clone())
+            .unwrap();
+        let v = wait_for(&m, id, "episode 2", |v| {
+            v.live.phase == Phase::Done && v.have_bytes() == 600_000
+        })
+        .await;
         assert_eq!(v.job.remote_id.as_deref(), Some("T2"));
-        assert_eq!(std::fs::read_to_string(out.join("Show - 02.mkv")).unwrap(), bodies[1]);
+        assert_eq!(
+            std::fs::read_to_string(out.join("Show - 02.mkv")).unwrap(),
+            bodies[1]
+        );
         {
             let s = rd.lock().unwrap();
             assert_eq!(s.adds, 2);
             assert_eq!(s.deleted, ["T1"]);
             assert_eq!(s.selected.last().unwrap(), "1,2,3");
-            assert_eq!(s.gets.get("/files/3"), Some(&1), "finished files aren't downloaded again");
+            assert_eq!(
+                s.gets.get("/files/3"),
+                Some(&1),
+                "finished files aren't downloaded again"
+            );
         }
 
         // Series files for remuxing, and the file picker's view of the job.
         let series = m.series_files(id, &dir).unwrap();
         assert_eq!(series.files.len(), 3);
         assert_eq!(series.not_ready, 0);
-        assert_eq!(m.listing(id).unwrap().existing.unwrap().only_files, Some(vec![0, 1, 2]));
+        assert_eq!(
+            m.listing(id).unwrap().existing.unwrap().only_files,
+            Some(vec![0, 1, 2])
+        );
 
         // A restart finds it done.
         m.stop();
         drop(m);
         let m = manager(&state, Provider::RealDebrid, &base);
         let v = m.view(id).unwrap();
-        assert_eq!((v.live.phase.clone(), v.have_bytes()), (Phase::Done, 600_000));
+        assert_eq!(
+            (v.live.phase.clone(), v.have_bytes()),
+            (Phase::Done, 600_000)
+        );
 
         // Removing it deletes the files and the torrent on Real-Debrid.
         m.remove(id, true);
@@ -1033,7 +1293,8 @@ pub(crate) mod tests {
         let hold = Arc::new(AtomicBool::new(true));
         let polls = Arc::new(AtomicUsize::new(0));
         let base_cell = Arc::new(Mutex::new(String::new()));
-        let (hold_in, polls_in, base_for, body_in) = (hold.clone(), polls.clone(), base_cell.clone(), body.clone());
+        let (hold_in, polls_in, base_for, body_in) =
+            (hold.clone(), polls.clone(), base_cell.clone(), body.clone());
         let base = mock(move |req| {
             let ok = |data: serde_json::Value| reply(200, json!({"success": true, "data": data}));
             match req.target.split('?').next().unwrap() {
@@ -1055,25 +1316,42 @@ pub(crate) mod tests {
         let dir = scratch("tb");
         let out = dir.join("Movie");
         std::fs::create_dir_all(&out).unwrap();
-        std::fs::write(part_path(&out.join("Movie.mkv")), "garbage that isn't the start of the file").unwrap();
+        std::fs::write(
+            part_path(&out.join("Movie.mkv")),
+            "garbage that isn't the start of the file",
+        )
+        .unwrap();
 
         let m = manager(&dir.join("state"), Provider::TorBox, &base);
-        m.add(Provider::TorBox, &listing, &[0], out.clone()).unwrap();
+        m.add(Provider::TorBox, &listing, &[0], out.clone())
+            .unwrap();
         let id = m.job_for(&listing_hash(&torrent)).unwrap();
-        let v = wait_for(&m, id, "TorBox fetching", |v| matches!(v.live.phase, Phase::Remote { .. })).await;
-        assert!(matches!(v.live.phase, Phase::Remote { progress: Some(p), .. } if (p - 0.3).abs() < 1e-6));
+        let v = wait_for(&m, id, "TorBox fetching", |v| {
+            matches!(v.live.phase, Phase::Remote { .. })
+        })
+        .await;
+        assert!(
+            matches!(v.live.phase, Phase::Remote { progress: Some(p), .. } if (p - 0.3).abs() < 1e-6)
+        );
 
         m.pause(id);
         assert_eq!(m.view(id).unwrap().live.phase, Phase::Paused);
         tokio::time::sleep(Duration::from_millis(200)).await;
         let after_pause = polls.load(Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(polls.load(Ordering::SeqCst), after_pause, "a paused job stops polling");
+        assert_eq!(
+            polls.load(Ordering::SeqCst),
+            after_pause,
+            "a paused job stops polling"
+        );
 
         hold.store(false, Ordering::SeqCst);
         m.resume(id);
         wait_for(&m, id, "done", |v| v.live.phase == Phase::Done).await;
-        assert_eq!(std::fs::read_to_string(out.join("Movie.mkv")).unwrap(), body);
+        assert_eq!(
+            std::fs::read_to_string(out.join("Movie.mkv")).unwrap(),
+            body
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1091,16 +1369,30 @@ pub(crate) mod tests {
         .await;
         let dir = scratch("ad");
         let m = manager(&dir.join("state"), Provider::AllDebrid, &base);
-        m.add(Provider::AllDebrid, &listing, &[0], dir.join("Dead")).unwrap();
+        m.add(Provider::AllDebrid, &listing, &[0], dir.join("Dead"))
+            .unwrap();
         let id = m.job_for(&listing_hash(&torrent)).unwrap();
-        let v = wait_for(&m, id, "failure", |v| matches!(v.live.phase, Phase::Failed(_))).await;
-        assert_eq!(v.live.phase, Phase::Failed("AllDebrid: File not available - no peer".into()));
+        let v = wait_for(&m, id, "failure", |v| {
+            matches!(v.live.phase, Phase::Failed(_))
+        })
+        .await;
+        assert_eq!(
+            v.live.phase,
+            Phase::Failed("AllDebrid: File not available - no peer".into())
+        );
 
         let bad = mock(|_| reply(401, json!({"error": "bad_token", "error_code": 8}))).await;
         let m = manager(&dir.join("state2"), Provider::RealDebrid, &bad);
-        m.add(Provider::RealDebrid, &listing, &[0], dir.join("Dead")).unwrap();
-        let v = wait_for(&m, id, "bad key", |v| matches!(v.live.phase, Phase::Failed(_))).await;
-        assert_eq!(v.live.phase, Phase::Failed("Real-Debrid doesn't accept the API key; check it in Settings".into()));
+        m.add(Provider::RealDebrid, &listing, &[0], dir.join("Dead"))
+            .unwrap();
+        let v = wait_for(&m, id, "bad key", |v| {
+            matches!(v.live.phase, Phase::Failed(_))
+        })
+        .await;
+        assert_eq!(
+            v.live.phase,
+            Phase::Failed("Real-Debrid doesn't accept the API key; check it in Settings".into())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

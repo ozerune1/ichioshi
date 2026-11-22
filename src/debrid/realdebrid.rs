@@ -22,7 +22,10 @@ fn check(c: &Client, status: StatusCode, body: &Value) -> Result<()> {
     if status == StatusCode::NOT_FOUND || code == Some(7) {
         return Err(anyhow::Error::new(Gone));
     }
-    let message = body["error"].as_str().map(str::to_owned).unwrap_or_else(|| format!("HTTP {status}"));
+    let message = body["error"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("HTTP {status}"));
     Err(c.error(match code {
         Some(9) | Some(20) => format!("{message} (is the account premium?)"),
         _ => message,
@@ -32,11 +35,18 @@ fn check(c: &Client, status: StatusCode, body: &Value) -> Result<()> {
 pub(super) async fn account(c: &Client) -> Result<Account> {
     let (status, v) = c.send(c.get("/user")).await?;
     check(c, status, &v)?;
-    Ok(Account { name: text(&v["username"]), premium: v["type"] == "premium", until: date(&v["expiration"]) })
+    Ok(Account {
+        name: text(&v["username"]),
+        premium: v["type"] == "premium",
+        until: date(&v["expiration"]),
+    })
 }
 
 pub(super) async fn add(c: &Client, torrent: &[u8]) -> Result<String> {
-    let req = c.put("/torrents/addTorrent").header(reqwest::header::CONTENT_TYPE, "application/x-bittorrent").body(torrent.to_vec());
+    let req = c
+        .put("/torrents/addTorrent")
+        .header(reqwest::header::CONTENT_TYPE, "application/x-bittorrent")
+        .body(torrent.to_vec());
     let (status, v) = c.send(req).await?;
     check(c, status, &v)?;
     id(&v["id"]).ok_or_else(|| c.error("no torrent ID in the reply"))
@@ -64,8 +74,14 @@ pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
         "waiting_files_selection" => RemoteState::NeedsSelection,
         "downloaded" => {
             // One link per selected file, in file order.
-            let links: Vec<String> = v["links"].as_array().into_iter().flatten().filter_map(|l| l.as_str().map(str::to_owned)).collect();
-            let mut selected: Vec<&mut RemoteFile> = files.iter_mut().filter(|f| f.selected).collect();
+            let links: Vec<String> = v["links"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|l| l.as_str().map(str::to_owned))
+                .collect();
+            let mut selected: Vec<&mut RemoteFile> =
+                files.iter_mut().filter(|f| f.selected).collect();
             selected.sort_by_key(|f| f.id.parse::<u64>().unwrap_or(u64::MAX));
             if links.len() == selected.len() {
                 for (file, link) in selected.into_iter().zip(links) {
@@ -80,7 +96,9 @@ pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
                 ))
             }
         }
-        "magnet_error" | "error" | "virus" | "dead" => RemoteState::Failed(format!("Real-Debrid reports “{word}”")),
+        "magnet_error" | "error" | "virus" | "dead" => {
+            RemoteState::Failed(format!("Real-Debrid reports “{word}”"))
+        }
         _ => RemoteState::Working {
             status: word.replace('_', " "),
             progress: num(&v["progress"]).map(|p| p as f32 / 100.0),
@@ -92,21 +110,33 @@ pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
 }
 
 pub(super) async fn select(c: &Client, torrent: &str, file_ids: &[String]) -> Result<()> {
-    let req = c.post(&format!("/torrents/selectFiles/{torrent}")).form(&[("files", file_ids.join(","))]);
+    let req = c
+        .post(&format!("/torrents/selectFiles/{torrent}"))
+        .form(&[("files", file_ids.join(","))]);
     let (status, v) = c.send(req).await?;
     // 202: already done.
     check(c, status, &v)
 }
 
 pub(super) async fn link(c: &Client, file: &RemoteFile) -> Result<String> {
-    let link = file.link.as_deref().ok_or_else(|| c.error(format!("no link for {}", file.path)))?;
-    let (status, v) = c.send(c.post("/unrestrict/link").form(&[("link", link)])).await?;
+    let link = file
+        .link
+        .as_deref()
+        .ok_or_else(|| c.error(format!("no link for {}", file.path)))?;
+    let (status, v) = c
+        .send(c.post("/unrestrict/link").form(&[("link", link)]))
+        .await?;
     check(c, status, &v)?;
-    v["download"].as_str().map(str::to_owned).ok_or_else(|| c.error("no download URL in the reply"))
+    v["download"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| c.error("no download URL in the reply"))
 }
 
 pub(super) async fn delete(c: &Client, torrent: &str) -> Result<()> {
-    let (status, v) = c.send(c.delete_req(&format!("/torrents/delete/{torrent}"))).await?;
+    let (status, v) = c
+        .send(c.delete_req(&format!("/torrents/delete/{torrent}")))
+        .await?;
     match check(c, status, &v) {
         Err(e) if e.downcast_ref::<Gone>().is_some() => Ok(()),
         other => other,
@@ -165,18 +195,37 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::RealDebrid, "key", &base);
-        assert_eq!(c.account().await.unwrap(), Account { name: "me".into(), premium: true, until: Some("2027-03-01".into()) });
+        assert_eq!(
+            c.account().await.unwrap(),
+            Account {
+                name: "me".into(),
+                premium: true,
+                until: Some("2027-03-01".into())
+            }
+        );
         let id = c.add(b"d4:infod...ee", "Show").await.unwrap();
         assert_eq!(id, "ABC");
-        assert_eq!(c.status(&id).await.unwrap().state, RemoteState::NeedsSelection);
+        assert_eq!(
+            c.status(&id).await.unwrap().state,
+            RemoteState::NeedsSelection
+        );
         c.select(&id, &["1".into(), "3".into()]).await.unwrap();
         assert_eq!(*selected.lock().unwrap(), "1,3");
         let remote = c.status(&id).await.unwrap();
         assert_eq!(remote.state, RemoteState::Ready);
         let third = &remote.files[2];
-        assert_eq!((third.path.as_str(), third.link.as_deref()), ("/Show/Show - 03.mkv", Some("https://real-debrid.com/d/three")));
+        assert_eq!(
+            (third.path.as_str(), third.link.as_deref()),
+            (
+                "/Show/Show - 03.mkv",
+                Some("https://real-debrid.com/d/three")
+            )
+        );
         assert_eq!(remote.files[1].link, None, "not selected");
-        assert_eq!(c.link(&id, third).await.unwrap(), "https://dl.example/three");
+        assert_eq!(
+            c.link(&id, third).await.unwrap(),
+            "https://dl.example/three"
+        );
         c.delete(&id).await.unwrap();
         c.delete("GONE").await.unwrap();
     }
@@ -189,7 +238,19 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::RealDebrid, "nope", &base);
-        assert!(c.account().await.unwrap_err().downcast_ref::<super::super::BadKey>().is_some());
-        assert!(c.status("X").await.unwrap_err().downcast_ref::<Gone>().is_some());
+        assert!(
+            c.account()
+                .await
+                .unwrap_err()
+                .downcast_ref::<super::super::BadKey>()
+                .is_some()
+        );
+        assert!(
+            c.status("X")
+                .await
+                .unwrap_err()
+                .downcast_ref::<Gone>()
+                .is_some()
+        );
     }
 }

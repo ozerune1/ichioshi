@@ -30,9 +30,22 @@ impl VpnState {
     pub(super) fn load(state_dir: &Path, rt: &tokio::runtime::Handle, ctx: egui::Context) -> Self {
         let file = state_dir.join("vpn.json");
         let config = Config::load(&file);
-        let monitor = Monitor::start(rt, config.clone(), Env::default(), move || ctx.request_repaint());
-        let port_text = config.manual_port().map(|p| p.to_string()).unwrap_or_default();
-        Self { config, file, monitor, port_text, busy: false, loopback: vpn::loopback(), waiting: None }
+        let monitor = Monitor::start(rt, config.clone(), Env::default(), move || {
+            ctx.request_repaint()
+        });
+        let port_text = config
+            .manual_port()
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+        Self {
+            config,
+            file,
+            monitor,
+            port_text,
+            busy: false,
+            loopback: vpn::loopback(),
+            waiting: None,
+        }
     }
 
     fn save(&self) {
@@ -100,7 +113,10 @@ impl App {
         self.engine = EngineState::Starting;
         self.engine_net = Some(net.clone());
         if let Some(interface) = &net.interface {
-            let port = net.port.map(|p| format!(", listening on port {p}")).unwrap_or_default();
+            let port = net
+                .port
+                .map(|p| format!(", listening on port {p}"))
+                .unwrap_or_default();
             tracing::info!("torrents go through {interface}{port}");
         }
         let (current, lock) = (self.engine_seq.clone(), self.engine_lock.clone());
@@ -177,7 +193,9 @@ impl App {
     }
 
     pub(super) fn vpn_fix(&mut self, fix: Fix) {
-        let Some(piactl) = self.vpn.monitor.piactl() else { return };
+        let Some(piactl) = self.vpn.monitor.piactl() else {
+            return;
+        };
         self.vpn.busy = true;
         self.spawn(async move {
             let result = match fix {
@@ -204,11 +222,19 @@ impl App {
             ui.weak("Downloading over a VPN isn't supported on this system yet.");
             return;
         }
-        if ui.checkbox(&mut self.vpn.config.enabled, "Only download torrents over a VPN").changed() {
+        if ui
+            .checkbox(
+                &mut self.vpn.config.enabled,
+                "Only download torrents over a VPN",
+            )
+            .changed()
+        {
             self.vpn.save();
         }
         if !self.vpn.config.enabled {
-            ui.weak("Torrents use your normal connection, or whatever VPN the whole computer is on.");
+            ui.weak(
+                "Torrents use your normal connection, or whatever VPN the whole computer is on.",
+            );
             return;
         }
         ui.indent("vpn", |ui| {
@@ -295,7 +321,11 @@ impl App {
             Status::Off => return,
             Status::Checking => (ui.visuals().text_color(), "VPN: checking…".to_owned()),
             Status::Down { .. } => (ui.visuals().warn_fg_color, "VPN: not connected".to_owned()),
-            Status::Up { interface, port: Port::Open(p), .. } => (GREEN, format!("VPN: {interface} · port {p}")),
+            Status::Up {
+                interface,
+                port: Port::Open(p),
+                ..
+            } => (GREEN, format!("VPN: {interface} · port {p}")),
             Status::Up { interface, .. } => (GREEN, format!("VPN: {interface}")),
         };
         super::status_dot(ui, color);
@@ -312,12 +342,18 @@ impl App {
     pub(super) fn vpn_banner(&self, ui: &mut Ui, reason: &str, actions: &mut Vec<Action>) {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("⏸ Torrents are waiting for the VPN").strong().color(ui.visuals().warn_fg_color));
+            ui.label(
+                RichText::new("⏸ Torrents are waiting for the VPN")
+                    .strong()
+                    .color(ui.visuals().warn_fg_color),
+            );
             if !reason.is_empty() {
                 ui.label(reason);
             }
             if self.vpn.monitor.status().fix() == Some(Fix::PiaConnect)
-                && ui.add_enabled(!self.vpn.busy, egui::Button::new("Connect PIA")).clicked()
+                && ui
+                    .add_enabled(!self.vpn.busy, egui::Button::new("Connect PIA"))
+                    .clicked()
             {
                 actions.push(Action::VpnFix(Fix::PiaConnect));
             }
@@ -336,14 +372,28 @@ fn vpn_status_line(ui: &mut Ui, status: &Status) {
             });
         }
         Status::Down { reason, .. } => {
-            ui.colored_label(ui.visuals().warn_fg_color, format!("Not connected: {reason}"));
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("Not connected: {reason}"),
+            );
         }
-        Status::Up { interface, ip, port, .. } => {
+        Status::Up {
+            interface,
+            ip,
+            port,
+            ..
+        } => {
             ui.colored_label(GREEN, format!("✔ Connected through {interface} ({ip})"));
             let (color, text) = match port {
                 Port::Open(p) => (GREEN, format!("✔ Port {p} forwarded")),
-                Port::Requesting => (ui.visuals().text_color(), "Getting a forwarded port…".to_owned()),
-                Port::Unavailable(why) | Port::None(why) => (ui.visuals().weak_text_color(), format!("No forwarded port: {why}")),
+                Port::Requesting => (
+                    ui.visuals().text_color(),
+                    "Getting a forwarded port…".to_owned(),
+                ),
+                Port::Unavailable(why) | Port::None(why) => (
+                    ui.visuals().weak_text_color(),
+                    format!("No forwarded port: {why}"),
+                ),
             };
             ui.colored_label(color, text);
         }
@@ -355,6 +405,8 @@ impl App {
     /// Watch the VPN through `env` instead of the real system.
     pub(super) fn use_vpn_env_for_test(&mut self, env: Env) {
         let ctx = self.ctx.clone();
-        self.vpn.monitor = Monitor::start(&self.rt, self.vpn.config.clone(), env, move || ctx.request_repaint());
+        self.vpn.monitor = Monitor::start(&self.rt, self.vpn.config.clone(), env, move || {
+            ctx.request_repaint()
+        });
     }
 }

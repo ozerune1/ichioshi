@@ -57,8 +57,34 @@ pub struct Details {
     pub next_episode: Option<(u32, i64)>,
     pub cover: Option<String>,
     pub banner: Option<String>,
+    /// Episode titles and air times, where known.
+    pub episode_list: Vec<EpisodeInfo>,
     /// When these were fetched (Unix time).
     pub fetched: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EpisodeInfo {
+    pub number: u32,
+    pub title: Option<String>,
+    /// When it aired (or airs), Unix time.
+    pub airs: Option<i64>,
+}
+
+impl Details {
+    pub fn episode(&self, number: u32) -> Option<&EpisodeInfo> {
+        self.episode_list.iter().find(|e| e.number == number)
+    }
+
+    /// Episodes out so far: all of them once it's finished.
+    pub fn aired(&self) -> Option<u32> {
+        match (self.status.as_deref(), self.next_episode) {
+            (_, Some((next, _))) => Some(next.saturating_sub(1)),
+            (Some("NOT_YET_RELEASED"), _) => Some(0),
+            _ => self.episodes,
+        }
+    }
 }
 
 /// A file whose default tracks have been set: with which preferences, and
@@ -106,11 +132,18 @@ pub struct Series {
 
 impl Series {
     pub fn title(&self) -> &str {
-        self.english.as_deref().or(self.romaji.as_deref()).unwrap_or("Untitled")
+        self.english
+            .as_deref()
+            .or(self.romaji.as_deref())
+            .unwrap_or("Untitled")
     }
 
     pub fn anime_ref(&self) -> AnimeRef {
-        AnimeRef { anilist_id: self.anilist_id, english: self.english.clone(), romaji: self.romaji.clone() }
+        AnimeRef {
+            anilist_id: self.anilist_id,
+            english: self.english.clone(),
+            romaji: self.romaji.clone(),
+        }
     }
 
     /// The video files in its folder (and folders inside it), sorted.
@@ -123,7 +156,9 @@ impl Series {
 }
 
 fn collect_videos(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let path = e.path();
         let name = e.file_name();
@@ -171,12 +206,22 @@ impl Library {
         } else if let Ok(saved) = serde_json::from_str::<Saved>(&text) {
             saved.series
         } else if let Ok(old) = serde_json::from_str::<HashMap<String, AnimeRef>>(&text) {
-            let mut lib = Self { path: path.clone(), series: Vec::new() };
+            let mut lib = Self {
+                path: path.clone(),
+                series: Vec::new(),
+            };
             let mut old: Vec<(String, AnimeRef)> = old.into_iter().collect();
             old.sort_by(|a, b| a.0.cmp(&b.0));
             for (hash, anime) in old {
-                let new = NewSeries { anilist_id: anime.anilist_id, english: anime.english, romaji: anime.romaji, ..Default::default() };
-                lib.add(&new, root).downloads.insert(hash.to_ascii_lowercase());
+                let new = NewSeries {
+                    anilist_id: anime.anilist_id,
+                    english: anime.english,
+                    romaji: anime.romaji,
+                    ..Default::default()
+                };
+                lib.add(&new, root)
+                    .downloads
+                    .insert(hash.to_ascii_lowercase());
             }
             lib.save_or_warn();
             lib.series
@@ -188,7 +233,12 @@ impl Library {
     }
 
     fn save(&self) -> Result<()> {
-        crate::fsutil::write_private(&self.path, &serde_json::to_vec_pretty(&Saved { series: self.series.clone() })?)
+        crate::fsutil::write_private(
+            &self.path,
+            &serde_json::to_vec_pretty(&Saved {
+                series: self.series.clone(),
+            })?,
+        )
     }
 
     pub fn save_or_warn(&self) {
@@ -220,7 +270,11 @@ impl Library {
         if let Some(s) = self.find(new.anilist_id) {
             return s.folder.clone();
         }
-        let title = new.english.as_deref().or(new.romaji.as_deref()).unwrap_or("Untitled");
+        let title = new
+            .english
+            .as_deref()
+            .or(new.romaji.as_deref())
+            .unwrap_or("Untitled");
         let name = sanitize_folder_name(title);
         let taken = |p: &Path| self.series.iter().any(|s| s.folder == p);
         let plain = root.join(&name);
@@ -236,7 +290,11 @@ impl Library {
 
     /// Add a series (or return it if it's there), and save.
     pub fn add(&mut self, new: &NewSeries, root: &Path) -> &mut Series {
-        if let Some(i) = self.series.iter().position(|s| s.anilist_id == new.anilist_id) {
+        if let Some(i) = self
+            .series
+            .iter()
+            .position(|s| s.anilist_id == new.anilist_id)
+        {
             // Fill in what wasn't known before.
             let s = &mut self.series[i];
             s.cover = s.cover.take().or(new.cover.clone());
@@ -266,7 +324,12 @@ impl Library {
     }
 
     /// Remember that these torrents belong to a series (added if needed), and save.
-    pub fn record(&mut self, info_hashes: impl IntoIterator<Item = String>, new: &NewSeries, root: &Path) {
+    pub fn record(
+        &mut self,
+        info_hashes: impl IntoIterator<Item = String>,
+        new: &NewSeries,
+        root: &Path,
+    ) {
         let series = self.add(new, root);
         for hash in info_hashes {
             series.downloads.insert(hash.to_ascii_lowercase());
@@ -276,7 +339,10 @@ impl Library {
 
     /// Take a series out of the library (its files are left alone).
     pub fn remove(&mut self, anilist_id: u64) -> Option<Series> {
-        let i = self.series.iter().position(|s| s.anilist_id == anilist_id)?;
+        let i = self
+            .series
+            .iter()
+            .position(|s| s.anilist_id == anilist_id)?;
         let s = self.series.remove(i);
         self.save_or_warn();
         Some(s)
@@ -287,7 +353,12 @@ impl Library {
 /// A name already taken gets " (2)" and so on; across drives, files are
 /// copied and then deleted. Folders left empty are removed, except
 /// `protected` ones. Returns what moved where.
-pub fn move_files(from: &Path, to: &Path, files: &[String], protected: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>> {
+pub fn move_files(
+    from: &Path,
+    to: &Path,
+    files: &[String],
+    protected: &[PathBuf],
+) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut moved = Vec::new();
     for rel in files {
         let src = from.join(rel);
@@ -299,7 +370,10 @@ pub fn move_files(from: &Path, to: &Path, files: &[String], protected: &[PathBuf
         moved.push((src, dest));
     }
     // Tidy up the folders the files were in.
-    let mut dirs: Vec<PathBuf> = moved.iter().filter_map(|(src, _)| src.parent().map(Path::to_owned)).collect();
+    let mut dirs: Vec<PathBuf> = moved
+        .iter()
+        .filter_map(|(src, _)| src.parent().map(Path::to_owned))
+        .collect();
     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
     dirs.dedup();
     for dir in dirs {
@@ -315,7 +389,9 @@ pub fn move_files(from: &Path, to: &Path, files: &[String], protected: &[PathBuf
 }
 
 fn is_protected(dir: &Path, protected: &[PathBuf]) -> bool {
-    dir.parent().is_none() || dirs::home_dir().is_some_and(|h| h == dir) || protected.iter().any(|p| p.starts_with(dir))
+    dir.parent().is_none()
+        || dirs::home_dir().is_some_and(|h| h == dir)
+        || protected.iter().any(|p| p.starts_with(dir))
 }
 
 /// `path`, or "name (2).ext" and so on if that's taken.
@@ -323,8 +399,14 @@ fn free_name(path: &Path) -> PathBuf {
     if !path.exists() {
         return path.to_owned();
     }
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     (2..)
         .map(|n| path.with_file_name(format!("{stem} ({n}){ext}")))
         .find(|p| !p.exists())
@@ -353,7 +435,12 @@ mod tests {
     use super::*;
 
     fn new(id: u64, english: &str, year: i32) -> NewSeries {
-        NewSeries { anilist_id: id, english: Some(english.into()), year: Some(year), ..Default::default() }
+        NewSeries {
+            anilist_id: id,
+            english: Some(english.into()),
+            year: Some(year),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -364,21 +451,43 @@ mod tests {
         let mut lib = Library::load(path.clone(), &root);
         assert!(lib.series.is_empty() && lib.get("ABC").is_none());
 
-        lib.record(["ABCdef".to_owned()], &new(1, "Frieren: Beyond Journey's End", 2023), &root);
-        assert_eq!(lib.find(1).unwrap().folder, root.join("Frieren: Beyond Journey's End"));
+        lib.record(
+            ["ABCdef".to_owned()],
+            &new(1, "Frieren: Beyond Journey's End", 2023),
+            &root,
+        );
+        assert_eq!(
+            lib.find(1).unwrap().folder,
+            root.join("Frieren: Beyond Journey's End")
+        );
         // Same title, another anime: the year tells them apart, then the ID.
         lib.add(&new(2, "Frieren: Beyond Journey's End", 2026), &root);
         lib.add(&new(3, "Frieren: Beyond Journey's End", 2026), &root);
-        assert_eq!(lib.find(2).unwrap().folder, root.join("Frieren: Beyond Journey's End (2026)"));
-        assert_eq!(lib.find(3).unwrap().folder, root.join("Frieren: Beyond Journey's End [3]"));
+        assert_eq!(
+            lib.find(2).unwrap().folder,
+            root.join("Frieren: Beyond Journey's End (2026)")
+        );
+        assert_eq!(
+            lib.find(3).unwrap().folder,
+            root.join("Frieren: Beyond Journey's End [3]")
+        );
         // Adding again changes nothing but what was missing.
-        lib.add(&NewSeries { cover: Some("c.png".into()), ..new(1, "Other name", 2000) }, &root);
+        lib.add(
+            &NewSeries {
+                cover: Some("c.png".into()),
+                ..new(1, "Other name", 2000)
+            },
+            &root,
+        );
         assert_eq!(lib.series.len(), 3);
         assert_eq!(lib.find(1).unwrap().cover.as_deref(), Some("c.png"));
 
         let lib = Library::load(path, &root);
         assert_eq!(lib.get("abcDEF").unwrap().anilist_id, 1);
-        assert_eq!(lib.series_for("ABCDEF").unwrap().title(), "Frieren: Beyond Journey's End");
+        assert_eq!(
+            lib.series_for("ABCDEF").unwrap().title(),
+            "Frieren: Beyond Journey's End"
+        );
         assert_eq!(lib.series.len(), 3);
     }
 
@@ -387,13 +496,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("Anime");
         let path = dir.path().join("library.json");
-        let a = AnimeRef { anilist_id: 7, english: None, romaji: Some("Sousou no Frieren".into()) };
+        let a = AnimeRef {
+            anilist_id: 7,
+            english: None,
+            romaji: Some("Sousou no Frieren".into()),
+        };
         let old: HashMap<&str, &AnimeRef> = [("AAA", &a), ("bbb", &a)].into();
         std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let lib = Library::load(path.clone(), &root);
         assert_eq!(lib.series.len(), 1);
         let s = &lib.series[0];
-        assert_eq!((s.anilist_id, s.title(), s.folder.clone()), (7, "Sousou no Frieren", root.join("Sousou no Frieren")));
+        assert_eq!(
+            (s.anilist_id, s.title(), s.folder.clone()),
+            (7, "Sousou no Frieren", root.join("Sousou no Frieren"))
+        );
         assert_eq!(s.downloads, ["aaa".to_owned(), "bbb".to_owned()].into());
         // Saved in the new format.
         assert_eq!(Library::load(path, &root).series, lib.series);
@@ -411,12 +527,29 @@ mod tests {
             std::fs::write(from.join(f), f).unwrap();
         }
         std::fs::write(to.join("Show - 02.mkv"), "already here").unwrap();
-        let files: Vec<String> = ["Show - 01.mkv", "Show - 02.mkv", "Extras/NCOP.mkv", "gone.mkv"].map(String::from).to_vec();
+        let files: Vec<String> = [
+            "Show - 01.mkv",
+            "Show - 02.mkv",
+            "Extras/NCOP.mkv",
+            "gone.mkv",
+        ]
+        .map(String::from)
+        .to_vec();
         let moved = move_files(&from, &to, &files, std::slice::from_ref(&downloads)).unwrap();
         assert_eq!(moved.len(), 3);
-        assert_eq!(std::fs::read_to_string(to.join("Show - 01.mkv")).unwrap(), "Show - 01.mkv");
-        assert_eq!(std::fs::read_to_string(to.join("Show - 02 (2).mkv")).unwrap(), "Show - 02.mkv", "the one there is kept");
-        assert_eq!(std::fs::read_to_string(to.join("Show - 02.mkv")).unwrap(), "already here");
+        assert_eq!(
+            std::fs::read_to_string(to.join("Show - 01.mkv")).unwrap(),
+            "Show - 01.mkv"
+        );
+        assert_eq!(
+            std::fs::read_to_string(to.join("Show - 02 (2).mkv")).unwrap(),
+            "Show - 02.mkv",
+            "the one there is kept"
+        );
+        assert_eq!(
+            std::fs::read_to_string(to.join("Show - 02.mkv")).unwrap(),
+            "already here"
+        );
         assert!(to.join("Extras/NCOP.mkv").exists());
         assert!(!from.exists(), "emptied folders go");
         assert!(downloads.exists(), "Downloads stays, even empty");
@@ -429,10 +562,20 @@ mod tests {
         let s = lib.add(&new(1, "Show", 2026), dir.path()).clone();
         std::fs::create_dir_all(s.folder.join("Extras")).unwrap();
         std::fs::create_dir_all(s.folder.join(".usenet-3")).unwrap();
-        for f in ["Show - 01.mkv", "Show - 02.mkv", "Extras/NCOP.mkv", "notes.txt", ".usenet-3/Show - 03.mkv"] {
+        for f in [
+            "Show - 01.mkv",
+            "Show - 02.mkv",
+            "Extras/NCOP.mkv",
+            "notes.txt",
+            ".usenet-3/Show - 03.mkv",
+        ] {
             std::fs::write(s.folder.join(f), b"x").unwrap();
         }
-        let names: Vec<String> = s.video_files().iter().map(|p| p.strip_prefix(&s.folder).unwrap().display().to_string()).collect();
+        let names: Vec<String> = s
+            .video_files()
+            .iter()
+            .map(|p| p.strip_prefix(&s.folder).unwrap().display().to_string())
+            .collect();
         assert_eq!(names, ["Extras/NCOP.mkv", "Show - 01.mkv", "Show - 02.mkv"]);
     }
 }

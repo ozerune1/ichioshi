@@ -9,7 +9,9 @@ use std::time::Instant;
 use eframe::egui::{self, RichText, Ui};
 
 use super::{Action, App, GREEN, Msg, fmt_duration, fmt_speed};
-use crate::gdrive::{self, Account, Drive, Endpoints, Entry, Folder, OAuthClient, Place, SignInExpired, Uploaded};
+use crate::gdrive::{
+    self, Account, Drive, Endpoints, Entry, Folder, OAuthClient, Place, SignInExpired, Uploaded,
+};
 
 pub(super) struct DriveState {
     pub(super) account: Account,
@@ -124,19 +126,34 @@ impl DriveState {
 
     /// How far along a running upload is.
     pub(super) fn upload_progress(&self) -> Option<f32> {
-        self.upload.as_ref().filter(|u| u.running()).map(|u| u.progress)
+        self.upload
+            .as_ref()
+            .filter(|u| u.running())
+            .map(|u| u.progress)
     }
 
     /// A running upload's time left (and speed), counting down between
     /// progress reports.
     pub(super) fn upload_time_left(&self) -> Option<String> {
-        self.upload.as_ref().filter(|u| u.running()).map(|u| u.time_left(Instant::now()))
+        self.upload
+            .as_ref()
+            .filter(|u| u.running())
+            .map(|u| u.time_left(Instant::now()))
     }
 }
 
 impl UploadRun {
     fn new(seq: u64, cancel: Arc<AtomicBool>, file: PathBuf, size: u64) -> Self {
-        Self { seq, cancel, progress: 0.0, file, result: None, size, last: (0.0, Instant::now()), speed: None }
+        Self {
+            seq,
+            cancel,
+            progress: 0.0,
+            file,
+            result: None,
+            size,
+            last: (0.0, Instant::now()),
+            speed: None,
+        }
     }
 
     fn running(&self) -> bool {
@@ -168,7 +185,11 @@ impl UploadRun {
 
     fn time_left(&self, now: Instant) -> String {
         match (self.seconds_left(now), self.speed) {
-            (Some(left), Some(speed)) => format!("about {} left · {}", fmt_duration(left), fmt_speed(speed / 1_048_576.0)),
+            (Some(left), Some(speed)) => format!(
+                "about {} left · {}",
+                fmt_duration(left),
+                fmt_speed(speed / 1_048_576.0)
+            ),
             _ => "estimating time left…".to_owned(),
         }
     }
@@ -185,7 +206,9 @@ impl App {
             Msg::DriveClientFile(Err(e)) if e == "no file chosen" => {}
             Msg::DriveClientFile(Err(e)) => self.set_error(format!("Couldn't use that file: {e}")),
             Msg::DriveSignInUrl { seq, url } => {
-                let Some(job) = &mut self.drive.signing_in else { return };
+                let Some(job) = &mut self.drive.signing_in else {
+                    return;
+                };
                 if job.seq != seq {
                     return;
                 }
@@ -194,7 +217,12 @@ impl App {
             }
             Msg::DriveSignedIn { seq, result } => {
                 // A sign-in that was cancelled (and maybe restarted) is over.
-                if self.drive.signing_in.as_ref().is_none_or(|job| job.seq != seq) {
+                if self
+                    .drive
+                    .signing_in
+                    .as_ref()
+                    .is_none_or(|job| job.seq != seq)
+                {
                     return;
                 }
                 self.drive.signing_in = None;
@@ -213,7 +241,11 @@ impl App {
                     Err(e) => self.set_error(format!("Google sign-in failed: {e}")),
                 }
             }
-            Msg::DriveFolders { seq, result, expired } => {
+            Msg::DriveFolders {
+                seq,
+                result,
+                expired,
+            } => {
                 if expired {
                     self.drive_sign_in_expired();
                     return;
@@ -229,7 +261,9 @@ impl App {
                     self.drive_sign_in_expired();
                     return;
                 }
-                let Some(b) = &mut self.drive.browser else { return };
+                let Some(b) = &mut self.drive.browser else {
+                    return;
+                };
                 b.checking_link = false;
                 match result {
                     Ok(folder) => self.use_drive_folder(folder),
@@ -243,7 +277,11 @@ impl App {
                     run.advance(fraction, Instant::now());
                 }
             }
-            Msg::DriveUploadDone { seq, result, expired } => {
+            Msg::DriveUploadDone {
+                seq,
+                result,
+                expired,
+            } => {
                 match &mut self.drive.upload {
                     Some(run) if run.seq == seq => run.result = Some(result.clone()),
                     _ => return,
@@ -271,7 +309,9 @@ impl App {
                 .add_filter("JSON", &["json"])
                 .pick_file()
                 .await;
-            let Some(file) = picked else { return Msg::DriveClientFile(Err("no file chosen".into())) };
+            let Some(file) = picked else {
+                return Msg::DriveClientFile(Err("no file chosen".into()));
+            };
             let result = match tokio::fs::read_to_string(file.path()).await {
                 Ok(text) => OAuthClient::from_json(&text).map_err(|e| format!("{e:#}")),
                 Err(e) => Err(e.to_string()),
@@ -281,16 +321,26 @@ impl App {
     }
 
     pub(super) fn drive_sign_in(&mut self) {
-        let Some(client) = self.drive.account.client.clone() else { return };
+        let Some(client) = self.drive.account.client.clone() else {
+            return;
+        };
         if self.drive.signing_in.is_some() {
             return;
         }
         self.drive.seq += 1;
         let seq = self.drive.seq;
         let cancel = Arc::new(AtomicBool::new(false));
-        self.drive.signing_in = Some(SignInJob { seq, cancel: cancel.clone(), url: None });
-        let (tx, ctx, http, endpoints) =
-            (self.tx.clone(), self.ctx.clone(), self.drive.http.clone(), self.drive.endpoints.clone());
+        self.drive.signing_in = Some(SignInJob {
+            seq,
+            cancel: cancel.clone(),
+            url: None,
+        });
+        let (tx, ctx, http, endpoints) = (
+            self.tx.clone(),
+            self.ctx.clone(),
+            self.drive.http.clone(),
+            self.drive.endpoints.clone(),
+        );
         self.rt.spawn(async move {
             let (url_tx, url_ctx) = (tx.clone(), ctx.clone());
             let result = gdrive::sign_in(&http, &endpoints, &client, &cancel, move |url| {
@@ -298,7 +348,9 @@ impl App {
                 url_ctx.request_repaint();
             })
             .await;
-            let result = result.map(|s| (s.refresh_token, s.email)).map_err(|e| format!("{e:#}"));
+            let result = result
+                .map(|s| (s.refresh_token, s.email))
+                .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::DriveSignedIn { seq, result });
             ctx.request_repaint();
         });
@@ -332,17 +384,27 @@ impl App {
 
     /// List the folders where the browser is.
     fn load_folders(&mut self) {
-        let Some(drive) = self.drive.drive.clone() else { return };
+        let Some(drive) = self.drive.drive.clone() else {
+            return;
+        };
         self.drive.seq += 1;
         let seq = self.drive.seq;
-        let Some(b) = &mut self.drive.browser else { return };
+        let Some(b) = &mut self.drive.browser else {
+            return;
+        };
         b.seq = seq;
         b.entries = None;
         let place = b.trail.last().map(|(_, p)| p.clone()).unwrap_or(Place::Top);
         self.spawn(async move {
             let result = drive.folders(&place).await;
-            let expired = result.as_ref().is_err_and(|e| e.downcast_ref::<SignInExpired>().is_some());
-            Msg::DriveFolders { seq, result: result.map_err(|e| format!("{e:#}")), expired }
+            let expired = result
+                .as_ref()
+                .is_err_and(|e| e.downcast_ref::<SignInExpired>().is_some());
+            Msg::DriveFolders {
+                seq,
+                result: result.map_err(|e| format!("{e:#}")),
+                expired,
+            }
         });
     }
 
@@ -362,9 +424,20 @@ impl App {
 
     pub(super) fn use_current_drive_folder(&mut self) {
         let Some(b) = &self.drive.browser else { return };
-        let Some((_, Place::Folder(id))) = b.trail.last() else { return };
-        let path = b.trail.iter().skip(1).map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(" / ");
-        let folder = Folder { id: id.clone(), path };
+        let Some((_, Place::Folder(id))) = b.trail.last() else {
+            return;
+        };
+        let path = b
+            .trail
+            .iter()
+            .skip(1)
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        let folder = Folder {
+            id: id.clone(),
+            path,
+        };
         self.use_drive_folder(folder);
     }
 
@@ -376,8 +449,12 @@ impl App {
     }
 
     pub(super) fn use_drive_link(&mut self) {
-        let Some(drive) = self.drive.drive.clone() else { return };
-        let Some(b) = &mut self.drive.browser else { return };
+        let Some(drive) = self.drive.drive.clone() else {
+            return;
+        };
+        let Some(b) = &mut self.drive.browser else {
+            return;
+        };
         let link = b.link.trim().to_owned();
         if link.is_empty() {
             return;
@@ -386,8 +463,13 @@ impl App {
         b.link_error = None;
         self.spawn(async move {
             let result = drive.folder_from_link(&link).await;
-            let expired = result.as_ref().is_err_and(|e| e.downcast_ref::<SignInExpired>().is_some());
-            Msg::DriveLinkChecked { result: result.map_err(|e| format!("{e:#}")), expired }
+            let expired = result
+                .as_ref()
+                .is_err_and(|e| e.downcast_ref::<SignInExpired>().is_some());
+            Msg::DriveLinkChecked {
+                result: result.map_err(|e| format!("{e:#}")),
+                expired,
+            }
         });
     }
 
@@ -398,7 +480,11 @@ impl App {
 
     /// Upload a file to the chosen folder in the background.
     pub(super) fn start_upload(&mut self, path: PathBuf) {
-        let (Some(drive), Some(folder)) = (self.drive.drive.clone(), self.drive.account.folder.clone()) else { return };
+        let (Some(drive), Some(folder)) =
+            (self.drive.drive.clone(), self.drive.account.folder.clone())
+        else {
+            return;
+        };
         if self.drive.upload.as_ref().is_some_and(UploadRun::running) {
             self.set_error("An upload is already running; wait for it or cancel it first");
             return;
@@ -423,8 +509,14 @@ impl App {
                     }
                 })
                 .await;
-            let expired = result.as_ref().is_err_and(|e| e.downcast_ref::<SignInExpired>().is_some());
-            send(Msg::DriveUploadDone { seq, result: result.map_err(|e| format!("{e:#}")), expired });
+            let expired = result
+                .as_ref()
+                .is_err_and(|e| e.downcast_ref::<SignInExpired>().is_some());
+            send(Msg::DriveUploadDone {
+                seq,
+                result: result.map_err(|e| format!("{e:#}")),
+                expired,
+            });
         });
     }
 
@@ -436,7 +528,12 @@ impl App {
 
     /// The Google Drive part of the playlist page. `export` is the latest
     /// exported zip, if any.
-    pub(super) fn drive_section(&self, ui: &mut Ui, export: Option<&PathBuf>, actions: &mut Vec<Action>) {
+    pub(super) fn drive_section(
+        &self,
+        ui: &mut Ui,
+        export: Option<&PathBuf>,
+        actions: &mut Vec<Action>,
+    ) {
         let d = &self.drive;
         let upload = d.upload.as_ref();
         ui.add_space(4.0);
@@ -447,7 +544,10 @@ impl App {
                 if ui.button("Load client file…").clicked() {
                     actions.push(Action::DriveLoadClient);
                 }
-                ui.hyperlink_to("Google Cloud Console ↗", "https://console.cloud.google.com/apis/credentials");
+                ui.hyperlink_to(
+                    "Google Cloud Console ↗",
+                    "https://console.cloud.google.com/apis/credentials",
+                );
             });
             egui::CollapsingHeader::new("How to get the client file").show(ui, |ui| {
                 // Short lines read better than ones spanning a wide window.
@@ -475,7 +575,10 @@ impl App {
 
         let Some(email) = d.account.email.as_ref().filter(|_| d.drive.is_some()) else {
             ui.horizontal(|ui| {
-                if ui.button(RichText::new("Sign in with Google").strong()).clicked() {
+                if ui
+                    .button(RichText::new("Sign in with Google").strong())
+                    .clicked()
+                {
                     actions.push(Action::DriveSignIn);
                 }
                 ui.weak(format!("Client {}", short_client_id(&client.id)));
@@ -505,7 +608,10 @@ impl App {
                 }
             });
             let mut auto = d.account.upload_after_export;
-            if ui.checkbox(&mut auto, "Upload each export to this folder").changed() {
+            if ui
+                .checkbox(&mut auto, "Upload each export to this folder")
+                .changed()
+            {
                 actions.push(Action::DriveSetAutoUpload(auto));
             }
         });
@@ -513,17 +619,23 @@ impl App {
         ui.horizontal(|ui| match upload {
             Some(run) if run.running() => {
                 ui.label(format!("Uploading {}", file_name(&run.file)));
-                ui.add(egui::ProgressBar::new(run.progress).desired_width(220.0).show_percentage());
+                ui.add(
+                    egui::ProgressBar::new(run.progress)
+                        .desired_width(220.0)
+                        .show_percentage(),
+                );
                 ui.weak(run.time_left(Instant::now()));
                 if ui.button("Cancel").clicked() {
                     actions.push(Action::DriveCancelUpload);
                 }
                 // The estimate counts down between Drive's progress reports.
-                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(1));
             }
             _ => {
                 if let Some(path) = export {
-                    let already = upload.is_some_and(|r| r.file == *path && matches!(r.result, Some(Ok(_))));
+                    let already =
+                        upload.is_some_and(|r| r.file == *path && matches!(r.result, Some(Ok(_))));
                     if !already {
                         let button = egui::Button::new(format!("⬆ Upload {}", file_name(path)));
                         if ui.add_enabled(d.account.folder.is_some(), button).clicked() {
@@ -539,7 +651,8 @@ impl App {
                         }
                     }
                     Some(Err(e)) if e != "cancelled" => {
-                        ui.colored_label(ui.visuals().error_fg_color, "Upload failed").on_hover_text(e);
+                        ui.colored_label(ui.visuals().error_fg_color, "Upload failed")
+                            .on_hover_text(e);
                     }
                     _ if export.is_none() => {
                         ui.weak("Export the playlist to upload it.");
@@ -552,7 +665,9 @@ impl App {
 
     /// The folder chooser, as a modal window.
     pub(super) fn folder_browser_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let Some(b) = &mut self.drive.browser else { return };
+        let Some(b) = &mut self.drive.browser else {
+            return;
+        };
         let modal = egui::Modal::new(egui::Id::unique("drive_folders")).show(ctx, |ui| {
             ui.set_width(520.0);
             ui.heading("Choose the upload folder");
@@ -571,24 +686,30 @@ impl App {
                 }
             });
             ui.separator();
-            egui::ScrollArea::vertical().max_height(300.0).auto_shrink([false, true]).show(ui, |ui| match &b.entries {
-                None => {
-                    ui.spinner();
-                }
-                Some(Err(e)) => {
-                    ui.colored_label(ui.visuals().error_fg_color, e);
-                }
-                Some(Ok(entries)) if entries.is_empty() => {
-                    ui.weak("No folders in here.");
-                }
-                Some(Ok(entries)) => {
-                    for entry in entries {
-                        if ui.selectable_label(false, format!("🗁 {}", entry.name)).clicked() {
-                            actions.push(Action::DriveBrowseInto(entry.clone()));
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| match &b.entries {
+                    None => {
+                        ui.spinner();
+                    }
+                    Some(Err(e)) => {
+                        ui.colored_label(ui.visuals().error_fg_color, e);
+                    }
+                    Some(Ok(entries)) if entries.is_empty() => {
+                        ui.weak("No folders in here.");
+                    }
+                    Some(Ok(entries)) => {
+                        for entry in entries {
+                            if ui
+                                .selectable_label(false, format!("🗁 {}", entry.name))
+                                .clicked()
+                            {
+                                actions.push(Action::DriveBrowseInto(entry.clone()));
+                            }
                         }
                     }
-                }
-            });
+                });
             ui.separator();
             let here = matches!(b.trail.last(), Some((_, Place::Folder(_))));
             ui.horizontal(|ui| {
@@ -596,7 +717,10 @@ impl App {
                     Some((name, Place::Folder(_))) => format!("Upload to “{name}”"),
                     _ => "Open a folder to upload to it".to_owned(),
                 };
-                if ui.add_enabled(here, egui::Button::new(RichText::new(label).strong())).clicked() {
+                if ui
+                    .add_enabled(here, egui::Button::new(RichText::new(label).strong()))
+                    .clicked()
+                {
                     actions.push(Action::DriveUseFolder);
                 }
                 if ui.button("Cancel").clicked() {
@@ -612,7 +736,10 @@ impl App {
                         .desired_width(380.0),
                 );
                 let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.add_enabled(!b.checking_link, egui::Button::new("Use link")).clicked() || enter)
+                if (ui
+                    .add_enabled(!b.checking_link, egui::Button::new("Use link"))
+                    .clicked()
+                    || enter)
                     && !b.link.trim().is_empty()
                 {
                     actions.push(Action::DriveUseLink);
@@ -645,7 +772,10 @@ pub(super) const SETUP_STEPS: [&str; 7] = [
 ];
 
 fn file_name(path: &Path) -> String {
-    path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+    path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// "1234…apps.googleusercontent.com" → "1234…".
@@ -655,9 +785,16 @@ fn short_client_id(id: &str) -> String {
 }
 
 #[cfg(test)]
-pub(super) fn browser_for_test(state: &mut DriveState, trail: &[(&str, Place)], entries: Vec<Entry>) {
+pub(super) fn browser_for_test(
+    state: &mut DriveState,
+    trail: &[(&str, Place)],
+    entries: Vec<Entry>,
+) {
     state.browser = Some(FolderBrowser {
-        trail: trail.iter().map(|(n, p)| ((*n).to_owned(), p.clone())).collect(),
+        trail: trail
+            .iter()
+            .map(|(n, p)| ((*n).to_owned(), p.clone()))
+            .collect(),
         entries: Some(Ok(entries)),
         seq: 0,
         link: String::new(),
@@ -680,15 +817,22 @@ impl DriveState {
     /// Upload in `chunk`-byte pieces (Drive reports progress per chunk).
     pub(super) fn use_chunk_for_test(&mut self, chunk: usize) {
         self.connect();
-        let drive = self.drive.take().map(|d| Arc::try_unwrap(d).ok().expect("just made").with_chunk(chunk));
+        let drive = self.drive.take().map(|d| {
+            Arc::try_unwrap(d)
+                .ok()
+                .expect("just made")
+                .with_chunk(chunk)
+        });
         self.drive = drive.map(Arc::new);
     }
 }
 
-
 #[cfg(test)]
 pub(super) fn signed_in_for_test(state: &mut DriveState, email: &str, folder: Option<Folder>) {
-    state.account.client = Some(OAuthClient { id: "test.apps.googleusercontent.com".into(), secret: "s".into() });
+    state.account.client = Some(OAuthClient {
+        id: "test.apps.googleusercontent.com".into(),
+        secret: "s".into(),
+    });
     state.account.refresh_token = Some("rt".into());
     state.account.email = Some(email.into());
     state.account.folder = folder;
@@ -710,17 +854,37 @@ mod tests {
 
         // 10 MiB in 5 s: 2 MiB/s, 90 MiB to go.
         run.advance(0.1, start + Duration::from_secs(5));
-        assert_eq!(run.seconds_left(start + Duration::from_secs(5)).map(f64::round), Some(45.0));
-        assert_eq!(run.time_left(start + Duration::from_secs(5)), "about 45 s left · 2.0 MiB/s");
+        assert_eq!(
+            run.seconds_left(start + Duration::from_secs(5))
+                .map(f64::round),
+            Some(45.0)
+        );
+        assert_eq!(
+            run.time_left(start + Duration::from_secs(5)),
+            "about 45 s left · 2.0 MiB/s"
+        );
         // It counts down until the next report…
-        assert_eq!(run.seconds_left(start + Duration::from_secs(15)).map(f64::round), Some(35.0));
+        assert_eq!(
+            run.seconds_left(start + Duration::from_secs(15))
+                .map(f64::round),
+            Some(35.0)
+        );
         // …and never claims to be done before Drive says so.
-        assert_eq!(run.seconds_left(start + Duration::from_secs(500)), Some(1.0));
+        assert_eq!(
+            run.seconds_left(start + Duration::from_secs(500)),
+            Some(1.0)
+        );
 
         // A slower chunk (10 MiB in 10 s) pulls the speed down: 1.5 MiB/s.
         run.advance(0.2, start + Duration::from_secs(15));
-        assert_eq!(run.speed.map(|s| (s / 1_048_576.0 * 100.0).round() / 100.0), Some(1.5));
+        assert_eq!(
+            run.speed.map(|s| (s / 1_048_576.0 * 100.0).round() / 100.0),
+            Some(1.5)
+        );
         // 80 MiB at 1.5 MiB/s.
-        assert_eq!(run.time_left(start + Duration::from_secs(15)), "about 53 s left · 1.5 MiB/s");
+        assert_eq!(
+            run.time_left(start + Duration::from_secs(15)),
+            "about 53 s left · 1.5 MiB/s"
+        );
     }
 }

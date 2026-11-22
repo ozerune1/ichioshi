@@ -37,7 +37,11 @@ pub async fn map_both(gateway: SocketAddr, device: Option<&str>) -> Result<Mappi
     let udp = map(gateway, device, Protocol::Udp).await?;
     let tcp = map(gateway, device, Protocol::Tcp).await?;
     if udp.public_port != tcp.public_port {
-        tracing::warn!("NAT-PMP gave UDP port {} but TCP port {}", udp.public_port, tcp.public_port);
+        tracing::warn!(
+            "NAT-PMP gave UDP port {} but TCP port {}",
+            udp.public_port,
+            tcp.public_port
+        );
     }
     Ok(tcp)
 }
@@ -46,12 +50,18 @@ pub async fn map_both(gateway: SocketAddr, device: Option<&str>) -> Result<Mappi
 /// `natpmpc -a 1 0 <protocol> 60`: no particular private port, any public one.
 pub async fn map(gateway: SocketAddr, device: Option<&str>, protocol: Protocol) -> Result<Mapping> {
     let socket = socket(device)?;
-    socket.connect(gateway).await.with_context(|| format!("could not reach {gateway}"))?;
+    socket
+        .connect(gateway)
+        .await
+        .with_context(|| format!("could not reach {gateway}"))?;
     let request = request(protocol, 0, 1, LIFETIME);
     // RFC 6886: resend after 250 ms, doubling each time.
     let mut wait = Duration::from_millis(250);
     for _ in 0..4 {
-        socket.send(&request).await.context("could not send the NAT-PMP request")?;
+        socket
+            .send(&request)
+            .await
+            .context("could not send the NAT-PMP request")?;
         let mut buf = [0u8; 16];
         let deadline = tokio::time::Instant::now() + wait;
         while let Ok(got) = tokio::time::timeout_at(deadline, socket.recv(&mut buf)).await {
@@ -79,7 +89,9 @@ fn socket(device: Option<&str>) -> Result<UdpSocket> {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn bind_device(socket: &socket2::Socket, device: &str) -> Result<()> {
-    socket.bind_device(Some(device.as_bytes())).with_context(|| format!("could not use {device}"))
+    socket
+        .bind_device(Some(device.as_bytes()))
+        .with_context(|| format!("could not use {device}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -88,7 +100,9 @@ fn bind_device(socket: &socket2::Socket, device: &str) -> Result<()> {
     // SAFETY: a valid C string.
     let index = std::num::NonZeroU32::new(unsafe { libc::if_nametoindex(name.as_ptr()) })
         .with_context(|| format!("no network interface {device}"))?;
-    socket.bind_device_by_index_v4(Some(index)).with_context(|| format!("could not use {device}"))
+    socket
+        .bind_device_by_index_v4(Some(index))
+        .with_context(|| format!("could not use {device}"))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
@@ -114,12 +128,17 @@ fn parse(reply: &[u8], protocol: Protocol) -> Option<Result<Mapping>> {
     let public_port = u16::from_be_bytes([reply[10], reply[11]]);
     let lifetime = u32::from_be_bytes([reply[12], reply[13], reply[14], reply[15]]);
     Some(match code {
-        0 if public_port != 0 => Ok(Mapping { public_port, lifetime }),
+        0 if public_port != 0 => Ok(Mapping {
+            public_port,
+            lifetime,
+        }),
         0 => Err(anyhow::anyhow!("the VPN gateway gave no port")),
         2 => Err(anyhow::anyhow!("the VPN gateway refused to forward a port")),
         3 => Err(anyhow::anyhow!("the VPN gateway has a network problem")),
         4 => Err(anyhow::anyhow!("the VPN gateway has no ports left")),
-        code => Err(anyhow::anyhow!("the VPN gateway answered with error {code}")),
+        code => Err(anyhow::anyhow!(
+            "the VPN gateway answered with error {code}"
+        )),
     })
 }
 
@@ -142,7 +161,11 @@ pub(crate) mod tests {
             while let Ok((n, from)) = socket.recv_from(&mut buf).await {
                 let nth = seen.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(n, 12, "request size");
-                assert_eq!(&buf[4..8], &[0, 0, 0, 1], "private port 0, public port 1, as natpmpc -a 1 0");
+                assert_eq!(
+                    &buf[4..8],
+                    &[0, 0, 0, 1],
+                    "private port 0, public port 1, as natpmpc -a 1 0"
+                );
                 assert_eq!(&buf[8..12], &60u32.to_be_bytes(), "60 s lifetime");
                 if nth < drop_first {
                     continue;
@@ -164,14 +187,23 @@ pub(crate) mod tests {
     async fn maps_tcp_and_udp() {
         let (gw, count) = gateway(51_234, 0).await;
         let m = map_both(gw, None).await.unwrap();
-        assert_eq!(m, Mapping { public_port: 51_234, lifetime: 60 });
+        assert_eq!(
+            m,
+            Mapping {
+                public_port: 51_234,
+                lifetime: 60
+            }
+        );
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
     async fn resends_when_a_request_is_lost() {
         let (gw, count) = gateway(40_000, 2).await;
-        assert_eq!(map(gw, None, Protocol::Tcp).await.unwrap().public_port, 40_000);
+        assert_eq!(
+            map(gw, None, Protocol::Tcp).await.unwrap().public_port,
+            40_000
+        );
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
@@ -180,7 +212,13 @@ pub(crate) mod tests {
         // Bound to loopback, the local gateway is reachable.
         let (gw, _) = gateway(40_001, 0).await;
         if cfg!(target_os = "linux") {
-            assert_eq!(map(gw, Some("lo"), Protocol::Udp).await.unwrap().public_port, 40_001);
+            assert_eq!(
+                map(gw, Some("lo"), Protocol::Udp)
+                    .await
+                    .unwrap()
+                    .public_port,
+                40_001
+            );
             assert!(map(gw, Some("no-such-if0"), Protocol::Udp).await.is_err());
         }
     }
@@ -188,8 +226,13 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn gives_up_when_nothing_answers() {
         let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let err = map(silent.local_addr().unwrap(), None, Protocol::Udp).await.unwrap_err();
-        assert_eq!(err.to_string(), "the VPN gateway didn't answer NAT-PMP requests");
+        let err = map(silent.local_addr().unwrap(), None, Protocol::Udp)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the VPN gateway didn't answer NAT-PMP requests"
+        );
     }
 
     #[test]
@@ -197,8 +240,14 @@ pub(crate) mod tests {
         let mut r = [0u8; 16];
         r[1] = 130;
         r[3] = 2;
-        assert_eq!(parse(&r, Protocol::Tcp).unwrap().unwrap_err().to_string(), "the VPN gateway refused to forward a port");
-        assert!(parse(&r, Protocol::Udp).is_none(), "a reply to the other protocol");
+        assert_eq!(
+            parse(&r, Protocol::Tcp).unwrap().unwrap_err().to_string(),
+            "the VPN gateway refused to forward a port"
+        );
+        assert!(
+            parse(&r, Protocol::Udp).is_none(),
+            "a reply to the other protocol"
+        );
         assert!(parse(&r[..8], Protocol::Tcp).is_none());
     }
 }

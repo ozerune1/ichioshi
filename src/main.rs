@@ -5,9 +5,9 @@ mod fallback;
 mod fsutil;
 mod gdrive;
 mod library;
-mod mkv;
 #[cfg(test)]
 mod live_tests;
+mod mkv;
 #[cfg(test)]
 mod mock_http;
 mod nyaa;
@@ -30,7 +30,9 @@ const APP_NAME: &str = "SeaDex Downloader";
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
         .init();
 
     // librqbit and the HTTP requests run here; the GUI owns the main thread.

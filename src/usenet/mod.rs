@@ -70,7 +70,11 @@ impl Default for Provider {
 impl Provider {
     /// The name to show: the one given, or the host.
     pub fn label(&self) -> &str {
-        if self.name.trim().is_empty() { &self.host } else { &self.name }
+        if self.name.trim().is_empty() {
+            &self.host
+        } else {
+            &self.name
+        }
     }
 
     pub fn usable(&self) -> bool {
@@ -88,7 +92,10 @@ pub struct Config {
 
 impl Config {
     pub fn load(path: &Path) -> Self {
-        std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -120,8 +127,17 @@ mod tests {
         assert_eq!(Config::load(&path), Config::default());
         let mut c = Config::default();
         assert!(!c.active());
-        let id = c.add(Provider { host: "news.example.com".into(), username: "me".into(), password: "pw".into(), ..Default::default() });
-        c.add(Provider { host: "block.example.com".into(), backup: true, ..Default::default() });
+        let id = c.add(Provider {
+            host: "news.example.com".into(),
+            username: "me".into(),
+            password: "pw".into(),
+            ..Default::default()
+        });
+        c.add(Provider {
+            host: "block.example.com".into(),
+            backup: true,
+            ..Default::default()
+        });
         assert_eq!((id, c.providers[1].id), (1, 2));
         assert!(c.active());
         c.save(&path).unwrap();
@@ -129,7 +145,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         c.providers.iter_mut().for_each(|p| p.enabled = false);
         assert!(!c.active());

@@ -13,7 +13,9 @@ use super::{Action, App, GREEN, Msg, Page};
 use crate::engine::{SeriesFiles, TorrentHandle};
 use crate::library::AnimeRef;
 use crate::prefs::{LangPrefs, SubType, sub_type_of};
-use crate::remux::{self, Analysis, Choice, Kind, PlannedFile, SubtitleSample, TrackSig, language_name};
+use crate::remux::{
+    self, Analysis, Choice, Kind, PlannedFile, SubtitleSample, TrackSig, language_name,
+};
 use crate::{seadex, title};
 
 pub(super) struct RemuxPage {
@@ -72,12 +74,17 @@ impl RemuxPage {
     }
 
     pub(super) fn plan(&self) -> Vec<PlannedFile> {
-        let (Some(analysis), Some(audio)) = (&self.analysis, &self.audio) else { return Vec::new() };
+        let (Some(analysis), Some(audio)) = (&self.analysis, &self.audio) else {
+            return Vec::new();
+        };
         let title = self.title.trim();
         if title.is_empty() {
             return Vec::new();
         }
-        let choice = Choice { audio: audio.clone(), subtitles: self.subs.clone() };
+        let choice = Choice {
+            audio: audio.clone(),
+            subtitles: self.subs.clone(),
+        };
         remux::plan(analysis, &choice, title, Path::new(self.out_dir.trim()))
     }
 
@@ -87,8 +94,15 @@ impl RemuxPage {
     fn apply_defaults(&mut self, prefs: &LangPrefs) {
         let Some(a) = &self.analysis else { return };
         let has = |kind, code: &str| a.languages(kind).iter().any(|l| l.code == code);
-        self.audio_lang = if has(Kind::Audio, &prefs.audio) { Some(prefs.audio.clone()) } else { a.default_audio_language() };
-        self.audio = self.audio_lang.as_deref().and_then(|l| a.default_candidate(Kind::Audio, l, None));
+        self.audio_lang = if has(Kind::Audio, &prefs.audio) {
+            Some(prefs.audio.clone())
+        } else {
+            a.default_audio_language()
+        };
+        self.audio = self
+            .audio_lang
+            .as_deref()
+            .and_then(|l| a.default_candidate(Kind::Audio, l, None));
         self.sub_lang = match &prefs.subtitles {
             None => None,
             Some(l) if has(Kind::Subtitles, l) => Some(l.clone()),
@@ -102,7 +116,10 @@ impl RemuxPage {
                 wanted.fallbacks().iter().find_map(|kind| {
                     candidates
                         .iter()
-                        .find(|c| sub_type_of(&c.sig.name, c.forced, c.hearing_impaired, c.commentary) == *kind)
+                        .find(|c| {
+                            sub_type_of(&c.sig.name, c.forced, c.hearing_impaired, c.commentary)
+                                == *kind
+                        })
                         .map(|c| c.sig.clone())
                 })
             }
@@ -111,7 +128,10 @@ impl RemuxPage {
 
     fn refresh_audio_track(&mut self) {
         let Some(a) = &self.analysis else { return };
-        self.audio = self.audio_lang.as_deref().and_then(|l| a.default_candidate(Kind::Audio, l, None));
+        self.audio = self
+            .audio_lang
+            .as_deref()
+            .and_then(|l| a.default_candidate(Kind::Audio, l, None));
         // The best subtitles depend on the audio (full vs signs only).
         self.refresh_subtitle_track();
     }
@@ -129,7 +149,11 @@ impl RemuxPage {
 /// own folder (which keeps the downloads, all tracks intact).
 fn default_out_dir(library_dir: &Path, title: &str) -> String {
     let title = title.trim();
-    let name = if title.is_empty() { "Remuxes".to_owned() } else { remux::sanitize_filename(title) };
+    let name = if title.is_empty() {
+        "Remuxes".to_owned()
+    } else {
+        remux::sanitize_filename(title)
+    };
     library_dir.join("Remuxed").join(name).display().to_string()
 }
 
@@ -151,7 +175,10 @@ impl App {
         self.remux_seq += 1;
         let seq = self.remux_seq;
         let (title, title_note) = match &known {
-            Some(a) if a.english.is_some() => (a.title().unwrap_or_default().to_owned(), "English title from AniList".to_owned()),
+            Some(a) if a.english.is_some() => (
+                a.title().unwrap_or_default().to_owned(),
+                "English title from AniList".to_owned(),
+            ),
             Some(a) => (
                 a.title().unwrap_or_default().to_owned(),
                 "AniList has no English title for this, so it's the romaji one".to_owned(),
@@ -181,20 +208,28 @@ impl App {
         });
         if !files.is_empty() {
             self.spawn(async move {
-                let result = match tokio::task::spawn_blocking(move || remux::probe_all(files)).await {
-                    Ok(r) => r.map_err(|e| format!("{e:#}")),
-                    Err(e) => Err(e.to_string()),
-                };
+                let result =
+                    match tokio::task::spawn_blocking(move || remux::probe_all(files)).await {
+                        Ok(r) => r.map_err(|e| format!("{e:#}")),
+                        Err(e) => Err(e.to_string()),
+                    };
                 Msg::RemuxProbed { seq, result }
             });
         }
         if known.is_none() {
             let client = self.http.clone();
             self.spawn(async move {
-                let result = seadex::anilist_search(&client, &query).await.ok().and_then(|r| r.into_iter().next());
+                let result = seadex::anilist_search(&client, &query)
+                    .await
+                    .ok()
+                    .and_then(|r| r.into_iter().next());
                 Msg::RemuxTitle {
                     seq,
-                    found: result.map(|a| AnimeRef { anilist_id: a.anilist_id, english: a.english, romaji: a.romaji }),
+                    found: result.map(|a| AnimeRef {
+                        anilist_id: a.anilist_id,
+                        english: a.english,
+                        romaji: a.romaji,
+                    }),
                 }
             });
         }
@@ -203,10 +238,15 @@ impl App {
     pub(super) fn handle_remux_msg(&mut self, msg: Msg) {
         let download_dir = self.library_dir();
         let prefs = match &self.page {
-            Page::Remux(rp) => rp.anilist_id.and_then(|id| self.library.find(id)).map_or_else(|| self.settings.prefs.clone(), |s| self.prefs_for(s)),
+            Page::Remux(rp) => rp
+                .anilist_id
+                .and_then(|id| self.library.find(id))
+                .map_or_else(|| self.settings.prefs.clone(), |s| self.prefs_for(s)),
             _ => return,
         };
-        let Page::Remux(rp) = &mut self.page else { return };
+        let Page::Remux(rp) = &mut self.page else {
+            return;
+        };
         let mut sample = None;
         match msg {
             Msg::RemuxProbed { seq, result } if seq == rp.seq => match result {
@@ -217,22 +257,39 @@ impl App {
                 }
                 Err(e) => rp.error = Some(e),
             },
-            Msg::RemuxSamples { seq, samples } if seq == rp.seq => rp.samples = samples.into_iter().collect(),
-            Msg::RemuxTitle { seq, found } if seq == rp.seq && rp.title.trim().is_empty() => match found {
-                Some(anime) => {
-                    rp.title = anime.title().unwrap_or_default().to_owned();
-                    let matched = anime.romaji.as_deref().or(anime.english.as_deref()).unwrap_or_default();
-                    rp.title_note = format!("Matched on AniList: {matched}. Edit it if that's the wrong anime.");
-                    if anime.english.is_none() {
-                        rp.title_note.push_str(" (No English title on AniList.)");
+            Msg::RemuxSamples { seq, samples } if seq == rp.seq => {
+                rp.samples = samples.into_iter().collect()
+            }
+            Msg::RemuxTitle { seq, found } if seq == rp.seq && rp.title.trim().is_empty() => {
+                match found {
+                    Some(anime) => {
+                        rp.title = anime.title().unwrap_or_default().to_owned();
+                        let matched = anime
+                            .romaji
+                            .as_deref()
+                            .or(anime.english.as_deref())
+                            .unwrap_or_default();
+                        rp.title_note = format!(
+                            "Matched on AniList: {matched}. Edit it if that's the wrong anime."
+                        );
+                        if anime.english.is_none() {
+                            rp.title_note.push_str(" (No English title on AniList.)");
+                        }
+                        if !rp.out_dir_edited {
+                            rp.out_dir = default_out_dir(&download_dir, &rp.title);
+                        }
                     }
-                    if !rp.out_dir_edited {
-                        rp.out_dir = default_out_dir(&download_dir, &rp.title);
+                    None => {
+                        rp.title_note =
+                            "Couldn't find this on AniList; type the English title.".to_owned()
                     }
                 }
-                None => rp.title_note = "Couldn't find this on AniList; type the English title.".to_owned(),
-            },
-            Msg::RemuxProgress { seq, index, fraction } if seq == rp.seq => {
+            }
+            Msg::RemuxProgress {
+                seq,
+                index,
+                fraction,
+            } if seq == rp.seq => {
                 if let Some(state) = rp.run.as_mut().and_then(|r| r.states.get_mut(index)) {
                     *state = FileState::Running(fraction);
                 }
@@ -254,9 +311,21 @@ impl App {
                         *state = FileState::Cancelled;
                     }
                 }
-                let done = run.states.iter().filter(|s| matches!(s, FileState::Done)).count();
-                let failed = run.states.iter().filter(|s| matches!(s, FileState::Failed(_))).count();
-                let text = format!("Remuxed {done} episode{} into {}", plural(done), rp.out_dir.trim());
+                let done = run
+                    .states
+                    .iter()
+                    .filter(|s| matches!(s, FileState::Done))
+                    .count();
+                let failed = run
+                    .states
+                    .iter()
+                    .filter(|s| matches!(s, FileState::Failed(_)))
+                    .count();
+                let text = format!(
+                    "Remuxed {done} episode{} into {}",
+                    plural(done),
+                    rp.out_dir.trim()
+                );
                 if failed > 0 {
                     self.set_error(format!("{text}; {failed} failed"));
                 } else {
@@ -272,16 +341,19 @@ impl App {
         // Then read what the subtitle tracks contain, in the background.
         if let Some((seq, analysis)) = sample {
             self.spawn(async move {
-                let samples = tokio::task::spawn_blocking(move || remux::sample_subtitles(&analysis))
-                    .await
-                    .unwrap_or_default();
+                let samples =
+                    tokio::task::spawn_blocking(move || remux::sample_subtitles(&analysis))
+                        .await
+                        .unwrap_or_default();
                 Msg::RemuxSamples { seq, samples }
             });
         }
     }
 
     pub(super) fn start_remux(&mut self) {
-        let Page::Remux(rp) = &mut self.page else { return };
+        let Page::Remux(rp) = &mut self.page else {
+            return;
+        };
         if rp.running() {
             return;
         }
@@ -319,10 +391,18 @@ impl App {
                     // Progress comes per cluster; update the UI every half percent.
                     if fraction - shown >= 0.005 || fraction >= 1.0 {
                         shown = fraction;
-                        send(Msg::RemuxProgress { seq, index, fraction });
+                        send(Msg::RemuxProgress {
+                            seq,
+                            index,
+                            fraction,
+                        });
                     }
                 });
-                send(Msg::RemuxFileDone { seq, index, result: result.map_err(|e| format!("{e:#}")) });
+                send(Msg::RemuxFileDone {
+                    seq,
+                    index,
+                    result: result.map_err(|e| format!("{e:#}")),
+                });
             }
             send(Msg::RemuxFinished { seq });
         });
@@ -330,15 +410,23 @@ impl App {
 
     /// Add the episodes this run remuxed, in order, to the playlist.
     pub(super) fn add_remuxes_to_playlist(&mut self) {
-        let Page::Remux(RemuxPage { run: Some(run), .. }) = &self.page else { return };
+        let Page::Remux(RemuxPage { run: Some(run), .. }) = &self.page else {
+            return;
+        };
         let items: Vec<crate::playlist::Item> = run
             .plan
             .iter()
             .zip(&run.states)
             .filter(|(_, s)| matches!(s, FileState::Done))
-            .map(|(p, _)| crate::playlist::Item { path: p.output.clone(), title: p.title.clone() })
+            .map(|(p, _)| crate::playlist::Item {
+                path: p.output.clone(),
+                title: p.title.clone(),
+            })
             .collect();
-        self.handle_playlist_msg(Msg::PlaylistAdd { items, errors: Vec::new() });
+        self.handle_playlist_msg(Msg::PlaylistAdd {
+            items,
+            errors: Vec::new(),
+        });
     }
 
     pub(super) fn cancel_remux(&mut self) {
@@ -350,9 +438,17 @@ impl App {
     pub(super) fn pick_remux_folder(&mut self) {
         let Page::Remux(rp) = &self.page else { return };
         let start = PathBuf::from(rp.out_dir.trim());
-        let start = start.ancestors().find(|p| p.is_dir()).map(Path::to_owned).unwrap_or_else(|| self.download_dir());
+        let start = start
+            .ancestors()
+            .find(|p| p.is_dir())
+            .map(Path::to_owned)
+            .unwrap_or_else(|| self.download_dir());
         self.spawn(async move {
-            let picked = rfd::AsyncFileDialog::new().set_title("Save remuxes in").set_directory(&start).pick_folder().await;
+            let picked = rfd::AsyncFileDialog::new()
+                .set_title("Save remuxes in")
+                .set_directory(&start)
+                .pick_folder()
+                .await;
             Msg::RemuxFolderPicked(picked.map(|f| f.path().to_owned()))
         });
     }
@@ -360,7 +456,10 @@ impl App {
     pub(super) fn remux_page(&self, ui: &mut Ui, rp: &mut RemuxPage, actions: &mut Vec<Action>) {
         let locked = rp.running();
         ui.horizontal(|ui| {
-            if ui.add_enabled(!locked, egui::Button::new("⏴ Back")).clicked() {
+            if ui
+                .add_enabled(!locked, egui::Button::new("⏴ Back"))
+                .clicked()
+            {
                 actions.push(Action::Back);
             }
             ui.heading("Remux");
@@ -369,7 +468,10 @@ impl App {
         let ready = rp.series.files.len();
         let mut summary = format!("{ready} finished episode{}", plural(ready));
         if rp.series.not_ready > 0 {
-            summary.push_str(&format!(" · {} still downloading (not included)", rp.series.not_ready));
+            summary.push_str(&format!(
+                " · {} still downloading (not included)",
+                rp.series.not_ready
+            ));
         }
         ui.weak(summary);
         if ready == 0 {
@@ -474,7 +576,14 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-fn language_combo(ui: &mut Ui, id: &str, analysis: &Analysis, kind: Kind, selected: &mut Option<String>, allow_none: bool) {
+fn language_combo(
+    ui: &mut Ui,
+    id: &str,
+    analysis: &Analysis,
+    kind: Kind,
+    selected: &mut Option<String>,
+    allow_none: bool,
+) {
     let total = analysis.files.len();
     let langs = analysis.languages(kind);
     let label = |code: &str| {
@@ -488,14 +597,17 @@ fn language_combo(ui: &mut Ui, id: &str, analysis: &Analysis, kind: Kind, select
     let current = selected.as_deref().map_or_else(|| "None".to_owned(), label);
     ui.horizontal(|ui| {
         ui.label("Language");
-        egui::ComboBox::from_id_salt(id).width(280.0).selected_text(current).show_ui(ui, |ui| {
-            if allow_none {
-                ui.selectable_value(selected, None, "None (no subtitles)");
-            }
-            for l in &langs {
-                ui.selectable_value(selected, Some(l.code.clone()), label(&l.code));
-            }
-        });
+        egui::ComboBox::from_id_salt(id)
+            .width(280.0)
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                if allow_none {
+                    ui.selectable_value(selected, None, "None (no subtitles)");
+                }
+                for l in &langs {
+                    ui.selectable_value(selected, Some(l.code.clone()), label(&l.code));
+                }
+            });
     });
 }
 
@@ -515,20 +627,33 @@ fn track_choice(
         return;
     }
     let total = analysis.files.len();
-    ui.label(format!("{} has {} tracks; keep:", language_name(lang), candidates.len()));
+    ui.label(format!(
+        "{} has {} tracks; keep:",
+        language_name(lang),
+        candidates.len()
+    ));
     ui.indent(("tracks", lang, format!("{kind:?}")), |ui| {
         for c in candidates {
             let mut text = c.label();
             let sample = samples.get(&c.sig);
             if let Some(s) = sample {
-                text.push_str(&format!(" · {} line{}", s.events, if s.events == 1 { "" } else { "s" }));
+                text.push_str(&format!(
+                    " · {} line{}",
+                    s.events,
+                    if s.events == 1 { "" } else { "s" }
+                ));
             }
             if c.files < total {
                 text.push_str(&format!(" · in {} of {total} episodes", c.files));
             }
             ui.radio_value(chosen, Some(c.sig.clone()), text);
             if let Some(s) = sample.filter(|s| !s.lines.is_empty()) {
-                let preview = s.lines.iter().map(|l| format!("“{l}”")).collect::<Vec<_>>().join("  ");
+                let preview = s
+                    .lines
+                    .iter()
+                    .map(|l| format!("“{l}”"))
+                    .collect::<Vec<_>>()
+                    .join("  ");
                 ui.indent(("preview", &c.sig.name, &c.sig.codec), |ui| {
                     ui.add(egui::Label::new(RichText::new(preview).weak().italics()).truncate());
                 });
@@ -596,48 +721,70 @@ fn remux_controls(ui: &mut Ui, rp: &RemuxPage, plan: &[PlannedFile], actions: &m
 fn episode_table(ui: &mut Ui, rp: &RemuxPage, plan: &[PlannedFile]) {
     let warn = ui.visuals().warn_fg_color;
     let error = ui.visuals().error_fg_color;
-    egui::Grid::new("remux_episodes").striped(true).num_columns(4).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
-        for header in ["New file", "Audio", "Subtitles", ""] {
-            ui.strong(header);
-        }
-        ui.end_row();
-        for (i, item) in plan.iter().enumerate() {
-            let name = item.output.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            ui.label(&name).on_hover_text(format!("From {}", item.input.display()));
-            ui.label(item.audio.as_ref().map_or("—".to_owned(), |t| t.short_label()));
-            ui.label(item.subtitles.as_ref().map_or("None".to_owned(), |t| t.short_label()));
-            match rp.run.as_ref().and_then(|r| r.states.get(i)) {
-                Some(FileState::Waiting) => {
-                    ui.weak("Waiting");
-                }
-                Some(FileState::Running(f)) => {
-                    ui.add(egui::ProgressBar::new(*f).desired_width(120.0).show_percentage());
-                }
-                Some(FileState::Done) => {
-                    ui.colored_label(GREEN, "Done");
-                }
-                Some(FileState::Failed(e)) => {
-                    ui.colored_label(error, "Failed").on_hover_text(e);
-                }
-                Some(FileState::Skipped(why)) => {
-                    ui.colored_label(warn, format!("Skipped: {why}"));
-                }
-                Some(FileState::Cancelled) => {
-                    ui.weak("Cancelled");
-                }
-                None => match item.problem() {
-                    Some(problem) => {
-                        ui.colored_label(warn, format!("Will skip: {problem}"));
-                    }
-                    None if !item.notes.is_empty() => {
-                        ui.colored_label(warn, item.notes.join("; "));
-                    }
-                    None => {
-                        ui.label("");
-                    }
-                },
+    egui::Grid::new("remux_episodes")
+        .striped(true)
+        .num_columns(4)
+        .spacing(vec2(14.0, 6.0))
+        .show(ui, |ui| {
+            for header in ["New file", "Audio", "Subtitles", ""] {
+                ui.strong(header);
             }
             ui.end_row();
-        }
-    });
+            for (i, item) in plan.iter().enumerate() {
+                let name = item
+                    .output
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                ui.label(&name)
+                    .on_hover_text(format!("From {}", item.input.display()));
+                ui.label(
+                    item.audio
+                        .as_ref()
+                        .map_or("—".to_owned(), |t| t.short_label()),
+                );
+                ui.label(
+                    item.subtitles
+                        .as_ref()
+                        .map_or("None".to_owned(), |t| t.short_label()),
+                );
+                match rp.run.as_ref().and_then(|r| r.states.get(i)) {
+                    Some(FileState::Waiting) => {
+                        ui.weak("Waiting");
+                    }
+                    Some(FileState::Running(f)) => {
+                        ui.add(
+                            egui::ProgressBar::new(*f)
+                                .desired_width(120.0)
+                                .show_percentage(),
+                        );
+                    }
+                    Some(FileState::Done) => {
+                        ui.colored_label(GREEN, "Done");
+                    }
+                    Some(FileState::Failed(e)) => {
+                        ui.colored_label(error, "Failed").on_hover_text(e);
+                    }
+                    Some(FileState::Skipped(why)) => {
+                        ui.colored_label(warn, format!("Skipped: {why}"));
+                    }
+                    Some(FileState::Cancelled) => {
+                        ui.weak("Cancelled");
+                    }
+                    None => match item.problem() {
+                        Some(problem) => {
+                            ui.colored_label(warn, format!("Will skip: {problem}"));
+                        }
+                        None if !item.notes.is_empty() => {
+                            ui.colored_label(warn, item.notes.join("; "));
+                        }
+                        None => {
+                            ui.label("");
+                        }
+                    },
+                }
+                ui.end_row();
+            }
+        });
 }

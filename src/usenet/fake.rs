@@ -29,27 +29,57 @@ impl Upload {
 
     /// The message IDs of a posted file's articles.
     pub fn ids(&self, name: &str) -> Vec<String> {
-        self.files.iter().find(|f| f.name == name).unwrap().segments.iter().map(|s| s.message_id.clone()).collect()
+        self.files
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.message_id.clone())
+            .collect()
     }
 
     /// Every recovery volume's articles.
     pub fn volume_ids(&self) -> Vec<String> {
-        self.files.iter().filter(|f| f.recovery_blocks().is_some()).flat_map(|f| f.segments.iter().map(|s| s.message_id.clone())).collect()
+        self.files
+            .iter()
+            .filter(|f| f.recovery_blocks().is_some())
+            .flat_map(|f| f.segments.iter().map(|s| s.message_id.clone()))
+            .collect()
     }
 }
 
 /// Post `files` in articles of `part` bytes, with a PAR2 set of `block`-byte
 /// blocks and `recovery` recovery blocks. `tag` keeps message IDs unique.
-pub fn upload(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u32) -> Upload {
+pub fn upload(
+    tag: &str,
+    files: &[(&str, &[u8])],
+    part: usize,
+    block: u64,
+    recovery: u32,
+) -> Upload {
     post(tag, files, part, block, recovery, false)
 }
 
 /// Like [`upload`], with a PAR2 set for each file (as AnimeTosho does).
-pub fn upload_per_file(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u32) -> Upload {
+pub fn upload_per_file(
+    tag: &str,
+    files: &[(&str, &[u8])],
+    part: usize,
+    block: u64,
+    recovery: u32,
+) -> Upload {
     post(tag, files, part, block, recovery, true)
 }
 
-fn post(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u32, per_file: bool) -> Upload {
+fn post(
+    tag: &str,
+    files: &[(&str, &[u8])],
+    part: usize,
+    block: u64,
+    recovery: u32,
+    per_file: bool,
+) -> Upload {
     let dir = tempfile::tempdir().unwrap();
     let paths: Vec<PathBuf> = files
         .iter()
@@ -59,12 +89,23 @@ fn post(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u
             p
         })
         .collect();
-    let stem = |name: &str| name.rsplit_once('.').map_or(name.to_owned(), |(s, _)| s.to_owned());
+    let stem = |name: &str| {
+        name.rsplit_once('.')
+            .map_or(name.to_owned(), |(s, _)| s.to_owned())
+    };
     let par2 = if per_file {
         let made: Vec<PathBuf> = files
             .iter()
             .zip(&paths)
-            .flat_map(|((name, _), p)| super::repair::create(dir.path(), &stem(name), std::slice::from_ref(p), block, recovery))
+            .flat_map(|((name, _), p)| {
+                super::repair::create(
+                    dir.path(),
+                    &stem(name),
+                    std::slice::from_ref(p),
+                    block,
+                    recovery,
+                )
+            })
             .collect();
         let mut made = made;
         made.sort();
@@ -73,9 +114,15 @@ fn post(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u
     } else {
         super::repair::create(dir.path(), &stem(files[0].0), &paths, block, recovery)
     };
-    let mut all: Vec<(String, Vec<u8>)> = files.iter().map(|(n, d)| ((*n).to_owned(), d.to_vec())).collect();
+    let mut all: Vec<(String, Vec<u8>)> = files
+        .iter()
+        .map(|(n, d)| ((*n).to_owned(), d.to_vec()))
+        .collect();
     for p in par2 {
-        all.push((p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(&p).unwrap()));
+        all.push((
+            p.file_name().unwrap().to_string_lossy().into_owned(),
+            std::fs::read(&p).unwrap(),
+        ));
     }
 
     let mut posted = Vec::new();
@@ -86,14 +133,31 @@ fn post(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u
         let mut segments = Vec::new();
         for (i, chunk) in parts.iter().enumerate() {
             let number = i as u32 + 1;
-            let (body, _crc) = yenc_simd::encode_article(chunk, name, number, total, (i * part) as u64, data.len() as u64);
+            let (body, _crc) = yenc_simd::encode_article(
+                chunk,
+                name,
+                number,
+                total,
+                (i * part) as u64,
+                data.len() as u64,
+            );
             let message_id = format!("{tag}.{f}.{number}@fake.example");
-            segments.push(Segment { number, bytes: body.len() as u32, message_id: message_id.clone() });
+            segments.push(Segment {
+                number,
+                bytes: body.len() as u32,
+                message_id: message_id.clone(),
+            });
             articles.insert(message_id, body);
         }
-        posted.push(NzbFile { name: name.clone(), segments });
+        posted.push(NzbFile {
+            name: name.clone(),
+            segments,
+        });
     }
-    Upload { files: posted, articles }
+    Upload {
+        files: posted,
+        articles,
+    }
 }
 
 #[derive(Clone, Default)]
@@ -122,10 +186,20 @@ impl FakeProvider {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let (acceptor, fingerprint) = if options.tls {
-            let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()]).unwrap();
+            let cert = rcgen::generate_simple_self_signed(vec![
+                "127.0.0.1".to_owned(),
+                "localhost".to_owned(),
+            ])
+            .unwrap();
             let der = cert.cert.der().clone();
-            let fingerprint = ring::digest::digest(&ring::digest::SHA256, &der).as_ref().iter().map(|b| format!("{b:02x}")).collect();
-            let key = tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+            let fingerprint = ring::digest::digest(&ring::digest::SHA256, &der)
+                .as_ref()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let key = tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(
+                cert.signing_key.serialize_der().into(),
+            );
             let config = tokio_rustls::rustls::ServerConfig::builder_with_provider(Arc::new(
                 tokio_rustls::rustls::crypto::ring::default_provider(),
             ))
@@ -134,7 +208,10 @@ impl FakeProvider {
             .with_no_client_auth()
             .with_single_cert(vec![der], key)
             .unwrap();
-            (Some(tokio_rustls::TlsAcceptor::from(Arc::new(config))), Some(fingerprint))
+            (
+                Some(tokio_rustls::TlsAcceptor::from(Arc::new(config))),
+                Some(fingerprint),
+            )
         } else {
             (None, None)
         };
@@ -147,13 +224,26 @@ impl FakeProvider {
             options,
             fingerprint,
         };
-        let (articles, requests, open, peak, options) =
-            (me.articles.clone(), me.requests.clone(), me.open.clone(), me.peak.clone(), me.options.clone());
+        let (articles, requests, open, peak, options) = (
+            me.articles.clone(),
+            me.requests.clone(),
+            me.open.clone(),
+            me.peak.clone(),
+            me.options.clone(),
+        );
         tokio::spawn(async move {
             loop {
-                let Ok((tcp, _)) = listener.accept().await else { return };
-                let (articles, requests, open, peak, options, acceptor) =
-                    (articles.clone(), requests.clone(), open.clone(), peak.clone(), options.clone(), acceptor.clone());
+                let Ok((tcp, _)) = listener.accept().await else {
+                    return;
+                };
+                let (articles, requests, open, peak, options, acceptor) = (
+                    articles.clone(),
+                    requests.clone(),
+                    open.clone(),
+                    peak.clone(),
+                    options.clone(),
+                    acceptor.clone(),
+                );
                 tokio::spawn(async move {
                     let now = open.fetch_add(1, Ordering::SeqCst) + 1;
                     peak.fetch_max(now, Ordering::SeqCst);
@@ -195,7 +285,6 @@ impl FakeProvider {
             a.remove(id);
         }
     }
-
 }
 
 async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
@@ -207,7 +296,12 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     let mut stream = BufReader::new(stream);
     let mut authed = options.login.is_none();
     let mut user = String::new();
-    if stream.get_mut().write_all(b"200 Fake News ready\r\n").await.is_err() {
+    if stream
+        .get_mut()
+        .write_all(b"200 Fake News ready\r\n")
+        .await
+        .is_err()
+    {
         return;
     }
     let mut line = String::new();
@@ -219,7 +313,9 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
         let command = line.trim_end();
         let (verb, arg) = command.split_once(' ').unwrap_or((command, ""));
         let reply: Vec<u8> = match verb.to_ascii_uppercase().as_str() {
-            "CAPABILITIES" => b"101 Capability list:\r\nVERSION 2\r\nREADER\r\nAUTHINFO USER\r\n.\r\n".to_vec(),
+            "CAPABILITIES" => {
+                b"101 Capability list:\r\nVERSION 2\r\nREADER\r\nAUTHINFO USER\r\n.\r\n".to_vec()
+            }
             "MODE" => b"200 Reader mode\r\n".to_vec(),
             "DATE" => b"111 20261122120000\r\n".to_vec(),
             "QUIT" => {
@@ -281,21 +377,40 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usenet::nntp::{FetchError, Providers, check};
     use crate::usenet::Config;
+    use crate::usenet::nntp::{FetchError, Providers, check};
 
     #[tokio::test]
     async fn serves_articles_over_tls_with_a_login() {
         let data: Vec<u8> = (0..50_000u32).map(|i| (i % 256) as u8).collect();
         let up = upload("t", &[("a.mkv", &data)], 20_000, 4096, 2);
         let login = Some(("me".to_owned(), "secret".to_owned()));
-        let fake = FakeProvider::start(up.articles.clone(), Options { login, tls: true, ..Default::default() }).await;
+        let fake = FakeProvider::start(
+            up.articles.clone(),
+            Options {
+                login,
+                tls: true,
+                ..Default::default()
+            },
+        )
+        .await;
         let provider = fake.provider("Fake");
         check(&provider).await.unwrap();
-        let wrong = Provider { password: "nope".into(), ..provider.clone() };
-        assert!(check(&wrong).await.unwrap_err().to_string().contains("rejected the login"));
+        let wrong = Provider {
+            password: "nope".into(),
+            ..provider.clone()
+        };
+        assert!(
+            check(&wrong)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("rejected the login")
+        );
 
-        let providers = Providers::new(&Config { providers: vec![provider] });
+        let providers = Providers::new(&Config {
+            providers: vec![provider],
+        });
         let ids = up.ids("a.mkv");
         let mut got = Vec::new();
         for id in &ids {
@@ -307,7 +422,10 @@ mod tests {
         }
         assert!(got == data);
         fake.lose(&ids[..1]);
-        assert_eq!(providers.body(&ids[0], &[]).await.unwrap_err(), FetchError::Missing);
+        assert_eq!(
+            providers.body(&ids[0], &[]).await.unwrap_err(),
+            FetchError::Missing
+        );
         assert!(up.files.iter().any(|f| f.is_par2()) && !up.volume_ids().is_empty());
     }
 
@@ -320,16 +438,43 @@ mod tests {
         let ids = up.ids("a.mkv");
         main.lose(&ids[1..2]);
         // The backup comes first in the list, but is a backup.
-        let config = Config { providers: vec![Provider { backup: true, id: 2, ..backup.provider("Block") }, Provider { id: 1, ..main.provider("Main") }] };
+        let config = Config {
+            providers: vec![
+                Provider {
+                    backup: true,
+                    id: 2,
+                    ..backup.provider("Block")
+                },
+                Provider {
+                    id: 1,
+                    ..main.provider("Main")
+                },
+            ],
+        };
         let providers = Providers::new(&config);
-        assert_eq!(providers.workers(), 4, "only the main provider's connections");
+        assert_eq!(
+            providers.workers(),
+            4,
+            "only the main provider's connections"
+        );
         for id in &ids {
             providers.body(id, &[]).await.unwrap();
         }
-        assert_eq!(backup.requests.lock().unwrap().clone(), vec![ids[1].clone()]);
+        assert_eq!(
+            backup.requests.lock().unwrap().clone(),
+            vec![ids[1].clone()]
+        );
 
         // Nobody at the address: worth retrying, not "missing".
-        let down = Providers::new(&Config { providers: vec![Provider { port: 9, ..main.provider("Down") }] });
-        assert!(matches!(down.body(&ids[0], &[]).await, Err(FetchError::Unreachable(_))));
+        let down = Providers::new(&Config {
+            providers: vec![Provider {
+                port: 9,
+                ..main.provider("Down")
+            }],
+        });
+        assert!(matches!(
+            down.body(&ids[0], &[]).await,
+            Err(FetchError::Unreachable(_))
+        ));
     }
 }

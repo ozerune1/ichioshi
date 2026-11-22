@@ -7,14 +7,19 @@ use anyhow::Result;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
-use super::{Account, Client, Gone, Remote, RemoteFile, RemoteState, date, float, id, num, text, torrent_part};
+use super::{
+    Account, Client, Gone, Remote, RemoteFile, RemoteState, date, float, id, num, text,
+    torrent_part,
+};
 
 fn data(c: &Client, status: StatusCode, body: Value) -> Result<Value> {
     if body["success"] == true {
         return Ok(body["data"].clone());
     }
     let code = body["error"].as_str().unwrap_or_default();
-    if matches!(code, "BAD_TOKEN" | "NO_AUTH" | "AUTH_ERROR") || (status == StatusCode::FORBIDDEN && code.is_empty()) {
+    if matches!(code, "BAD_TOKEN" | "NO_AUTH" | "AUTH_ERROR")
+        || (status == StatusCode::FORBIDDEN && code.is_empty())
+    {
         return Err(c.bad_key());
     }
     if code == "ITEM_NOT_FOUND" {
@@ -31,7 +36,11 @@ pub(super) async fn account(c: &Client) -> Result<Account> {
     let (status, v) = c.send(c.get("/user/me")).await?;
     let user = data(c, status, v)?;
     let plan = num(&user["plan"]).unwrap_or(0);
-    Ok(Account { name: text(&user["email"]), premium: plan > 0, until: date(&user["premium_expires_at"]) })
+    Ok(Account {
+        name: text(&user["email"]),
+        premium: plan > 0,
+        until: date(&user["premium_expires_at"]),
+    })
 }
 
 pub(super) async fn add(c: &Client, torrent: &[u8], name: &str) -> Result<String> {
@@ -41,13 +50,17 @@ pub(super) async fn add(c: &Client, torrent: &[u8], name: &str) -> Result<String
         .text("seed", "3")
         .text("allow_zip", "false")
         .text("name", name.to_owned());
-    let (status, v) = c.send(c.post("/torrents/createtorrent").multipart(form)).await?;
+    let (status, v) = c
+        .send(c.post("/torrents/createtorrent").multipart(form))
+        .await?;
     let d = data(c, status, v)?;
     id(&d["torrent_id"]).ok_or_else(|| c.error("no torrent ID in the reply (queued?)"))
 }
 
 pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
-    let req = c.get("/torrents/mylist").query(&[("id", torrent), ("bypass_cache", "true")]);
+    let req = c
+        .get("/torrents/mylist")
+        .query(&[("id", torrent), ("bypass_cache", "true")]);
     let (status, v) = c.send(req).await?;
     let t = match data(c, status, v)? {
         Value::Array(list) => list.into_iter().next().unwrap_or(Value::Null),
@@ -61,7 +74,13 @@ pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
         .into_iter()
         .flatten()
         .filter_map(|f| {
-            Some(RemoteFile { id: id(&f["id"])?, path: text(&f["name"]), size: num(&f["size"]).unwrap_or(0), selected: true, link: None })
+            Some(RemoteFile {
+                id: id(&f["id"])?,
+                path: text(&f["name"]),
+                size: num(&f["size"]).unwrap_or(0),
+                selected: true,
+                link: None,
+            })
         })
         .collect();
     let word = text(&t["download_state"]);
@@ -72,7 +91,12 @@ pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
     } else {
         // Documented only as a number; read values over 1 as percentages.
         let progress = float(&t["progress"]).map(|p| if p > 1.0 { p / 100.0 } else { p } as f32);
-        RemoteState::Working { status: word, progress, speed: num(&t["download_speed"]), seeders: num(&t["seeds"]) }
+        RemoteState::Working {
+            status: word,
+            progress,
+            speed: num(&t["download_speed"]),
+            seeders: num(&t["seeds"]),
+        }
     };
     Ok(Remote { state, files })
 }
@@ -85,13 +109,20 @@ pub(super) async fn link(c: &Client, torrent: &str, file: &RemoteFile) -> Result
         ("zip_link", "false"),
     ]);
     let (status, v) = c.send(req).await?;
-    data(c, status, v)?.as_str().map(str::to_owned).ok_or_else(|| c.error("no download URL in the reply"))
+    data(c, status, v)?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| c.error("no download URL in the reply"))
 }
 
 pub(super) async fn delete(c: &Client, torrent: &str) -> Result<()> {
-    let torrent_id: u64 = torrent.parse().map_err(|_| c.error(format!("bad torrent ID {torrent}")))?;
+    let torrent_id: u64 = torrent
+        .parse()
+        .map_err(|_| c.error(format!("bad torrent ID {torrent}")))?;
     let body = json!({"torrent_id": torrent_id, "operation": "delete"});
-    let (status, v) = c.send(c.post("/torrents/controltorrent").json(&body)).await?;
+    let (status, v) = c
+        .send(c.post("/torrents/controltorrent").json(&body))
+        .await?;
     match data(c, status, v) {
         Ok(_) => Ok(()),
         Err(e) if e.downcast_ref::<Gone>().is_some() => Ok(()),
@@ -108,7 +139,10 @@ mod tests {
     use crate::mock_http::{mock, reply};
 
     fn ok(data: Value) -> crate::mock_http::Resp {
-        reply(200, json!({"success": true, "error": null, "detail": "", "data": data}))
+        reply(
+            200,
+            json!({"success": true, "error": null, "detail": "", "data": data}),
+        )
     }
 
     #[tokio::test]
@@ -157,16 +191,31 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::TorBox, "key", &base);
-        assert_eq!(c.account().await.unwrap(), Account { name: "me@example.com".into(), premium: true, until: Some("2027-03-01".into()) });
+        assert_eq!(
+            c.account().await.unwrap(),
+            Account {
+                name: "me@example.com".into(),
+                premium: true,
+                until: Some("2027-03-01".into())
+            }
+        );
         let id = c.add(b"t", "Show").await.unwrap();
         assert_eq!(id, "5");
         match c.status(&id).await.unwrap().state {
-            RemoteState::Working { progress, speed, seeders, .. } => assert_eq!((progress, speed, seeders), (Some(0.4), Some(5000), Some(9))),
+            RemoteState::Working {
+                progress,
+                speed,
+                seeders,
+                ..
+            } => assert_eq!((progress, speed, seeders), (Some(0.4), Some(5000), Some(9))),
             other => panic!("{other:?}"),
         }
         let remote = c.status(&id).await.unwrap();
         assert_eq!(remote.state, RemoteState::Ready);
-        assert_eq!(c.link(&id, &remote.files[1]).await.unwrap(), "https://cdn.example/1");
+        assert_eq!(
+            c.link(&id, &remote.files[1]).await.unwrap(),
+            "https://cdn.example/1"
+        );
         c.delete(&id).await.unwrap();
     }
 
@@ -179,8 +228,23 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::TorBox, "k", &base);
-        assert!(c.account().await.unwrap_err().downcast_ref::<BadKey>().is_some());
-        assert!(c.status("9").await.unwrap_err().downcast_ref::<Gone>().is_some());
-        assert_eq!(c.add(b"t", "x").await.unwrap_err().to_string(), "TorBox: You have reached your active download limit.");
+        assert!(
+            c.account()
+                .await
+                .unwrap_err()
+                .downcast_ref::<BadKey>()
+                .is_some()
+        );
+        assert!(
+            c.status("9")
+                .await
+                .unwrap_err()
+                .downcast_ref::<Gone>()
+                .is_some()
+        );
+        assert_eq!(
+            c.add(b"t", "x").await.unwrap_err().to_string(),
+            "TorBox: You have reached your active download limit."
+        );
     }
 }

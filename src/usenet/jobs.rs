@@ -22,11 +22,11 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, mpsc};
 
+use super::Config;
 use super::indexers::{Indexers, NzbLink};
 use super::nntp::{FetchError, Providers};
 use super::nzb::{self, NzbFile};
 use super::repair::{self, Check};
-use super::Config;
 use crate::engine::{Existing, Listing, SeriesFiles};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -117,7 +117,10 @@ pub struct Live {
 
 impl Live {
     pub fn active(&self) -> bool {
-        matches!(self.phase, Phase::Fetching | Phase::Downloading | Phase::Repairing(_))
+        matches!(
+            self.phase,
+            Phase::Fetching | Phase::Downloading | Phase::Repairing(_)
+        )
     }
 }
 
@@ -203,7 +206,17 @@ impl Manager {
         indexers: Indexers,
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Arc<Self> {
-        Self::load_with(state_dir, rt, config, indexers, notify, Timing { retry: Duration::from_secs(5), save: Duration::from_secs(3) })
+        Self::load_with(
+            state_dir,
+            rt,
+            config,
+            indexers,
+            notify,
+            Timing {
+                retry: Duration::from_secs(5),
+                save: Duration::from_secs(3),
+            },
+        )
     }
 
     fn load_with(
@@ -233,7 +246,17 @@ impl Manager {
                 } else {
                     Phase::Queued
                 };
-                Entry { job, live: Arc::new(Mutex::new(Live { phase, have, speed: 0.0, note: None, missing: 0 })), cancel: Arc::default() }
+                Entry {
+                    job,
+                    live: Arc::new(Mutex::new(Live {
+                        phase,
+                        have,
+                        speed: 0.0,
+                        note: None,
+                        missing: 0,
+                    })),
+                    cancel: Arc::default(),
+                }
             })
             .collect();
         let manager = Arc::new(Self {
@@ -268,11 +291,15 @@ impl Manager {
     }
 
     fn torrent_path(&self, info_hash: &str) -> PathBuf {
-        self.dir.join("torrents").join(format!("{info_hash}.torrent"))
+        self.dir
+            .join("torrents")
+            .join(format!("{info_hash}.torrent"))
     }
 
     fn nzb_path(&self, job: &Job) -> PathBuf {
-        self.dir.join("nzbs").join(format!("{}-{}.nzb", job.id, job.nzb))
+        self.dir
+            .join("nzbs")
+            .join(format!("{}-{}.nzb", job.id, job.nzb))
     }
 
     fn save(&self, entries: &[Entry]) {
@@ -287,7 +314,10 @@ impl Manager {
 
     fn with_job<R>(&self, id: u64, f: impl FnOnce(&mut Job) -> R) -> Option<R> {
         let mut entries = self.entries.lock().unwrap();
-        let r = entries.iter_mut().find(|e| e.job.id == id).map(|e| f(&mut e.job));
+        let r = entries
+            .iter_mut()
+            .find(|e| e.job.id == id)
+            .map(|e| f(&mut e.job));
         if r.is_some() {
             self.save(&entries);
         }
@@ -295,30 +325,48 @@ impl Manager {
     }
 
     fn job(&self, id: u64) -> Option<Job> {
-        self.entries.lock().unwrap().iter().find(|e| e.job.id == id).map(|e| e.job.clone())
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.job.id == id)
+            .map(|e| e.job.clone())
     }
 
     /// Download `wanted` (torrent file indices) of a release from Usenet into
     /// `output_folder`, using `nzbs` in order. If the release is already a
     /// job, its selection changes instead.
-    pub fn add(self: &Arc<Self>, listing: &Listing, wanted: &[usize], output_folder: PathBuf, nzbs: Vec<NzbLink>) -> Result<()> {
+    pub fn add(
+        self: &Arc<Self>,
+        listing: &Listing,
+        wanted: &[usize],
+        output_folder: PathBuf,
+        nzbs: Vec<NzbLink>,
+    ) -> Result<()> {
         if wanted.is_empty() {
             bail!("no files selected");
         }
         if nzbs.is_empty() {
             bail!("the release isn't on Usenet");
         }
-        let info_hash = crate::engine::info_hash_of(&listing.torrent_bytes).context("invalid .torrent file")?;
+        let info_hash =
+            crate::engine::info_hash_of(&listing.torrent_bytes).context("invalid .torrent file")?;
         if let Some(id) = self.job_for(&info_hash) {
             return self.reselect(id, wanted);
         }
         let path = self.torrent_path(&info_hash);
         std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::write(&path, &listing.torrent_bytes).with_context(|| format!("could not save {}", path.display()))?;
+        std::fs::write(&path, &listing.torrent_bytes)
+            .with_context(|| format!("could not save {}", path.display()))?;
         let files = listing
             .files
             .iter()
-            .map(|f| JobFile { index: f.index, path: f.path.clone(), len: f.len, wanted: wanted.contains(&f.index) })
+            .map(|f| JobFile {
+                index: f.index,
+                path: f.path.clone(),
+                len: f.len,
+                wanted: wanted.contains(&f.index),
+            })
             .collect();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let job = Job {
@@ -338,7 +386,13 @@ impl Manager {
             let mut entries = self.entries.lock().unwrap();
             entries.push(Entry {
                 job,
-                live: Arc::new(Mutex::new(Live { phase: Phase::Queued, have, speed: 0.0, note: None, missing: 0 })),
+                live: Arc::new(Mutex::new(Live {
+                    phase: Phase::Queued,
+                    have,
+                    speed: 0.0,
+                    note: None,
+                    missing: 0,
+                })),
                 cancel: Arc::default(),
             });
             self.save(&entries);
@@ -353,7 +407,10 @@ impl Manager {
     pub fn reselect(&self, id: u64, wanted: &[usize]) -> Result<()> {
         {
             let mut entries = self.entries.lock().unwrap();
-            let entry = entries.iter_mut().find(|e| e.job.id == id).context("no such download")?;
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.job.id == id)
+                .context("no such download")?;
             let staging = entry.job.staging();
             let mut dropped = Vec::new();
             for f in &mut entry.job.files {
@@ -384,7 +441,12 @@ impl Manager {
 
     pub fn job_for(&self, info_hash: &str) -> Option<u64> {
         let info_hash = info_hash.to_ascii_lowercase();
-        self.entries.lock().unwrap().iter().find(|e| e.job.info_hash == info_hash).map(|e| e.job.id)
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.job.info_hash == info_hash)
+            .map(|e| e.job.id)
     }
 
     /// For the file picker: the job's selection and folder, if `info_hash` is a job.
@@ -392,7 +454,13 @@ impl Manager {
         let id = self.job_for(info_hash)?;
         let job = self.job(id)?;
         Some(Existing {
-            only_files: Some(job.files.iter().filter(|f| f.wanted).map(|f| f.index).collect()),
+            only_files: Some(
+                job.files
+                    .iter()
+                    .filter(|f| f.wanted)
+                    .map(|f| f.index)
+                    .collect(),
+            ),
             output_folder: job.output_folder,
         })
     }
@@ -400,7 +468,8 @@ impl Manager {
     /// The torrent's contents with the job's selection, to change it.
     pub fn listing(&self, id: u64) -> Result<Listing> {
         let job = self.job(id).context("no such download")?;
-        let bytes = std::fs::read(self.torrent_path(&job.info_hash)).context("the download's .torrent file is missing")?;
+        let bytes = std::fs::read(self.torrent_path(&job.info_hash))
+            .context("the download's .torrent file is missing")?;
         let mut listing = crate::engine::listing_from_bytes(bytes)?;
         listing.existing = self.existing(&job.info_hash);
         Ok(listing)
@@ -414,7 +483,14 @@ impl Manager {
     /// All jobs, newest first.
     pub fn views(&self) -> Vec<View> {
         let entries = self.entries.lock().unwrap();
-        entries.iter().rev().map(|e| View { job: e.job.clone(), live: e.live.lock().unwrap().clone() }).collect()
+        entries
+            .iter()
+            .rev()
+            .map(|e| View {
+                job: e.job.clone(),
+                live: e.live.lock().unwrap().clone(),
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -462,7 +538,9 @@ impl Manager {
     pub fn remove(&self, id: u64, delete_files: bool) {
         let entry = {
             let mut entries = self.entries.lock().unwrap();
-            let Some(pos) = entries.iter().position(|e| e.job.id == id) else { return };
+            let Some(pos) = entries.iter().position(|e| e.job.id == id) else {
+                return;
+            };
             let entry = entries.remove(pos);
             self.save(&entries);
             entry
@@ -497,7 +575,14 @@ impl Manager {
         let me = views.iter().find(|v| v.job.id == id)?;
         let folder = me.job.output_folder.clone();
         let shared = folder != download_dir;
-        let group: Vec<&View> = if shared { views.iter().filter(|v| v.job.output_folder == folder).collect() } else { vec![me] };
+        let group: Vec<&View> = if shared {
+            views
+                .iter()
+                .filter(|v| v.job.output_folder == folder)
+                .collect()
+        } else {
+            vec![me]
+        };
         let mut files = Vec::new();
         let mut not_ready = 0;
         for v in &group {
@@ -516,11 +601,19 @@ impl Manager {
         files.sort();
         files.dedup();
         let name = if shared && group.len() > 1 {
-            folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| me.job.name.clone())
+            folder
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| me.job.name.clone())
         } else {
             me.job.name.clone()
         };
-        Some(SeriesFiles { name, files, not_ready, info_hashes: group.iter().map(|v| v.job.info_hash.clone()).collect() })
+        Some(SeriesFiles {
+            name,
+            files,
+            not_ready,
+            info_hashes: group.iter().map(|v| v.job.info_hash.clone()).collect(),
+        })
     }
 
     // ── Running ────────────────────────────────────────────────────────
@@ -626,7 +719,9 @@ impl Manager {
     async fn attempt(&self, id: u64, live: &Mutex<Live>, cancel: &AtomicBool) -> Result<(), Stop> {
         let providers = self.providers.lock().unwrap().clone();
         if providers.is_empty() {
-            return Err(Stop::Fatal("No Usenet provider set up; add one in Settings".to_owned()));
+            return Err(Stop::Fatal(
+                "No Usenet provider set up; add one in Settings".to_owned(),
+            ));
         }
         let job = self.job(id).ok_or(Stop::Cancelled)?;
         if job.wanted().all(|(_, f)| job.complete(f)) {
@@ -638,7 +733,8 @@ impl Manager {
 
         // The picked files, matched to the posted ones by name.
         let staging = job.staging();
-        std::fs::create_dir_all(&staging).map_err(|e| Stop::Fatal(format!("could not create {}: {e}", staging.display())))?;
+        std::fs::create_dir_all(&staging)
+            .map_err(|e| Stop::Fatal(format!("could not create {}: {e}", staging.display())))?;
         let mut targets = Vec::new();
         for (i, f) in job.wanted() {
             if job.complete(f) {
@@ -648,21 +744,41 @@ impl Manager {
             let posted_file = posted
                 .iter()
                 .find(|p| p.name == f.base_name())
-                .or_else(|| posted.iter().find(|p| p.name.eq_ignore_ascii_case(f.base_name())))
+                .or_else(|| {
+                    posted
+                        .iter()
+                        .find(|p| p.name.eq_ignore_ascii_case(f.base_name()))
+                })
                 .ok_or_else(|| Stop::Nzb(format!("the NZB doesn't have {}", f.base_name())))?;
             let done = job.done.get(&posted_file.name).cloned().unwrap_or_default();
-            targets.push(Target { path: staging.join(&posted_file.name), nzb: posted_file.clone(), len: Some(f.len), done, job_file: Some(i) });
+            targets.push(Target {
+                path: staging.join(&posted_file.name),
+                nzb: posted_file.clone(),
+                len: Some(f.len),
+                done,
+                job_file: Some(i),
+            });
         }
 
         self.set_phase(live, Phase::Downloading);
         let missing = match self.fetch(id, &providers, &mut targets, live, cancel).await {
             // Retrying won't fix a password.
-            Err(Stop::Transient(why)) => return Err(providers.all_logins_failed().map_or(Stop::Transient(why), Stop::Fatal)),
+            Err(Stop::Transient(why)) => {
+                return Err(providers
+                    .all_logins_failed()
+                    .map_or(Stop::Transient(why), Stop::Fatal));
+            }
             other => other?,
         };
-        let damaged: Vec<String> = targets.iter().zip(&missing).filter(|(_, m)| **m > 0).map(|(t, _)| t.nzb.name.clone()).collect();
+        let damaged: Vec<String> = targets
+            .iter()
+            .zip(&missing)
+            .filter(|(_, m)| **m > 0)
+            .map(|(t, _)| t.nzb.name.clone())
+            .collect();
         if !damaged.is_empty() {
-            self.repair(id, &providers, &posted, &damaged, &staging, live, cancel).await?;
+            self.repair(id, &providers, &posted, &damaged, &staging, live, cancel)
+                .await?;
         }
         self.finish(id, &staging)?;
         Ok(())
@@ -671,17 +787,37 @@ impl Manager {
     /// Another indexer's NZB that's the same upload as one that already
     /// failed would fail the same way: skip it.
     fn not_a_repeat(&self, job: &Job, posted: &[NzbFile]) -> Result<(), Stop> {
-        let ids: std::collections::HashSet<&str> = posted.iter().flat_map(|f| f.segments.iter().map(|s| s.message_id.as_str())).collect();
+        let ids: std::collections::HashSet<&str> = posted
+            .iter()
+            .flat_map(|f| f.segments.iter().map(|s| s.message_id.as_str()))
+            .collect();
         if ids.is_empty() {
             return Ok(());
         }
         for earlier in 0..job.nzb {
-            let Ok(bytes) = std::fs::read(self.dir.join("nzbs").join(format!("{}-{earlier}.nzb", job.id))) else { continue };
-            let Ok(before) = nzb::parse(&bytes) else { continue };
-            let shared = before.iter().flat_map(|f| &f.segments).filter(|s| ids.contains(s.message_id.as_str())).count();
+            let Ok(bytes) = std::fs::read(
+                self.dir
+                    .join("nzbs")
+                    .join(format!("{}-{earlier}.nzb", job.id)),
+            ) else {
+                continue;
+            };
+            let Ok(before) = nzb::parse(&bytes) else {
+                continue;
+            };
+            let shared = before
+                .iter()
+                .flat_map(|f| &f.segments)
+                .filter(|s| ids.contains(s.message_id.as_str()))
+                .count();
             if shared * 10 >= ids.len() * 9 {
-                let (now, then) = (job.nzbs[job.nzb].indexer.name(), job.nzbs[earlier].indexer.name());
-                return Err(Stop::Nzb(format!("{now}'s NZB is the same upload as {then}'s")));
+                let (now, then) = (
+                    job.nzbs[job.nzb].indexer.name(),
+                    job.nzbs[earlier].indexer.name(),
+                );
+                return Err(Stop::Nzb(format!(
+                    "{now}'s NZB is the same upload as {then}'s"
+                )));
             }
         }
         Ok(())
@@ -690,14 +826,20 @@ impl Manager {
     /// The job's NZB, from disk or the indexer.
     async fn nzb_files(&self, job: &Job) -> Result<Vec<NzbFile>, Stop> {
         let path = self.nzb_path(job);
-        let link = job.nzbs.get(job.nzb).ok_or_else(|| Stop::Fatal("the release has no NZB".to_owned()))?;
+        let link = job
+            .nzbs
+            .get(job.nzb)
+            .ok_or_else(|| Stop::Fatal("the release has no NZB".to_owned()))?;
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(_) => {
-                let b = self.indexers.fetch_nzb(link).await.map_err(|e| match e.downcast_ref::<super::indexers::Unusable>() {
-                    Some(u) => Stop::Nzb(u.to_string()),
-                    None => Stop::Transient(format!("{e:#}")),
-                })?;
+                let b =
+                    self.indexers.fetch_nzb(link).await.map_err(|e| match e
+                        .downcast_ref::<super::indexers::Unusable>(
+                    ) {
+                        Some(u) => Stop::Nzb(u.to_string()),
+                        None => Stop::Transient(format!("{e:#}")),
+                    })?;
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
@@ -724,8 +866,14 @@ impl Manager {
             message_id: String,
         }
         enum Done {
-            Written { target: usize, number: u32, bytes: usize },
-            Missing { target: usize },
+            Written {
+                target: usize,
+                number: u32,
+                bytes: usize,
+            },
+            Missing {
+                target: usize,
+            },
             Unreachable(String),
             Mismatch(String),
         }
@@ -739,16 +887,24 @@ impl Manager {
                 .read(true)
                 .write(true)
                 .open(&target.path)
-                .map_err(|e| Stop::Fatal(format!("could not write {}: {e}", target.path.display())))?;
+                .map_err(|e| {
+                    Stop::Fatal(format!("could not write {}: {e}", target.path.display()))
+                })?;
             if let Some(len) = target.len
                 && file.metadata().map(|m| m.len()).unwrap_or(0) != len
             {
-                file.set_len(len).map_err(|e| Stop::Fatal(format!("could not write {}: {e}", target.path.display())))?;
+                file.set_len(len).map_err(|e| {
+                    Stop::Fatal(format!("could not write {}: {e}", target.path.display()))
+                })?;
             }
             files.push(Arc::new(file));
             for s in &target.nzb.segments {
                 if !target.done.contains(&s.number) {
-                    queue.push_back(Task { target: t, number: s.number, message_id: s.message_id.clone() });
+                    queue.push_back(Task {
+                        target: t,
+                        number: s.number,
+                        message_id: s.message_id.clone(),
+                    });
                 }
             }
             if let Some(i) = target.job_file {
@@ -766,8 +922,14 @@ impl Manager {
         let workers = providers.workers().min(queue.lock().unwrap().len());
         let mut handles = Vec::new();
         for _ in 0..workers {
-            let (queue, stop, tx, providers, files, lens) =
-                (queue.clone(), stop.clone(), tx.clone(), providers.clone(), files.clone(), lens.clone());
+            let (queue, stop, tx, providers, files, lens) = (
+                queue.clone(),
+                stop.clone(),
+                tx.clone(),
+                providers.clone(),
+                files.clone(),
+                lens.clone(),
+            );
             let retry = self.timing.retry;
             handles.push(self.rt.spawn(async move {
                 loop {
@@ -832,7 +994,11 @@ impl Manager {
                 outcome = Err(Stop::Cancelled);
             }
             match done {
-                Done::Written { target, number, bytes } => {
+                Done::Written {
+                    target,
+                    number,
+                    bytes,
+                } => {
                     let t = &mut targets[target];
                     t.done.insert(number);
                     window.1 += bytes;
@@ -846,7 +1012,10 @@ impl Manager {
                 Done::Missing { target } => {
                     missing[target] += 1;
                     live.lock().unwrap().missing += 1;
-                    tracing::info!("an article of {} is on none of the providers", targets[target].nzb.name);
+                    tracing::info!(
+                        "an article of {} is on none of the providers",
+                        targets[target].nzb.name
+                    );
                 }
                 Done::Unreachable(why) if outcome.is_ok() => {
                     stop.store(true, Ordering::Relaxed);
@@ -862,7 +1031,11 @@ impl Manager {
             if elapsed >= Duration::from_secs(1) {
                 let rate = window.1 as f64 / elapsed.as_secs_f64();
                 let mut l = live.lock().unwrap();
-                l.speed = if l.speed == 0.0 { rate } else { l.speed * 0.6 + rate * 0.4 };
+                l.speed = if l.speed == 0.0 {
+                    rate
+                } else {
+                    l.speed * 0.6 + rate * 0.4
+                };
                 window = (Instant::now(), 0);
             }
             if last_save.elapsed() >= self.timing.save {
@@ -909,20 +1082,29 @@ impl Manager {
         let lost = |what: &str| lost(missing, what);
         let mut sets: BTreeMap<&str, Vec<&NzbFile>> = BTreeMap::new();
         for f in posted.iter().filter(|f| f.is_par2()) {
-            sets.entry(f.par2_set().unwrap_or_default()).or_default().push(f);
+            sets.entry(f.par2_set().unwrap_or_default())
+                .or_default()
+                .push(f);
         }
         if sets.is_empty() {
             return Err(lost("the release has no PAR2 recovery data"));
         }
         let mut by_set: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for name in damaged {
-            let own = sets.keys().filter(|s| name.starts_with(&format!("{s}."))).max_by_key(|s| s.len()).copied();
+            let own = sets
+                .keys()
+                .filter(|s| name.starts_with(&format!("{s}.")))
+                .max_by_key(|s| s.len())
+                .copied();
             let set = own.or_else(|| (sets.len() == 1).then(|| *sets.keys().next().unwrap()));
-            let Some(set) = set else { return Err(lost(&format!("there's no PAR2 recovery data for {name}"))) };
+            let Some(set) = set else {
+                return Err(lost(&format!("there's no PAR2 recovery data for {name}")));
+            };
             by_set.entry(set).or_default().push(name);
         }
         for set in by_set.keys() {
-            self.repair_set(id, providers, &sets[set], staging, live, cancel, missing).await?;
+            self.repair_set(id, providers, &sets[set], staging, live, cancel, missing)
+                .await?;
         }
         Ok(())
     }
@@ -944,23 +1126,38 @@ impl Manager {
         // The index, or failing that the smallest volume (volumes carry the
         // same description of the files).
         let mut volumes: Vec<&NzbFile> = set.to_vec();
-        volumes.sort_by_key(|f| (f.recovery_blocks().is_some(), f.recovery_blocks(), f.encoded_bytes()));
+        volumes.sort_by_key(|f| {
+            (
+                f.recovery_blocks().is_some(),
+                f.recovery_blocks(),
+                f.encoded_bytes(),
+            )
+        });
         let index = volumes.remove(0);
 
-        self.set_phase(live, Phase::Repairing("getting the recovery index".to_owned()));
+        self.set_phase(
+            live,
+            Phase::Repairing("getting the recovery index".to_owned()),
+        );
         let index_path = staging.join(&index.name);
-        self.fetch_whole(id, providers, index, &index_path, live, cancel).await?;
+        self.fetch_whole(id, providers, index, &index_path, live, cancel)
+            .await?;
         let mut have_volumes: Vec<PathBuf> = Vec::new();
         let mut volumes = volumes.into_iter();
         loop {
             if cancel.load(Ordering::Relaxed) {
                 return Err(Stop::Cancelled);
             }
-            let (dir, index, vols) = (staging.to_path_buf(), index_path.clone(), have_volumes.clone());
-            let checked = tokio::task::spawn_blocking(move || repair::check(&dir, &index, &vols, false))
-                .await
-                .map_err(|e| Stop::Fatal(format!("PAR2 check crashed: {e}")))?
-                .map_err(|e| Stop::Nzb(format!("{e:#}")))?;
+            let (dir, index, vols) = (
+                staging.to_path_buf(),
+                index_path.clone(),
+                have_volumes.clone(),
+            );
+            let checked =
+                tokio::task::spawn_blocking(move || repair::check(&dir, &index, &vols, false))
+                    .await
+                    .map_err(|e| Stop::Fatal(format!("PAR2 check crashed: {e}")))?
+                    .map_err(|e| Stop::Nzb(format!("{e:#}")))?;
             match checked {
                 Check::Intact => return Ok(()),
                 Check::Repaired => break,
@@ -970,19 +1167,24 @@ impl Manager {
                             "the recovery data is {blocks} blocks short (repairing part of a batch needs the whole batch)"
                         )));
                     };
-                    self.set_phase(live, Phase::Repairing(format!("getting recovery data ({blocks} blocks to go)")));
+                    self.set_phase(
+                        live,
+                        Phase::Repairing(format!("getting recovery data ({blocks} blocks to go)")),
+                    );
                     let path = staging.join(&next.name);
-                    self.fetch_whole(id, providers, next, &path, live, cancel).await?;
+                    self.fetch_whole(id, providers, next, &path, live, cancel)
+                        .await?;
                     have_volumes.push(path);
                 }
             }
         }
         self.set_phase(live, Phase::Repairing("repairing".to_owned()));
         let (dir, index, vols) = (staging.to_path_buf(), index_path, have_volumes);
-        let repaired = tokio::task::spawn_blocking(move || repair::check(&dir, &index, &vols, true))
-            .await
-            .map_err(|e| Stop::Fatal(format!("PAR2 repair crashed: {e}")))?
-            .map_err(|e| Stop::Nzb(format!("{e:#}")))?;
+        let repaired =
+            tokio::task::spawn_blocking(move || repair::check(&dir, &index, &vols, true))
+                .await
+                .map_err(|e| Stop::Fatal(format!("PAR2 repair crashed: {e}")))?
+                .map_err(|e| Stop::Nzb(format!("{e:#}")))?;
         match repaired {
             Check::Intact | Check::Repaired => Ok(()),
             Check::Short { blocks } => Err(lost(&format!("repair came up {blocks} blocks short"))),
@@ -1001,7 +1203,13 @@ impl Manager {
         cancel: &AtomicBool,
     ) -> Result<(), Stop> {
         let missing_before = live.lock().unwrap().missing;
-        let mut target = [Target { path: path.to_path_buf(), nzb: file.clone(), len: None, done: BTreeSet::new(), job_file: None }];
+        let mut target = [Target {
+            path: path.to_path_buf(),
+            nzb: file.clone(),
+            len: None,
+            done: BTreeSet::new(),
+            job_file: None,
+        }];
         self.fetch(id, providers, &mut target, live, cancel).await?;
         // Missing recovery articles aren't missing data.
         live.lock().unwrap().missing = missing_before;
@@ -1024,16 +1232,21 @@ impl Manager {
                     .ok()
                     .and_then(|d| {
                         d.flatten().map(|e| e.path()).find(|p| {
-                            p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(f.base_name()))
+                            p.file_name().is_some_and(|n| {
+                                n.to_string_lossy().eq_ignore_ascii_case(f.base_name())
+                            })
                         })
                     })
                     .unwrap_or(from)
             };
             let dest = job.dest(f);
             if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| Stop::Fatal(format!("could not create {}: {e}", parent.display())))?;
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    Stop::Fatal(format!("could not create {}: {e}", parent.display()))
+                })?;
             }
-            std::fs::rename(&from, &dest).map_err(|e| Stop::Fatal(format!("could not move {} into place: {e}", f.path)))?;
+            std::fs::rename(&from, &dest)
+                .map_err(|e| Stop::Fatal(format!("could not move {} into place: {e}", f.path)))?;
         }
         let _ = std::fs::remove_dir_all(staging);
         self.with_job(id, |job| job.done.clear());
@@ -1043,13 +1256,21 @@ impl Manager {
 
 /// Articles are missing everywhere, and they can't be made up for.
 fn lost(missing: u32, what: &str) -> Stop {
-    Stop::Nzb(format!("{missing} articles are on none of your providers, and {what}"))
+    Stop::Nzb(format!(
+        "{missing} articles are on none of your providers, and {what}"
+    ))
 }
 
 /// Bytes a target has, judged by its articles (encoded sizes, scaled to the file).
 fn progress_bytes(t: &Target) -> u64 {
     let total = t.nzb.encoded_bytes().max(1);
-    let done: u64 = t.nzb.segments.iter().filter(|s| t.done.contains(&s.number)).map(|s| u64::from(s.bytes)).sum();
+    let done: u64 = t
+        .nzb
+        .segments
+        .iter()
+        .filter(|s| t.done.contains(&s.number))
+        .map(|s| u64::from(s.bytes))
+        .sum();
     let len = t.len.unwrap_or(total);
     (u128::from(done) * u128::from(len) / u128::from(total)) as u64
 }
@@ -1061,7 +1282,11 @@ fn initial_have(job: &Job) -> Vec<u64> {
         .map(|f| {
             if job.complete(f) {
                 f.len
-            } else if job.done.keys().any(|k| k.eq_ignore_ascii_case(f.base_name())) {
+            } else if job
+                .done
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case(f.base_name()))
+            {
                 // Shown properly once the NZB is read.
                 f.len / 100
             } else {

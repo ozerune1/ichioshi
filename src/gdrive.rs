@@ -75,10 +75,16 @@ impl OAuthClient {
             client_id: String,
             client_secret: String,
         }
-        let file: File = serde_json::from_str(text).context("that isn't a Google OAuth client file")?;
+        let file: File =
+            serde_json::from_str(text).context("that isn't a Google OAuth client file")?;
         match (file.installed, file.web) {
-            (Some(c), _) => Ok(Self { id: c.client_id, secret: c.client_secret }),
-            (None, Some(_)) => bail!("that's a “Web application” client; create a “Desktop app” client instead"),
+            (Some(c), _) => Ok(Self {
+                id: c.client_id,
+                secret: c.client_secret,
+            }),
+            (None, Some(_)) => {
+                bail!("that's a “Web application” client; create a “Desktop app” client instead")
+            }
             (None, None) => bail!("that isn't a Google OAuth client file"),
         }
     }
@@ -105,7 +111,10 @@ pub struct Account {
 
 impl Account {
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -140,11 +149,16 @@ pub async fn sign_in(
     cancel: &AtomicBool,
     open: impl FnOnce(String),
 ) -> Result<SignedIn> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.context("couldn't start the sign-in listener")?;
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .context("couldn't start the sign-in listener")?;
     let redirect = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
     let verifier = random_token(64)?;
     let state = random_token(16)?;
-    let challenge = URL_SAFE_NO_PAD.encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()));
+    let challenge = URL_SAFE_NO_PAD.encode(ring::digest::digest(
+        &ring::digest::SHA256,
+        verifier.as_bytes(),
+    ));
     let url = url::Url::parse_with_params(
         &endpoints.auth,
         &[
@@ -174,11 +188,22 @@ pub async fn sign_in(
         ],
     )
     .await?;
-    let refresh_token = tokens.refresh_token.clone().context("Google didn't return a refresh token")?;
-    let drive = Drive::new(http.clone(), endpoints.clone(), client.clone(), refresh_token.clone());
+    let refresh_token = tokens
+        .refresh_token
+        .clone()
+        .context("Google didn't return a refresh token")?;
+    let drive = Drive::new(
+        http.clone(),
+        endpoints.clone(),
+        client.clone(),
+        refresh_token.clone(),
+    );
     drive.set_access(tokens.access_token, tokens.expires_in);
     let email = drive.email().await?;
-    Ok(SignedIn { refresh_token, email })
+    Ok(SignedIn {
+        refresh_token,
+        email,
+    })
 }
 
 fn random_token(bytes: usize) -> Result<String> {
@@ -199,7 +224,11 @@ async fn wait_for_code(listener: &TcpListener, state: &str, cancel: &AtomicBool)
         if Instant::now() > deadline {
             bail!("timed out waiting for the sign-in in the browser");
         }
-        let Ok(accepted) = tokio::time::timeout(Duration::from_millis(250), listener.accept()).await else { continue };
+        let Ok(accepted) =
+            tokio::time::timeout(Duration::from_millis(250), listener.accept()).await
+        else {
+            continue;
+        };
         let (mut stream, _) = accepted?;
         let mut head = Vec::new();
         let mut buf = [0u8; 4096];
@@ -210,11 +239,19 @@ async fn wait_for_code(listener: &TcpListener, state: &str, cancel: &AtomicBool)
             }
         }
         let head = String::from_utf8_lossy(&head);
-        let target = head.lines().next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("/");
+        let target = head
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .unwrap_or("/");
         let query: HashMap<String, String> = url::Url::parse(&format!("http://localhost{target}"))
             .map(|u| u.query_pairs().into_owned().collect())
             .unwrap_or_default();
-        let (status, message, outcome) = match (query.get("code"), query.get("error"), query.get("state")) {
+        let (status, message, outcome) = match (
+            query.get("code"),
+            query.get("error"),
+            query.get("state"),
+        ) {
             (_, Some(error), Some(s)) if s == state => (
                 "200 OK",
                 "Sign-in was cancelled. You can close this tab.",
@@ -225,7 +262,11 @@ async fn wait_for_code(listener: &TcpListener, state: &str, cancel: &AtomicBool)
                 "Signed in to SeaDex Downloader. You can close this tab and go back to the app.",
                 Some(Ok(code.clone())),
             ),
-            (Some(_), _, _) => ("400 Bad Request", "This sign-in doesn't match the app's. Start again from the app.", None),
+            (Some(_), _, _) => (
+                "400 Bad Request",
+                "This sign-in doesn't match the app's. Start again from the app.",
+                None,
+            ),
             _ => ("404 Not Found", "Not found.", None),
         };
         let body = format!(
@@ -257,11 +298,20 @@ fn default_expiry() -> u64 {
 }
 
 /// POST a form to Google's token endpoint and parse the JSON reply.
-async fn post_form<T: DeserializeOwned>(http: &reqwest::Client, url: &str, form: &[(&str, &str)]) -> Result<T> {
-    let body = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(form).finish();
+async fn post_form<T: DeserializeOwned>(
+    http: &reqwest::Client,
+    url: &str,
+    form: &[(&str, &str)],
+) -> Result<T> {
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(form)
+        .finish();
     let resp = http
         .post(url)
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .body(body)
         .send()
         .await
@@ -269,7 +319,8 @@ async fn post_form<T: DeserializeOwned>(http: &reqwest::Client, url: &str, form:
     let status = resp.status();
     let text = resp.text().await?;
     if status.is_success() {
-        return serde_json::from_str(&text).with_context(|| format!("unexpected reply from Google: {text}"));
+        return serde_json::from_str(&text)
+            .with_context(|| format!("unexpected reply from Google: {text}"));
     }
     #[derive(Deserialize)]
     struct OAuthError {
@@ -278,7 +329,13 @@ async fn post_form<T: DeserializeOwned>(http: &reqwest::Client, url: &str, form:
     }
     match serde_json::from_str::<OAuthError>(&text) {
         Ok(e) if e.error == "invalid_grant" => Err(anyhow::Error::new(SignInExpired)),
-        Ok(e) => bail!("Google: {}{}", e.error, e.error_description.map(|d| format!(" ({d})")).unwrap_or_default()),
+        Ok(e) => bail!(
+            "Google: {}{}",
+            e.error,
+            e.error_description
+                .map(|d| format!(" ({d})"))
+                .unwrap_or_default()
+        ),
         Err(_) => bail!("Google returned HTTP {status}"),
     }
 }
@@ -318,8 +375,20 @@ pub struct Drive {
 }
 
 impl Drive {
-    pub fn new(http: reqwest::Client, endpoints: Endpoints, client: OAuthClient, refresh_token: String) -> Self {
-        Self { http, endpoints, client, refresh_token, access: Mutex::new(None), chunk: CHUNK }
+    pub fn new(
+        http: reqwest::Client,
+        endpoints: Endpoints,
+        client: OAuthClient,
+        refresh_token: String,
+    ) -> Self {
+        Self {
+            http,
+            endpoints,
+            client,
+            refresh_token,
+            access: Mutex::new(None),
+            chunk: CHUNK,
+        }
     }
 
     fn set_access(&self, token: String, expires_in: u64) {
@@ -381,8 +450,17 @@ impl Drive {
             #[serde(rename = "displayName")]
             name: Option<String>,
         }
-        let about: About = self.get("/drive/v3/about", &[("fields", "user(emailAddress,displayName)")]).await?;
-        Ok(about.user.email.or(about.user.name).unwrap_or_else(|| "your Google account".into()))
+        let about: About = self
+            .get(
+                "/drive/v3/about",
+                &[("fields", "user(emailAddress,displayName)")],
+            )
+            .await?;
+        Ok(about
+            .user
+            .email
+            .or(about.user.name)
+            .unwrap_or_else(|| "your Google account".into()))
     }
 
     /// The folders in a place, by name.
@@ -407,17 +485,37 @@ impl Drive {
                     drives: Vec<Item>,
                 }
                 let mut top = vec![
-                    Entry { name: "My Drive".into(), place: Place::Folder("root".into()) },
-                    Entry { name: "Shared with me".into(), place: Place::SharedWithMe },
+                    Entry {
+                        name: "My Drive".into(),
+                        place: Place::Folder("root".into()),
+                    },
+                    Entry {
+                        name: "Shared with me".into(),
+                        place: Place::SharedWithMe,
+                    },
                 ];
                 // Shared drives (Workspace accounts); none is fine.
-                if let Ok(d) = self.get::<Drives>("/drive/v3/drives", &[("pageSize", "100"), ("fields", "drives(id,name)")]).await {
-                    top.extend(d.drives.into_iter().map(|d| Entry { name: d.name, place: Place::Folder(d.id) }));
+                if let Ok(d) = self
+                    .get::<Drives>(
+                        "/drive/v3/drives",
+                        &[("pageSize", "100"), ("fields", "drives(id,name)")],
+                    )
+                    .await
+                {
+                    top.extend(d.drives.into_iter().map(|d| Entry {
+                        name: d.name,
+                        place: Place::Folder(d.id),
+                    }));
                 }
                 return Ok(top);
             }
-            Place::SharedWithMe => format!("sharedWithMe and mimeType = '{FOLDER_MIME}' and trashed = false"),
-            Place::Folder(id) => format!("'{}' in parents and mimeType = '{FOLDER_MIME}' and trashed = false", id.replace('\'', "")),
+            Place::SharedWithMe => {
+                format!("sharedWithMe and mimeType = '{FOLDER_MIME}' and trashed = false")
+            }
+            Place::Folder(id) => format!(
+                "'{}' in parents and mimeType = '{FOLDER_MIME}' and trashed = false",
+                id.replace('\'', "")
+            ),
         };
         let mut out = Vec::new();
         let mut page_token = String::new();
@@ -434,7 +532,10 @@ impl Drive {
                 query.push(("pageToken", &page_token));
             }
             let page: Page = self.get("/drive/v3/files", &query).await?;
-            out.extend(page.files.into_iter().map(|f| Entry { name: f.name, place: Place::Folder(f.id) }));
+            out.extend(page.files.into_iter().map(|f| Entry {
+                name: f.name,
+                place: Place::Folder(f.id),
+            }));
             match page.next {
                 Some(next) => page_token = next,
                 None => break,
@@ -445,7 +546,8 @@ impl Drive {
 
     /// The folder a Drive link (or ID) points at, checking files can be added to it.
     pub async fn folder_from_link(&self, link: &str) -> Result<Folder> {
-        let id = folder_id_from_link(link).context("that doesn't look like a Google Drive folder link")?;
+        let id = folder_id_from_link(link)
+            .context("that doesn't look like a Google Drive folder link")?;
         #[derive(Deserialize)]
         struct File {
             id: String,
@@ -462,7 +564,10 @@ impl Drive {
         let file: File = self
             .get(
                 &format!("/drive/v3/files/{id}"),
-                &[("fields", "id,name,mimeType,capabilities(canAddChildren)"), ("supportsAllDrives", "true")],
+                &[
+                    ("fields", "id,name,mimeType,capabilities(canAddChildren)"),
+                    ("supportsAllDrives", "true"),
+                ],
             )
             .await?;
         if file.mime != FOLDER_MIME {
@@ -471,7 +576,10 @@ impl Drive {
         if file.capabilities.and_then(|c| c.can_add_children) == Some(false) {
             bail!("you can't add files to “{}”", file.name);
         }
-        Ok(Folder { id: file.id, path: file.name })
+        Ok(Folder {
+            id: file.id,
+            path: file.name,
+        })
     }
 
     /// Upload a file into a folder with Drive's resumable protocol. `progress`
@@ -484,8 +592,16 @@ impl Drive {
         mut progress: impl FnMut(f32),
     ) -> Result<Uploaded> {
         let size = tokio::fs::metadata(path).await?.len();
-        let name = path.file_name().context("no file name")?.to_string_lossy().into_owned();
-        let mime = if name.to_lowercase().ends_with(".zip") { "application/zip" } else { "application/octet-stream" };
+        let name = path
+            .file_name()
+            .context("no file name")?
+            .to_string_lossy()
+            .into_owned();
+        let mime = if name.to_lowercase().ends_with(".zip") {
+            "application/zip"
+        } else {
+            "application/octet-stream"
+        };
 
         let mut start = None;
         for attempt in 0..2 {
@@ -535,7 +651,11 @@ impl Drive {
             let len = (end - offset) as usize;
             file.seek(SeekFrom::Start(offset)).await?;
             file.read_exact(&mut buf[..len]).await?;
-            let range = if size == 0 { "bytes */0".to_owned() } else { format!("bytes {offset}-{}/{size}", end - 1) };
+            let range = if size == 0 {
+                "bytes */0".to_owned()
+            } else {
+                format!("bytes {offset}-{}/{size}", end - 1)
+            };
             let sent = self
                 .http
                 .put(&session)
@@ -553,7 +673,10 @@ impl Drive {
                     retries = 0;
                     progress((offset as f32 / size.max(1) as f32).min(0.99));
                 }
-                Ok(resp) if resp.status() == StatusCode::NOT_FOUND || resp.status() == StatusCode::GONE => {
+                Ok(resp)
+                    if resp.status() == StatusCode::NOT_FOUND
+                        || resp.status() == StatusCode::GONE =>
+                {
                     bail!("Google Drive dropped the upload session; start the upload again");
                 }
                 Ok(resp) if !is_retryable(resp.status()) => return Err(drive_error(resp).await),
@@ -594,7 +717,12 @@ impl Drive {
 
     /// Revoke the sign-in at Google (best effort, on sign-out).
     pub async fn revoke(&self) {
-        let _ = post_form::<serde_json::Value>(&self.http, &self.endpoints.revoke, &[("token", &self.refresh_token)]).await;
+        let _ = post_form::<serde_json::Value>(
+            &self.http,
+            &self.endpoints.revoke,
+            &[("token", &self.refresh_token)],
+        )
+        .await;
     }
 }
 
@@ -609,7 +737,9 @@ fn received(resp: &reqwest::Response) -> u64 {
 }
 
 fn is_retryable(status: StatusCode) -> bool {
-    status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::REQUEST_TIMEOUT
+    status.is_server_error()
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
 }
 
 fn backoff(attempt: u32) -> Duration {
@@ -621,7 +751,8 @@ async fn drive_json<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
         return Err(drive_error(resp).await);
     }
     let text = resp.text().await?;
-    serde_json::from_str(&text).with_context(|| format!("unexpected reply from Google Drive: {text}"))
+    serde_json::from_str(&text)
+        .with_context(|| format!("unexpected reply from Google Drive: {text}"))
 }
 
 /// Drive's error message, e.g. "File not found: abc".
@@ -641,7 +772,11 @@ async fn drive_error(resp: reqwest::Response) -> anyhow::Error {
 /// The folder ID in a Drive link (`.../folders/<id>`, `...?id=<id>`) or a bare ID.
 pub fn folder_id_from_link(link: &str) -> Option<String> {
     let link = link.trim();
-    let is_id = |s: &str| s.len() >= 10 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let is_id = |s: &str| {
+        s.len() >= 10
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
     if is_id(link) {
         return Some(link.to_owned());
     }
@@ -650,9 +785,17 @@ pub fn folder_id_from_link(link: &str) -> Option<String> {
         return None;
     }
     let segments: Vec<&str> = url.path_segments()?.collect();
-    let from_path = segments.iter().position(|s| *s == "folders").and_then(|i| segments.get(i + 1)).map(|s| s.to_string());
+    let from_path = segments
+        .iter()
+        .position(|s| *s == "folders")
+        .and_then(|i| segments.get(i + 1))
+        .map(|s| s.to_string());
     from_path
-        .or_else(|| url.query_pairs().find(|(k, _)| k == "id").map(|(_, v)| v.into_owned()))
+        .or_else(|| {
+            url.query_pairs()
+                .find(|(k, _)| k == "id")
+                .map(|(_, v)| v.into_owned())
+        })
         .filter(|id| is_id(id))
 }
 
@@ -673,15 +816,26 @@ pub(crate) mod tests {
     }
 
     fn client() -> OAuthClient {
-        OAuthClient { id: "id.apps.googleusercontent.com".into(), secret: "secret".into() }
+        OAuthClient {
+            id: "id.apps.googleusercontent.com".into(),
+            secret: "secret".into(),
+        }
     }
 
     #[test]
     fn reads_client_files_and_folder_links() {
         let installed = r#"{"installed":{"client_id":"a.apps.googleusercontent.com","client_secret":"s","redirect_uris":["http://localhost"]}}"#;
-        assert_eq!(OAuthClient::from_json(installed).unwrap().id, "a.apps.googleusercontent.com");
+        assert_eq!(
+            OAuthClient::from_json(installed).unwrap().id,
+            "a.apps.googleusercontent.com"
+        );
         let web = r#"{"web":{"client_id":"a","client_secret":"s"}}"#;
-        assert!(OAuthClient::from_json(web).unwrap_err().to_string().contains("Desktop app"));
+        assert!(
+            OAuthClient::from_json(web)
+                .unwrap_err()
+                .to_string()
+                .contains("Desktop app")
+        );
 
         let id = "1AbCdEfGhIjKlMnOp_qrs-TUV";
         for link in [
@@ -692,7 +846,10 @@ pub(crate) mod tests {
         ] {
             assert_eq!(folder_id_from_link(&link).as_deref(), Some(id), "{link}");
         }
-        assert_eq!(folder_id_from_link("https://example.com/folders/1AbCdEfGhIjKlMnOp"), None);
+        assert_eq!(
+            folder_id_from_link("https://example.com/folders/1AbCdEfGhIjKlMnOp"),
+            None
+        );
         assert_eq!(folder_id_from_link("my folder"), None);
     }
 
@@ -707,9 +864,15 @@ pub(crate) mod tests {
                 assert_eq!(form["code"], "the-code");
                 assert_eq!(form["client_secret"], "secret");
                 // The verifier must hash to the challenge the browser was given.
-                let hashed = URL_SAFE_NO_PAD.encode(ring::digest::digest(&ring::digest::SHA256, form["code_verifier"].as_bytes()));
+                let hashed = URL_SAFE_NO_PAD.encode(ring::digest::digest(
+                    &ring::digest::SHA256,
+                    form["code_verifier"].as_bytes(),
+                ));
                 assert_eq!(hashed, *seen.lock().unwrap());
-                reply(200, json!({"access_token": "at", "expires_in": 3599, "refresh_token": "rt"}))
+                reply(
+                    200,
+                    json!({"access_token": "at", "expires_in": 3599, "refresh_token": "rt"}),
+                )
             }
             t if t.starts_with("/drive/v3/about") => {
                 assert_eq!(req.headers["authorization"], "Bearer at");
@@ -731,13 +894,24 @@ pub(crate) mod tests {
             *challenge.lock().unwrap() = q["code_challenge"].clone();
             let back = reqwest::Client::new();
             // A stray request and a forged state are ignored...
-            let stray = back.get(format!("{}/favicon.ico", q["redirect_uri"])).send().await.unwrap();
+            let stray = back
+                .get(format!("{}/favicon.ico", q["redirect_uri"]))
+                .send()
+                .await
+                .unwrap();
             assert_eq!(stray.status(), 404);
-            let forged = back.get(format!("{}/?code=evil&state=wrong", q["redirect_uri"])).send().await.unwrap();
+            let forged = back
+                .get(format!("{}/?code=evil&state=wrong", q["redirect_uri"]))
+                .send()
+                .await
+                .unwrap();
             assert_eq!(forged.status(), 400);
             // ...the real redirect completes the sign-in.
             let page = back
-                .get(format!("{}/?code=the-code&state={}&scope=x", q["redirect_uri"], q["state"]))
+                .get(format!(
+                    "{}/?code=the-code&state={}&scope=x",
+                    q["redirect_uri"], q["state"]
+                ))
                 .send()
                 .await
                 .unwrap()
@@ -746,13 +920,22 @@ pub(crate) mod tests {
                 .unwrap();
             assert!(page.contains("You can close this tab"));
         });
-        let signed_in = sign_in(&http, &endpoints(&base), &client(), &AtomicBool::new(false), |url| {
-            url_tx.send(url).unwrap();
-        })
+        let signed_in = sign_in(
+            &http,
+            &endpoints(&base),
+            &client(),
+            &AtomicBool::new(false),
+            |url| {
+                url_tx.send(url).unwrap();
+            },
+        )
         .await
         .unwrap();
         browser.await.unwrap();
-        assert_eq!((signed_in.refresh_token.as_str(), signed_in.email.as_str()), ("rt", "me@example.com"));
+        assert_eq!(
+            (signed_in.refresh_token.as_str(), signed_in.email.as_str()),
+            ("rt", "me@example.com")
+        );
     }
 
     #[tokio::test]
@@ -769,9 +952,19 @@ pub(crate) mod tests {
             other => panic!("unexpected {other}"),
         })
         .await;
-        let good = Drive::new(reqwest::Client::new(), endpoints(&base), client(), "good".into());
+        let good = Drive::new(
+            reqwest::Client::new(),
+            endpoints(&base),
+            client(),
+            "good".into(),
+        );
         assert_eq!(good.email().await.unwrap(), "Me");
-        let revoked = Drive::new(reqwest::Client::new(), endpoints(&base), client(), "old".into());
+        let revoked = Drive::new(
+            reqwest::Client::new(),
+            endpoints(&base),
+            client(),
+            "old".into(),
+        );
         let err = revoked.email().await.unwrap_err();
         assert!(err.downcast_ref::<SignInExpired>().is_some(), "{err:#}");
     }
@@ -792,15 +985,32 @@ pub(crate) mod tests {
             }
         })
         .await;
-        let drive = Drive::new(reqwest::Client::new(), endpoints(&base), client(), "rt".into());
-        let top: Vec<String> = drive.folders(&Place::Top).await.unwrap().into_iter().map(|e| e.name).collect();
+        let drive = Drive::new(
+            reqwest::Client::new(),
+            endpoints(&base),
+            client(),
+            "rt".into(),
+        );
+        let top: Vec<String> = drive
+            .folders(&Place::Top)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         assert_eq!(top, ["My Drive", "Shared with me", "Team"]);
         let folders = drive.folders(&Place::Folder("root".into())).await.unwrap();
         assert_eq!(
             folders,
             vec![
-                Entry { name: "Anime".into(), place: Place::Folder("a".into()) },
-                Entry { name: "Backups".into(), place: Place::Folder("b".into()) },
+                Entry {
+                    name: "Anime".into(),
+                    place: Place::Folder("a".into())
+                },
+                Entry {
+                    name: "Backups".into(),
+                    place: Place::Folder("b".into())
+                },
             ]
         );
     }
@@ -881,12 +1091,23 @@ pub(crate) mod tests {
         .await;
         *base_cell.lock().unwrap() = base.clone();
 
-        let mut drive = Drive::new(reqwest::Client::new(), endpoints(&base), client(), "rt".into());
+        let mut drive = Drive::new(
+            reqwest::Client::new(),
+            endpoints(&base),
+            client(),
+            "rt".into(),
+        );
         drive.chunk = 256 << 10;
         let mut last = 0.0;
-        let uploaded = drive.upload(&path, "folder-id", &AtomicBool::new(false), |p| last = p).await.unwrap();
+        let uploaded = drive
+            .upload(&path, "folder-id", &AtomicBool::new(false), |p| last = p)
+            .await
+            .unwrap();
         assert_eq!(uploaded.id, "file-id");
-        assert_eq!(uploaded.link.as_deref(), Some("https://drive.google.com/file/d/file-id/view"));
+        assert_eq!(
+            uploaded.link.as_deref(),
+            Some("https://drive.google.com/file/d/file-id/view")
+        );
         assert_eq!(last, 1.0);
         let s = server.lock().unwrap();
         assert!(s.failed_once);

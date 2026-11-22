@@ -72,7 +72,16 @@ const CRC32: u32 = 0xBF;
 
 /// Elements that live directly in a Segment; one of these ends an
 /// unknown-size Cluster.
-const SEGMENT_CHILDREN: [u32; 8] = [SEEK_HEAD, INFO, TRACKS, CHAPTERS, CLUSTER, CUES, ATTACHMENTS, TAGS];
+const SEGMENT_CHILDREN: [u32; 8] = [
+    SEEK_HEAD,
+    INFO,
+    TRACKS,
+    CHAPTERS,
+    CLUSTER,
+    CUES,
+    ATTACHMENTS,
+    TAGS,
+];
 /// Largest element read into memory at once (a cluster, the track list...).
 const MAX_IN_MEMORY: u64 = 1 << 30;
 /// Space reserved at the start of the Segment for the SeekHead.
@@ -168,7 +177,10 @@ pub fn probe(path: &Path) -> Result<MkvInfo> {
         match top.id {
             INFO => {
                 let data = src.read(top.data_start, top.end)?;
-                info.title = children(&data).iter().find(|e| e.id == TITLE).map(|e| string(e.data));
+                info.title = children(&data)
+                    .iter()
+                    .find(|e| e.id == TITLE)
+                    .map(|e| string(e.data));
             }
             TRACKS => {
                 let data = src.read(top.data_start, top.end)?;
@@ -211,7 +223,11 @@ pub enum DefaultsEdit {
 pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit> {
     let src = Source::open(path)?;
     let layout = layout(&src, false)?;
-    let at = layout.top.iter().position(|t| t.id == TRACKS).context("no track list before the video data")?;
+    let at = layout
+        .top
+        .iter()
+        .position(|t| t.id == TRACKS)
+        .context("no track list before the video data")?;
     let tracks = &layout.top[at];
     let data = src.read(tracks.data_start, tracks.end)?;
 
@@ -273,7 +289,10 @@ pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit
             bytes.extend(void(pad));
         }
         drop(src);
-        let file = std::fs::OpenOptions::new().write(true).open(path).with_context(|| format!("opening {}", path.display()))?;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))?;
         write_all_at(&file, &bytes, tracks.start)?;
         file.sync_data()?;
         return Ok(DefaultsEdit::InPlace);
@@ -283,8 +302,16 @@ pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit
     let title = probe(path)?.title.unwrap_or_default();
     let keep = Keep {
         tracks: numbers,
-        default: switchable.iter().copied().filter(|n| on.contains(n)).collect(),
-        not_default: switchable.iter().copied().filter(|n| !on.contains(n)).collect(),
+        default: switchable
+            .iter()
+            .copied()
+            .filter(|n| on.contains(n))
+            .collect(),
+        not_default: switchable
+            .iter()
+            .copied()
+            .filter(|n| !on.contains(n))
+            .collect(),
         title,
         attachments: true,
     };
@@ -325,17 +352,31 @@ pub fn remux(
             bail!("{} has no track {n}", input.display());
         }
     }
-    let kept: Vec<&TrackInfo> = entries.iter().map(|(t, _)| t).filter(|t| keep.tracks.contains(&t.number)).collect();
+    let kept: Vec<&TrackInfo> = entries
+        .iter()
+        .map(|(t, _)| t)
+        .filter(|t| keep.tracks.contains(&t.number))
+        .collect();
     let kept_numbers: HashSet<u64> = kept.iter().map(|t| t.number).collect();
     let kept_uids: HashSet<u64> = kept.iter().map(|t| t.uid).collect();
     // Cues point at keyframes of the video (or, without video, the first kept
     // track), and, like mkvmerge, at every subtitle line, so players can show
     // a line already on screen at the point they seek to.
-    let cue_track = kept.iter().find(|t| t.kind == TrackKind::Video).or(kept.first()).map(|t| t.number);
-    let subtitle_tracks: HashSet<u64> =
-        kept.iter().filter(|t| t.kind == TrackKind::Subtitles).map(|t| t.number).collect();
+    let cue_track = kept
+        .iter()
+        .find(|t| t.kind == TrackKind::Video)
+        .or(kept.first())
+        .map(|t| t.number);
+    let subtitle_tracks: HashSet<u64> = kept
+        .iter()
+        .filter(|t| t.kind == TrackKind::Subtitles)
+        .map(|t| t.number)
+        .collect();
 
-    let mut out = Out { w: BufWriter::with_capacity(1 << 20, File::create(output)?), pos: 0 };
+    let mut out = Out {
+        w: BufWriter::with_capacity(1 << 20, File::create(output)?),
+        pos: 0,
+    };
     out.write(&src.read(0, layout.ebml_end)?)?;
     out.write(&id_bytes(SEGMENT))?;
     let size_pos = out.pos;
@@ -373,7 +414,9 @@ pub fn remux(
         };
         let mut fields: Vec<u8> = children(entry.data)
             .iter()
-            .filter(|e| !matches!(e.id, CRC32 | VOID) && !(set_default.is_some() && e.id == FLAG_DEFAULT))
+            .filter(|e| {
+                !matches!(e.id, CRC32 | VOID) && !(set_default.is_some() && e.id == FLAG_DEFAULT)
+            })
             .flat_map(|e| e.raw.iter().copied())
             .collect();
         if let Some(on) = set_default {
@@ -386,7 +429,10 @@ pub fn remux(
 
     if let Some(chapters) = all(CHAPTERS).next() {
         index.push((CHAPTERS, out.pos - segment_start));
-        out.write(&element(CHAPTERS, &src.read(chapters.data_start, chapters.end)?))?;
+        out.write(&element(
+            CHAPTERS,
+            &src.read(chapters.data_start, chapters.end)?,
+        ))?;
     }
 
     if keep.attachments {
@@ -410,12 +456,18 @@ pub fn remux(
             let targets = children(tag.data).into_iter().find(|e| e.id == TARGETS);
             let target_ids = |id| {
                 targets.as_ref().map_or_else(Vec::new, |t| {
-                    children(t.data).iter().filter(|e| e.id == id).map(|e| uint(e.data)).collect()
+                    children(t.data)
+                        .iter()
+                        .filter(|e| e.id == id)
+                        .map(|e| uint(e.data))
+                        .collect()
                 })
             };
             let track_uids = target_ids(TAG_TRACK_UID);
-            let about_removed_track = !track_uids.is_empty() && !track_uids.iter().any(|u| kept_uids.contains(u));
-            let about_removed_attachment = !keep.attachments && !target_ids(TAG_ATTACHMENT_UID).is_empty();
+            let about_removed_track =
+                !track_uids.is_empty() && !track_uids.iter().any(|u| kept_uids.contains(u));
+            let about_removed_attachment =
+                !keep.attachments && !target_ids(TAG_ATTACHMENT_UID).is_empty();
             if !about_removed_track && !about_removed_attachment {
                 tags.extend_from_slice(tag.raw);
             }
@@ -448,21 +500,40 @@ pub fn remux(
                         (e.data, None, None)
                     } else {
                         let group = children(e.data);
-                        let Some(block) = group.iter().find(|c| c.id == BLOCK) else { continue };
-                        let duration = group.iter().find(|c| c.id == BLOCK_DURATION).map(|c| uint(c.data));
-                        (block.data, Some(!group.iter().any(|c| c.id == REFERENCE_BLOCK)), duration)
+                        let Some(block) = group.iter().find(|c| c.id == BLOCK) else {
+                            continue;
+                        };
+                        let duration = group
+                            .iter()
+                            .find(|c| c.id == BLOCK_DURATION)
+                            .map(|c| uint(c.data));
+                        (
+                            block.data,
+                            Some(!group.iter().any(|c| c.id == REFERENCE_BLOCK)),
+                            duration,
+                        )
                     };
-                    let Some((track, n)) = vint(block, false) else { continue };
+                    let Some((track, n)) = vint(block, false) else {
+                        continue;
+                    };
                     if !kept_numbers.contains(&track) {
                         continue;
                     }
                     if block.len() >= n + 3 {
                         // SimpleBlocks flag keyframes; a BlockGroup is one if it references nothing.
                         let is_keyframe = keyframe.unwrap_or(block[n + 2] & 0x80 != 0);
-                        if (Some(track) == cue_track && is_keyframe) || subtitle_tracks.contains(&track) {
+                        if (Some(track) == cue_track && is_keyframe)
+                            || subtitle_tracks.contains(&track)
+                        {
                             let relative = i64::from(i16::from_be_bytes([block[n], block[n + 1]]));
                             let time = (timestamp as i64 + relative).max(0) as u64;
-                            keyframes.push(Cue { time, track, cluster: 0, relative: body.len() as u64, duration });
+                            keyframes.push(Cue {
+                                time,
+                                track,
+                                cluster: 0,
+                                relative: body.len() as u64,
+                                duration,
+                            });
                         }
                     }
                     body.extend_from_slice(e.raw);
@@ -475,7 +546,10 @@ pub fn remux(
         }
         if blocks > 0 {
             let position = out.pos - segment_start;
-            cues.extend(keyframes.into_iter().map(|cue| Cue { cluster: position, ..cue }));
+            cues.extend(keyframes.into_iter().map(|cue| Cue {
+                cluster: position,
+                ..cue
+            }));
             out.write(&element(CLUSTER, &body))?;
         }
         progress((cluster.end as f32 / total).min(0.99));
@@ -511,17 +585,30 @@ pub fn remux(
     let entries: Vec<u8> = index
         .iter()
         .flat_map(|&(id, position)| {
-            element(SEEK, &[element(SEEK_ID, &id_bytes(id)), uint_element(SEEK_POSITION, position)].concat())
+            element(
+                SEEK,
+                &[
+                    element(SEEK_ID, &id_bytes(id)),
+                    uint_element(SEEK_POSITION, position),
+                ]
+                .concat(),
+            )
         })
         .collect();
     let mut seek_head = element(SEEK_HEAD, &entries);
     if SEEK_HEAD_SPACE.checked_sub(seek_head.len()) == Some(1) {
         // A Void can't be one byte long: take the byte with a longer size field.
         seek_head = id_bytes(SEEK_HEAD);
-        put_size(&mut seek_head, entries.len() as u64, size_len(entries.len() as u64) + 1);
+        put_size(
+            &mut seek_head,
+            entries.len() as u64,
+            size_len(entries.len() as u64) + 1,
+        );
         seek_head.extend(&entries);
     }
-    let rest = SEEK_HEAD_SPACE.checked_sub(seek_head.len()).context("too many index entries")?;
+    let rest = SEEK_HEAD_SPACE
+        .checked_sub(seek_head.len())
+        .context("too many index entries")?;
     file.seek(SeekFrom::Start(seek_head_pos))?;
     file.write_all(&seek_head)?;
     if rest > 0 {
@@ -559,26 +646,46 @@ pub struct SubtitleSample {
 /// `keep_lines` of each. Walks the block headers without reading video or
 /// audio data. Image subtitles (PGS, VobSub) and compressed tracks are
 /// counted but not read.
-pub fn subtitle_samples(path: &Path, tracks: &[u64], keep_lines: usize) -> Result<HashMap<u64, SubtitleSample>> {
+pub fn subtitle_samples(
+    path: &Path,
+    tracks: &[u64],
+    keep_lines: usize,
+) -> Result<HashMap<u64, SubtitleSample>> {
     let src = Source::open(path)?;
     let layout = layout_full(&src)?;
-    let tracks_top = layout.top.iter().find(|t| t.id == TRACKS).context("no track list")?;
+    let tracks_top = layout
+        .top
+        .iter()
+        .find(|t| t.id == TRACKS)
+        .context("no track list")?;
     let tracks_data = src.read(tracks_top.data_start, tracks_top.end)?;
     let mut readable: HashMap<u64, String> = HashMap::new();
-    for entry in children(&tracks_data).into_iter().filter(|e| e.id == TRACK_ENTRY) {
+    for entry in children(&tracks_data)
+        .into_iter()
+        .filter(|e| e.id == TRACK_ENTRY)
+    {
         let info = parse_track(entry.data);
-        let compressed = children(entry.data).iter().any(|e| e.id == CONTENT_ENCODINGS);
+        let compressed = children(entry.data)
+            .iter()
+            .any(|e| e.id == CONTENT_ENCODINGS);
         if tracks.contains(&info.number) && !compressed {
             readable.insert(info.number, info.codec_id);
         }
     }
-    let mut samples: HashMap<u64, SubtitleSample> = tracks.iter().map(|&t| (t, SubtitleSample::default())).collect();
+    let mut samples: HashMap<u64, SubtitleSample> = tracks
+        .iter()
+        .map(|&t| (t, SubtitleSample::default()))
+        .collect();
     let note = |track: u64, block: &[u8], n: usize, samples: &mut HashMap<u64, SubtitleSample>| {
-        let Some(sample) = samples.get_mut(&track) else { return };
+        let Some(sample) = samples.get_mut(&track) else {
+            return;
+        };
         sample.events += 1;
         if sample.lines.len() < keep_lines
             && let Some(codec) = readable.get(&track)
-            && let Some(text) = block.get(n + 3..).and_then(|payload| subtitle_text(codec, payload))
+            && let Some(text) = block
+                .get(n + 3..)
+                .and_then(|payload| subtitle_text(codec, payload))
         {
             sample.lines.push(text);
         }
@@ -586,7 +693,9 @@ pub fn subtitle_samples(path: &Path, tracks: &[u64], keep_lines: usize) -> Resul
     for cluster in layout.top.iter().filter(|t| t.id == CLUSTER) {
         let mut pos = cluster.data_start;
         while pos < cluster.end {
-            let Some((h, data_start)) = src.header_at(pos)? else { break };
+            let Some((h, data_start)) = src.header_at(pos)? else {
+                break;
+            };
             let Some(size) = h.size else { break };
             let end = data_start + size;
             match h.id {
@@ -621,12 +730,19 @@ fn subtitle_text(codec_id: &str, payload: &[u8]) -> Option<String> {
     let raw = String::from_utf8_lossy(payload);
     let text = match codec_id {
         // ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-        "S_TEXT/ASS" | "S_ASS" | "S_TEXT/SSA" | "S_SSA" => raw.splitn(9, ',').nth(8)?.replace("\\N", " ").replace("\\n", " "),
+        "S_TEXT/ASS" | "S_ASS" | "S_TEXT/SSA" | "S_SSA" => raw
+            .splitn(9, ',')
+            .nth(8)?
+            .replace("\\N", " ")
+            .replace("\\n", " "),
         "S_TEXT/UTF8" | "S_TEXT/ASCII" | "S_TEXT/WEBVTT" => raw.into_owned(),
         _ => return None,
     };
     let text = MARKUP.replace_all(&text, "");
-    let text: String = text.chars().filter(|c| !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}')).collect();
+    let text: String = text
+        .chars()
+        .filter(|c| !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}'))
+        .collect();
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     (!text.is_empty()).then_some(text)
 }
@@ -666,7 +782,12 @@ fn parse_track(data: &[u8]) -> TrackInfo {
             LANGUAGE => t.language = string(e.data),
             LANGUAGE_BCP47 => bcp47 = Some(string(e.data)),
             CODEC_ID => t.codec_id = string(e.data),
-            AUDIO => t.channels = children(e.data).iter().find(|c| c.id == CHANNELS).map(|c| uint(c.data)),
+            AUDIO => {
+                t.channels = children(e.data)
+                    .iter()
+                    .find(|c| c.id == CHANNELS)
+                    .map(|c| uint(c.data))
+            }
             _ => {}
         }
     }
@@ -687,8 +808,15 @@ fn vint(buf: &[u8], keep_marker: bool) -> Option<(u64, usize)> {
     }
     let len = first.leading_zeros() as usize + 1;
     let rest = buf.get(1..len)?;
-    let first = if keep_marker { u64::from(first) } else { u64::from(first) & ((1u64 << (8 - len)) - 1) };
-    Some((rest.iter().fold(first, |v, &b| (v << 8) | u64::from(b)), len))
+    let first = if keep_marker {
+        u64::from(first)
+    } else {
+        u64::from(first) & ((1u64 << (8 - len)) - 1)
+    };
+    Some((
+        rest.iter().fold(first, |v, &b| (v << 8) | u64::from(b)),
+        len,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -706,7 +834,11 @@ fn header(buf: &[u8]) -> Option<Header> {
     }
     let (size, size_len) = vint(&buf[id_len..], false)?;
     let unknown = size == (1u64 << (7 * size_len)) - 1;
-    Some(Header { id: id as u32, size: (!unknown).then_some(size), len: id_len + size_len })
+    Some(Header {
+        id: id as u32,
+        size: (!unknown).then_some(size),
+        len: id_len + size_len,
+    })
 }
 
 struct Elem<'a> {
@@ -721,11 +853,21 @@ struct Elem<'a> {
 fn children(mut buf: &[u8]) -> Vec<Elem<'_>> {
     let mut out = Vec::new();
     while let Some(h) = header(buf) {
-        let Some(end) = h.size.and_then(|s| usize::try_from(s).ok()).and_then(|s| s.checked_add(h.len)) else { break };
+        let Some(end) = h
+            .size
+            .and_then(|s| usize::try_from(s).ok())
+            .and_then(|s| s.checked_add(h.len))
+        else {
+            break;
+        };
         if end > buf.len() {
             break;
         }
-        out.push(Elem { id: h.id, raw: &buf[..end], data: &buf[h.len..end] });
+        out.push(Elem {
+            id: h.id,
+            raw: &buf[..end],
+            data: &buf[h.len..end],
+        });
         buf = &buf[end..];
     }
     out
@@ -736,7 +878,10 @@ fn uint(data: &[u8]) -> u64 {
 }
 
 fn string(data: &[u8]) -> String {
-    String::from_utf8_lossy(data).trim_end_matches('\0').trim().to_owned()
+    String::from_utf8_lossy(data)
+        .trim_end_matches('\0')
+        .trim()
+        .to_owned()
 }
 
 /// A file read with positional reads (no shared cursor, no read-ahead).
@@ -818,18 +963,27 @@ fn layout(src: &Source, all: bool) -> Result<Layout> {
         }
         pos = data + h.size.context("malformed element before the Segment")?;
     };
-    let segment_end = segment.size.map_or(src.len, |s| (segment_data + s).min(src.len));
+    let segment_end = segment
+        .size
+        .map_or(src.len, |s| (segment_data + s).min(src.len));
 
     let mut top = Vec::new();
     let mut pos = segment_data;
     while pos < segment_end {
-        let Some((h, data_start)) = src.header_at(pos)? else { break };
+        let Some((h, data_start)) = src.header_at(pos)? else {
+            break;
+        };
         let end = match h.size {
             Some(s) => data_start.saturating_add(s).min(segment_end),
             None if h.id == CLUSTER => unknown_cluster_end(src, data_start, segment_end)?,
             None => segment_end,
         };
-        top.push(Top { id: h.id, start: pos, data_start, end });
+        top.push(Top {
+            id: h.id,
+            start: pos,
+            data_start,
+            end,
+        });
         if !all && h.id == CLUSTER {
             break;
         }
@@ -841,11 +995,15 @@ fn layout(src: &Source, all: bool) -> Result<Layout> {
 /// Where an unknown-size Cluster ends: at the next Segment-level element.
 fn unknown_cluster_end(src: &Source, mut pos: u64, segment_end: u64) -> Result<u64> {
     while pos < segment_end {
-        let Some((h, data_start)) = src.header_at(pos)? else { return Ok(pos) };
+        let Some((h, data_start)) = src.header_at(pos)? else {
+            return Ok(pos);
+        };
         if SEGMENT_CHILDREN.contains(&h.id) {
             return Ok(pos);
         }
-        let Some(size) = h.size else { return Ok(segment_end) };
+        let Some(size) = h.size else {
+            return Ok(segment_end);
+        };
         pos = data_start + size;
     }
     Ok(segment_end)
@@ -909,7 +1067,9 @@ fn uint_element(id: u32, value: u64) -> Vec<u8> {
 /// A Void element exactly `total` bytes long (at least 2).
 fn void(total: usize) -> Vec<u8> {
     for len in 1..=8 {
-        let Some(payload) = total.checked_sub(1 + len) else { break };
+        let Some(payload) = total.checked_sub(1 + len) else {
+            break;
+        };
         if (payload as u64) < (1u64 << (7 * len)) - 1 {
             let mut out = vec![VOID as u8];
             put_size(&mut out, payload as u64, len);
@@ -1020,7 +1180,10 @@ pub(crate) mod tests {
         }
         let mut cluster = uint_element(TIMESTAMP, 0);
         for i in 0..4u8 {
-            cluster.extend(element(SIMPLE_BLOCK, &[0x81, 0, i, 0x80, b'f', b'r', b'a', b'm', b'e', b'0' + i]));
+            cluster.extend(element(
+                SIMPLE_BLOCK,
+                &[0x81, 0, i, 0x80, b'f', b'r', b'a', b'm', b'e', b'0' + i],
+            ));
         }
         seg.extend(element(CLUSTER, &cluster));
         let mut file = element(EBML, &element(DOC_TYPE, b"matroska"));
@@ -1029,10 +1192,21 @@ pub(crate) mod tests {
     }
 
     fn defaults(path: &Path) -> Vec<(u64, bool)> {
-        probe(path).unwrap().tracks.iter().map(|t| (t.number, t.default)).collect()
+        probe(path)
+            .unwrap()
+            .tracks
+            .iter()
+            .map(|t| (t.number, t.default))
+            .collect()
     }
 
-    const TRACKS_1_TO_5: [(u64, u64, Option<u64>); 5] = [(1, 1, None), (2, 2, None), (3, 2, None), (4, 17, None), (5, 17, Some(0))];
+    const TRACKS_1_TO_5: [(u64, u64, Option<u64>); 5] = [
+        (1, 1, None),
+        (2, 2, None),
+        (3, 2, None),
+        (4, 17, None),
+        (5, 17, Some(0)),
+    ];
 
     #[test]
     fn sets_default_tracks_in_place_using_the_padding() {
@@ -1041,26 +1215,59 @@ pub(crate) mod tests {
         let original = synthetic(&TRACKS_1_TO_5, 64);
         std::fs::write(&path, &original).unwrap();
         let on: HashSet<u64> = [3, 5].into();
-        assert_eq!(set_default_tracks(&path, &on).unwrap(), DefaultsEdit::InPlace);
-        assert_eq!(defaults(&path), [(1, true), (2, false), (3, true), (4, false), (5, true)]);
+        assert_eq!(
+            set_default_tracks(&path, &on).unwrap(),
+            DefaultsEdit::InPlace
+        );
+        assert_eq!(
+            defaults(&path),
+            [(1, true), (2, false), (3, true), (4, false), (5, true)]
+        );
         let edited = std::fs::read(&path).unwrap();
         assert_eq!(edited.len(), original.len(), "same size");
-        let cluster = original.windows(4).position(|w| w == id_bytes(CLUSTER).as_slice()).unwrap();
-        assert_eq!(edited[cluster..], original[cluster..], "everything after the padding untouched");
-        assert_eq!(set_default_tracks(&path, &on).unwrap(), DefaultsEdit::Unchanged);
+        let cluster = original
+            .windows(4)
+            .position(|w| w == id_bytes(CLUSTER).as_slice())
+            .unwrap();
+        assert_eq!(
+            edited[cluster..],
+            original[cluster..],
+            "everything after the padding untouched"
+        );
+        assert_eq!(
+            set_default_tracks(&path, &on).unwrap(),
+            DefaultsEdit::Unchanged
+        );
         // And back: the flags are now explicit, so this needs no padding at all.
-        assert_eq!(set_default_tracks(&path, &[2, 4].into()).unwrap(), DefaultsEdit::InPlace);
-        assert_eq!(defaults(&path), [(1, true), (2, true), (3, false), (4, true), (5, false)]);
+        assert_eq!(
+            set_default_tracks(&path, &[2, 4].into()).unwrap(),
+            DefaultsEdit::InPlace
+        );
+        assert_eq!(
+            defaults(&path),
+            [(1, true), (2, true), (3, false), (4, true), (5, false)]
+        );
     }
 
     #[test]
     fn flips_explicit_flags_without_padding() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("b.mkv");
-        let explicit = [(1, 1, Some(1)), (2, 2, Some(1)), (3, 2, Some(0)), (4, 17, Some(0))];
+        let explicit = [
+            (1, 1, Some(1)),
+            (2, 2, Some(1)),
+            (3, 2, Some(0)),
+            (4, 17, Some(0)),
+        ];
         std::fs::write(&path, synthetic(&explicit, 0)).unwrap();
-        assert_eq!(set_default_tracks(&path, &[3, 4].into()).unwrap(), DefaultsEdit::InPlace);
-        assert_eq!(defaults(&path), [(1, true), (2, false), (3, true), (4, true)]);
+        assert_eq!(
+            set_default_tracks(&path, &[3, 4].into()).unwrap(),
+            DefaultsEdit::InPlace
+        );
+        assert_eq!(
+            defaults(&path),
+            [(1, true), (2, false), (3, true), (4, true)]
+        );
     }
 
     #[test]
@@ -1068,8 +1275,14 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.mkv");
         std::fs::write(&path, synthetic(&TRACKS_1_TO_5, 0)).unwrap();
-        assert_eq!(set_default_tracks(&path, &[3].into()).unwrap(), DefaultsEdit::Rewritten);
-        assert_eq!(defaults(&path), [(1, true), (2, false), (3, true), (4, false), (5, false)]);
+        assert_eq!(
+            set_default_tracks(&path, &[3].into()).unwrap(),
+            DefaultsEdit::Rewritten
+        );
+        assert_eq!(
+            defaults(&path),
+            [(1, true), (2, false), (3, true), (4, false), (5, false)]
+        );
         let rewritten = std::fs::read(&path).unwrap();
         for i in 0..4u8 {
             let frame = [b'f', b'r', b'a', b'm', b'e', b'0' + i];
@@ -1082,8 +1295,14 @@ pub(crate) mod tests {
     fn variable_length_integers() {
         assert_eq!(vint(&[0x81], false), Some((1, 1)));
         assert_eq!(vint(&[0x40, 0x02], false), Some((2, 2)));
-        assert_eq!(vint(&[0x1A, 0x45, 0xDF, 0xA3], true), Some((0x1A45_DFA3, 4)));
-        assert_eq!(vint(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], false), Some(((1 << 56) - 1, 8)));
+        assert_eq!(
+            vint(&[0x1A, 0x45, 0xDF, 0xA3], true),
+            Some((0x1A45_DFA3, 4))
+        );
+        assert_eq!(
+            vint(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], false),
+            Some(((1 << 56) - 1, 8))
+        );
         assert_eq!(vint(&[0x00], false), None);
         assert_eq!(vint(&[0x40], false), None, "cut off");
         // Unknown size.
@@ -1095,11 +1314,18 @@ pub(crate) mod tests {
         for size in [0u64, 1, 126, 127, 128, 16_382, 16_383, 1 << 30] {
             let mut buf = Vec::new();
             put_size(&mut buf, size, size_len(size));
-            assert_eq!(vint(&buf, false), Some((size, size_len(size))), "size {size}");
+            assert_eq!(
+                vint(&buf, false),
+                Some((size, size_len(size))),
+                "size {size}"
+            );
         }
         let e = uint_element(TRACK_NUMBER, 300);
         let h = header(&e).unwrap();
-        assert_eq!((h.id, h.size, uint(&e[h.len..])), (TRACK_NUMBER, Some(2), 300));
+        assert_eq!(
+            (h.id, h.size, uint(&e[h.len..])),
+            (TRACK_NUMBER, Some(2), 300)
+        );
         assert_eq!(uint_element(FLAG_DEFAULT, 0), vec![0x88, 0x81, 0x00]);
         assert_eq!(id_bytes(CLUSTER), vec![0x1F, 0x43, 0xB6, 0x75]);
         for total in [2, 3, 128, 129, 130, 256] {
@@ -1123,13 +1349,22 @@ pub(crate) mod tests {
         ]
         .concat();
         let t = parse_track(&entry);
-        assert_eq!((t.number, t.kind, t.name.as_str()), (3, TrackKind::Subtitles, "Signs"));
         assert_eq!(
-            subtitle_text("S_TEXT/ASS", b"12,0,Default,,0,0,0,,{\\i1}Hello,\\Nworld{\\i0}"),
+            (t.number, t.kind, t.name.as_str()),
+            (3, TrackKind::Subtitles, "Signs")
+        );
+        assert_eq!(
+            subtitle_text(
+                "S_TEXT/ASS",
+                b"12,0,Default,,0,0,0,,{\\i1}Hello,\\Nworld{\\i0}"
+            ),
             Some("Hello, world".into())
         );
         assert_eq!(
-            subtitle_text("S_TEXT/UTF8", "{\\an8}<i>\u{200e}She's a passive waiter.</i>\n".as_bytes()),
+            subtitle_text(
+                "S_TEXT/UTF8",
+                "{\\an8}<i>\u{200e}She's a passive waiter.</i>\n".as_bytes()
+            ),
             Some("She's a passive waiter.".into())
         );
         assert_eq!(subtitle_text("S_HDMV/PGS", b"\x00\x01"), None);

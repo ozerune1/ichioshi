@@ -22,7 +22,9 @@ use crate::{mkv, title};
 
 pub use crate::mkv::SubtitleSample;
 
-const VIDEO_EXTENSIONS: &[&str] = &["mkv", "mp4", "m4v", "avi", "webm", "mov", "wmv", "ts", "m2ts"];
+const VIDEO_EXTENSIONS: &[&str] = &[
+    "mkv", "mp4", "m4v", "avi", "webm", "mov", "wmv", "ts", "m2ts",
+];
 
 pub fn is_video(path: &Path) -> bool {
     path.extension()
@@ -59,7 +61,11 @@ pub struct Track {
 
 impl Track {
     pub fn sig(&self) -> TrackSig {
-        TrackSig { language: self.language.clone(), name: self.name.clone(), codec: self.codec.clone() }
+        TrackSig {
+            language: self.language.clone(),
+            name: self.name.clone(),
+            codec: self.codec.clone(),
+        }
     }
 
     fn is_styled_subtitles(&self) -> bool {
@@ -111,7 +117,11 @@ impl Candidate {
         let mut parts = Vec::new();
         // Unnamed tracks go by their language; what's in them shows in the
         // line count and sample lines (see `sample_subtitles`).
-        parts.push(if self.sig.name.is_empty() { language_name(&self.sig.language) } else { format!("“{}”", self.sig.name) });
+        parts.push(if self.sig.name.is_empty() {
+            language_name(&self.sig.language)
+        } else {
+            format!("“{}”", self.sig.name)
+        });
         let mut codec = self.sig.codec.clone();
         if let Some(ch) = self.channels {
             codec.push(' ');
@@ -134,14 +144,16 @@ impl Candidate {
     }
 
     fn is_signs(&self) -> bool {
-        static SIGNS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)sign|song|forced").unwrap());
+        static SIGNS: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?i)sign|song|forced").unwrap());
         self.forced || SIGNS.is_match(&self.sig.name)
     }
 
     /// SDH, commentary, a dub transcript ("dubtitle"), karaoke...
     fn is_extra(&self) -> bool {
-        static EXTRA: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?i)\b(sdh|cc|hearing|commentary|karaoke|lyrics)\b|dub").unwrap());
+        static EXTRA: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"(?i)\b(sdh|cc|hearing|commentary|karaoke|lyrics)\b|dub").unwrap()
+        });
         self.hearing_impaired || self.commentary || EXTRA.is_match(&self.sig.name)
     }
 }
@@ -165,16 +177,30 @@ impl Analysis {
     pub fn languages(&self, kind: Kind) -> Vec<LanguageOption> {
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for f in &self.files {
-            let mut seen: Vec<&str> = f.tracks.iter().filter(|t| t.kind == kind).map(|t| t.language.as_str()).collect();
+            let mut seen: Vec<&str> = f
+                .tracks
+                .iter()
+                .filter(|t| t.kind == kind)
+                .map(|t| t.language.as_str())
+                .collect();
             seen.sort_unstable();
             seen.dedup();
             for lang in seen {
                 *counts.entry(lang).or_default() += 1;
             }
         }
-        let mut out: Vec<LanguageOption> =
-            counts.into_iter().map(|(code, files)| LanguageOption { code: code.to_owned(), files }).collect();
-        out.sort_by(|a, b| b.files.cmp(&a.files).then_with(|| language_name(&a.code).cmp(&language_name(&b.code))));
+        let mut out: Vec<LanguageOption> = counts
+            .into_iter()
+            .map(|(code, files)| LanguageOption {
+                code: code.to_owned(),
+                files,
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.files
+                .cmp(&a.files)
+                .then_with(|| language_name(&a.code).cmp(&language_name(&b.code)))
+        });
         out
     }
 
@@ -182,7 +208,11 @@ impl Analysis {
     pub fn candidates(&self, kind: Kind, language: &str) -> Vec<Candidate> {
         let mut out: Vec<Candidate> = Vec::new();
         for f in &self.files {
-            for t in f.tracks.iter().filter(|t| t.kind == kind && t.language == language) {
+            for t in f
+                .tracks
+                .iter()
+                .filter(|t| t.kind == kind && t.language == language)
+            {
                 let sig = t.sig();
                 match out.iter_mut().find(|c| c.sig == sig) {
                     Some(c) => {
@@ -209,7 +239,13 @@ impl Analysis {
         let mut counts: Vec<(String, usize)> = Vec::new();
         for f in &self.files {
             let audio = f.tracks.iter().filter(|t| t.kind == Kind::Audio);
-            let Some(t) = audio.clone().find(|t| t.default).or_else(|| audio.clone().next()) else { continue };
+            let Some(t) = audio
+                .clone()
+                .find(|t| t.default)
+                .or_else(|| audio.clone().next())
+            else {
+                continue;
+            };
             match counts.iter_mut().find(|(l, _)| *l == t.language) {
                 Some((_, n)) => *n += 1,
                 None => counts.push((t.language.clone(), 1)),
@@ -225,7 +261,12 @@ impl Analysis {
             return Some("eng".to_owned());
         }
         let mut counts: Vec<(String, usize)> = Vec::new();
-        for t in self.files.iter().flat_map(|f| &f.tracks).filter(|t| t.kind == Kind::Subtitles && t.default) {
+        for t in self
+            .files
+            .iter()
+            .flat_map(|f| &f.tracks)
+            .filter(|t| t.kind == Kind::Subtitles && t.default)
+        {
             match counts.iter_mut().find(|(l, _)| *l == t.language) {
                 Some((_, n)) => *n += 1,
                 None => counts.push((t.language.clone(), 1)),
@@ -239,7 +280,12 @@ impl Analysis {
     /// The track to suggest within a language. For subtitles in the audio's
     /// language (watching a dub) that's signs-only; otherwise full subtitles,
     /// preferring styled ASS over plain text.
-    pub fn default_candidate(&self, kind: Kind, language: &str, audio_language: Option<&str>) -> Option<TrackSig> {
+    pub fn default_candidate(
+        &self,
+        kind: Kind,
+        language: &str,
+        audio_language: Option<&str>,
+    ) -> Option<TrackSig> {
         let candidates = self.candidates(kind, language);
         let best = match kind {
             Kind::Subtitles => {
@@ -308,7 +354,12 @@ impl PlannedFile {
 }
 
 /// Work out, for every episode, which tracks to keep and the output name.
-pub fn plan(analysis: &Analysis, choice: &Choice, series_title: &str, out_dir: &Path) -> Vec<PlannedFile> {
+pub fn plan(
+    analysis: &Analysis,
+    choice: &Choice,
+    series_title: &str,
+    out_dir: &Path,
+) -> Vec<PlannedFile> {
     let inputs: Vec<PathBuf> = analysis.files.iter().map(|f| f.path.clone()).collect();
     let titles = episode_titles(series_title, &inputs);
     analysis
@@ -319,7 +370,10 @@ pub fn plan(analysis: &Analysis, choice: &Choice, series_title: &str, out_dir: &
             let mut notes = Vec::new();
             let audio = pick(analysis, file, Kind::Audio, &choice.audio, &mut notes);
             if audio.is_none() {
-                notes.push(format!("No {} audio", language_name(&choice.audio.language)));
+                notes.push(format!(
+                    "No {} audio",
+                    language_name(&choice.audio.language)
+                ));
             }
             let subtitles = choice.subtitles.as_ref().and_then(|want| {
                 let t = pick(analysis, file, Kind::Subtitles, want, &mut notes);
@@ -332,7 +386,12 @@ pub fn plan(analysis: &Analysis, choice: &Choice, series_title: &str, out_dir: &
                 input: file.path.clone(),
                 output: out_dir.join(format!("{}.mkv", sanitize_filename(&title))),
                 title,
-                video: file.tracks.iter().filter(|t| t.kind == Kind::Video).map(|t| t.id).collect(),
+                video: file
+                    .tracks
+                    .iter()
+                    .filter(|t| t.kind == Kind::Video)
+                    .map(|t| t.id)
+                    .collect(),
                 keep_attachments: subtitles.is_some_and(|t| t.is_styled_subtitles()),
                 audio: audio.cloned(),
                 subtitles: subtitles.cloned(),
@@ -352,20 +411,39 @@ fn pick<'a>(
     want: &TrackSig,
     notes: &mut Vec<String>,
 ) -> Option<&'a Track> {
-    let in_language: Vec<&Track> =
-        file.tracks.iter().filter(|t| t.kind == kind && t.language == want.language).collect();
+    let in_language: Vec<&Track> = file
+        .tracks
+        .iter()
+        .filter(|t| t.kind == kind && t.language == want.language)
+        .collect();
     if let Some(t) = in_language.iter().find(|t| t.sig() == *want) {
         return Some(t);
     }
-    let reference = analysis.files.iter().flat_map(|f| &f.tracks).find(|t| t.kind == kind && t.sig() == *want);
+    let reference = analysis
+        .files
+        .iter()
+        .flat_map(|f| &f.tracks)
+        .find(|t| t.kind == kind && t.sig() == *want);
     let fallback = first_max_by_key(in_language, |t| {
         let same_flags = reference.is_none_or(|r| {
-            (t.forced, t.hearing_impaired, t.commentary) == (r.forced, r.hearing_impaired, r.commentary)
+            (t.forced, t.hearing_impaired, t.commentary)
+                == (r.forced, r.hearing_impaired, r.commentary)
         });
-        (same_flags, t.codec == want.codec, t.name.eq_ignore_ascii_case(&want.name))
+        (
+            same_flags,
+            t.codec == want.codec,
+            t.name.eq_ignore_ascii_case(&want.name),
+        )
     })?;
-    let what = if kind == Kind::Audio { "Audio" } else { "Subtitles" };
-    notes.push(format!("{what}: using {} (no exact match)", fallback.short_label()));
+    let what = if kind == Kind::Audio {
+        "Audio"
+    } else {
+        "Subtitles"
+    };
+    notes.push(format!(
+        "{what}: using {} (no exact match)",
+        fallback.short_label()
+    ));
     Some(fallback)
 }
 
@@ -381,7 +459,11 @@ pub fn episode_titles(series_title: &str, inputs: &[PathBuf]) -> Vec<String> {
     let infos: Vec<(title::ParsedTitle, String)> = inputs
         .iter()
         .map(|p| {
-            let stem = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let stem = p
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             (title::parse(&stem), stem)
         })
         .collect();
@@ -392,7 +474,11 @@ pub fn episode_titles(series_title: &str, inputs: &[PathBuf]) -> Vec<String> {
         .filter(|&s| s != 0)
         .collect();
     let spell_seasons = regular_seasons.len() > 1;
-    let max_episode = infos.iter().filter_map(|(p, _)| p.episodes.map(|e| e.1)).max().unwrap_or(0);
+    let max_episode = infos
+        .iter()
+        .filter_map(|(p, _)| p.episodes.map(|e| e.1))
+        .max()
+        .unwrap_or(0);
     let width = max_episode.to_string().len().max(2);
     let pad = |n: u32| format!("{n:0width$}");
 
@@ -400,7 +486,11 @@ pub fn episode_titles(series_title: &str, inputs: &[PathBuf]) -> Vec<String> {
         .iter()
         .map(|(p, stem)| match p.episodes {
             Some((a, b)) => {
-                let ep = if a == b { pad(a) } else { format!("{}-{}", pad(a), pad(b)) };
+                let ep = if a == b {
+                    pad(a)
+                } else {
+                    format!("{}-{}", pad(a), pad(b))
+                };
                 match p.seasons.map(|s| s.0) {
                     Some(0) => Some(format!("S00E{ep}")),
                     s if spell_seasons => Some(format!("S{:02}E{ep}", s.unwrap_or(1))),
@@ -424,7 +514,11 @@ pub fn episode_titles(series_title: &str, inputs: &[PathBuf]) -> Vec<String> {
             };
             let n = used.entry(base.clone()).or_default();
             *n += 1;
-            if *n == 1 { base } else { format!("{base} ({n})") }
+            if *n == 1 {
+                base
+            } else {
+                format!("{base} ({n})")
+            }
         })
         .collect()
 }
@@ -437,8 +531,16 @@ pub fn sanitize_filename(title: &str) -> String {
         .map(|c| if c == '/' || c == '\\' { '-' } else { c })
         .filter(|c| !c.is_control())
         .collect();
-    let cleaned = cleaned.trim().trim_end_matches('.').trim_start_matches('.').trim();
-    if cleaned.is_empty() { "Untitled".to_owned() } else { cleaned.to_owned() }
+    let cleaned = cleaned
+        .trim()
+        .trim_end_matches('.')
+        .trim_start_matches('.')
+        .trim();
+    if cleaned.is_empty() {
+        "Untitled".to_owned()
+    } else {
+        cleaned.to_owned()
+    }
 }
 
 // ── Probing and remuxing ────────────────────────────────────────────────
@@ -450,14 +552,20 @@ pub fn sample_subtitles(analysis: &Analysis) -> Vec<(TrackSig, SubtitleSample)> 
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for file in &analysis.files {
-        let new: Vec<&Track> =
-            file.tracks.iter().filter(|t| t.kind == Kind::Subtitles && seen.insert(t.sig())).collect();
+        let new: Vec<&Track> = file
+            .tracks
+            .iter()
+            .filter(|t| t.kind == Kind::Subtitles && seen.insert(t.sig()))
+            .collect();
         if new.is_empty() {
             continue;
         }
         let ids: Vec<u64> = new.iter().map(|t| t.id).collect();
         match mkv::subtitle_samples(&file.path, &ids, 3) {
-            Ok(mut samples) => out.extend(new.iter().filter_map(|t| Some((t.sig(), samples.remove(&t.id)?)))),
+            Ok(mut samples) => out.extend(
+                new.iter()
+                    .filter_map(|t| Some((t.sig(), samples.remove(&t.id)?))),
+            ),
             Err(e) => tracing::warn!("couldn't read subtitles of {}: {e:#}", file.path.display()),
         }
     }
@@ -490,7 +598,10 @@ pub fn probe(path: &Path) -> Result<MediaFile> {
             channels: t.channels.and_then(|c| u32::try_from(c).ok()),
         })
         .collect();
-    Ok(MediaFile { path: path.to_owned(), tracks })
+    Ok(MediaFile {
+        path: path.to_owned(),
+        tracks,
+    })
 }
 
 /// Read every file's tracks. Files that can't be read (e.g. not Matroska)
@@ -523,7 +634,11 @@ pub fn remux(item: &PlannedFile, cancel: &AtomicBool, mut progress: impl FnMut(f
     let audio = item.audio.as_ref().context("no audio track chosen")?;
     let out_dir = item.output.parent().context("output has no folder")?;
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
-    let file_name = item.output.file_name().context("output has no name")?.to_string_lossy();
+    let file_name = item
+        .output
+        .file_name()
+        .context("output has no name")?
+        .to_string_lossy();
     let tmp = out_dir.join(format!(".{file_name}.partial"));
 
     let mut keep = mkv::Keep {
@@ -553,7 +668,8 @@ pub fn remux(item: &PlannedFile, cancel: &AtomicBool, mut progress: impl FnMut(f
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    std::fs::rename(&tmp, &item.output).with_context(|| format!("saving {}", item.output.display()))?;
+    std::fs::rename(&tmp, &item.output)
+        .with_context(|| format!("saving {}", item.output.display()))?;
     progress(1.0);
     Ok(())
 }
@@ -731,31 +847,51 @@ mod tests {
         tracks[3].forced = true;
         tracks[4].default = true;
         tracks[6].hearing_impaired = true;
-        MediaFile { path: path.into(), tracks }
+        MediaFile {
+            path: path.into(),
+            tracks,
+        }
     }
 
     #[test]
     fn languages_and_candidates() {
-        let a = Analysis { files: vec![varyg_episode("/s/E01.mkv"), varyg_episode("/s/E02.mkv")], unreadable: vec![] };
-        let audio: Vec<_> = a.languages(Kind::Audio).into_iter().map(|l| (l.code, l.files)).collect();
+        let a = Analysis {
+            files: vec![varyg_episode("/s/E01.mkv"), varyg_episode("/s/E02.mkv")],
+            unreadable: vec![],
+        };
+        let audio: Vec<_> = a
+            .languages(Kind::Audio)
+            .into_iter()
+            .map(|l| (l.code, l.files))
+            .collect();
         assert_eq!(audio, vec![("eng".to_owned(), 2), ("jpn".to_owned(), 2)]);
         let spanish = a.candidates(Kind::Subtitles, "spa");
         assert_eq!(spanish.len(), 2);
         assert_eq!(spanish[0].sig.name, "Latin American");
         assert_eq!(spanish[0].files, 2);
-        assert_eq!(a.candidates(Kind::Subtitles, "eng")[0].label(), "“Forced” · SRT · forced");
+        assert_eq!(
+            a.candidates(Kind::Subtitles, "eng")[0].label(),
+            "“Forced” · SRT · forced"
+        );
     }
 
     #[test]
     fn defaults_suit_subs_or_dub() {
-        let a = Analysis { files: vec![varyg_episode("/s/E01.mkv")], unreadable: vec![] };
+        let a = Analysis {
+            files: vec![varyg_episode("/s/E01.mkv")],
+            unreadable: vec![],
+        };
         assert_eq!(a.default_audio_language().as_deref(), Some("jpn"));
         assert_eq!(a.default_subtitle_language().as_deref(), Some("eng"));
         // Japanese audio: full English subtitles, not signs or the dub transcript.
-        let subs = a.default_candidate(Kind::Subtitles, "eng", Some("jpn")).unwrap();
+        let subs = a
+            .default_candidate(Kind::Subtitles, "eng", Some("jpn"))
+            .unwrap();
         assert_eq!(subs.name, "");
         // English dub: signs only.
-        let subs = a.default_candidate(Kind::Subtitles, "eng", Some("eng")).unwrap();
+        let subs = a
+            .default_candidate(Kind::Subtitles, "eng", Some("eng"))
+            .unwrap();
         assert_eq!(subs.name, "Forced");
     }
 
@@ -763,8 +899,16 @@ mod tests {
     fn plan_keeps_chosen_tracks_and_falls_back_with_a_note() {
         let mut odd = varyg_episode("/s/E02.mkv");
         odd.tracks[4].name = "English CC".into(); // named differently in this episode
-        odd.tracks.retain(|t| t.language != "jpn" || t.kind != Kind::Audio); // and no Japanese audio
-        let a = Analysis { files: vec![varyg_episode("/s/E01.mkv"), odd, varyg_episode("/s/E03.mkv")], unreadable: vec![] };
+        odd.tracks
+            .retain(|t| t.language != "jpn" || t.kind != Kind::Audio); // and no Japanese audio
+        let a = Analysis {
+            files: vec![
+                varyg_episode("/s/E01.mkv"),
+                odd,
+                varyg_episode("/s/E03.mkv"),
+            ],
+            unreadable: vec![],
+        };
         let choice = Choice {
             audio: a.default_candidate(Kind::Audio, "jpn", None).unwrap(),
             subtitles: a.default_candidate(Kind::Subtitles, "eng", Some("jpn")),
@@ -789,14 +933,21 @@ mod tests {
         assert_eq!(
             episode_titles(
                 "Ramparts",
-                &paths(&["The.Ramparts.of.Ice.S02E01.1080p.mkv", "The.Ramparts.of.Ice.S02E02.1080p.mkv"])
+                &paths(&[
+                    "The.Ramparts.of.Ice.S02E01.1080p.mkv",
+                    "The.Ramparts.of.Ice.S02E02.1080p.mkv"
+                ])
             ),
             vec!["Ramparts - 01", "Ramparts - 02"]
         );
         assert_eq!(
             episode_titles(
                 "Gundam",
-                &paths(&["Gundam.S00E01.Prologue.mkv", "Gundam.S01E01.mkv", "Gundam.S02E01.mkv"])
+                &paths(&[
+                    "Gundam.S00E01.Prologue.mkv",
+                    "Gundam.S01E01.mkv",
+                    "Gundam.S02E01.mkv"
+                ])
             ),
             vec!["Gundam - S00E01", "Gundam - S01E01", "Gundam - S02E01"]
         );
@@ -811,14 +962,22 @@ mod tests {
             ),
             vec!["Frieren - 05", "Frieren - NCOP1", "Frieren - 05 (2)"]
         );
-        assert_eq!(episode_titles("Your Name.", &paths(&["Kimi no Na wa (BD 1080p).mkv"])), vec!["Your Name."]);
-        let hundred: Vec<PathBuf> = (1..=100).map(|n| PathBuf::from(format!("[G] Show - {n:03}.mkv"))).collect();
+        assert_eq!(
+            episode_titles("Your Name.", &paths(&["Kimi no Na wa (BD 1080p).mkv"])),
+            vec!["Your Name."]
+        );
+        let hundred: Vec<PathBuf> = (1..=100)
+            .map(|n| PathBuf::from(format!("[G] Show - {n:03}.mkv")))
+            .collect();
         assert_eq!(episode_titles("Show", &hundred)[4], "Show - 005");
     }
 
     #[test]
     fn file_names_keep_the_title() {
-        assert_eq!(sanitize_filename("Frieren: Beyond Journey’s End - 01"), "Frieren: Beyond Journey’s End - 01");
+        assert_eq!(
+            sanitize_filename("Frieren: Beyond Journey’s End - 01"),
+            "Frieren: Beyond Journey’s End - 01"
+        );
         assert_eq!(sanitize_filename("Fate/Zero - 01"), "Fate-Zero - 01");
         assert_eq!(sanitize_filename("Your Name."), "Your Name");
         assert_eq!(sanitize_filename(".hack//Sign - 01"), "hack--Sign - 01");
@@ -847,16 +1006,63 @@ pub(crate) fn make_test_series(dir: &Path, episodes: u32) -> Vec<PathBuf> {
     use std::process::Command;
     let run = |cmd: &mut Command| {
         let out = cmd.output().expect("ffmpeg and mkvmerge must be installed");
-        assert!(out.status.success(), "{cmd:?} failed: {}", String::from_utf8_lossy(&out.stdout));
+        assert!(
+            out.status.success(),
+            "{cmd:?} failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     };
     let parts = dir.join("parts");
     std::fs::create_dir_all(&parts).unwrap();
     let ffmpeg = |args: &[&str], out: &str| {
-        run(Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y"]).args(args).arg(parts.join(out)));
+        run(Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y"])
+            .args(args)
+            .arg(parts.join(out)));
     };
-    ffmpeg(&["-f", "lavfi", "-i", "testsrc=size=320x180:rate=24", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p"], "v.mkv");
-    ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=440", "-t", "3", "-c:a", "flac"], "jpn.mka");
-    ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=660", "-ac", "2", "-t", "3", "-c:a", "aac"], "eng.mka");
+    ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x180:rate=24",
+            "-t",
+            "3",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        "v.mkv",
+    );
+    ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440",
+            "-t",
+            "3",
+            "-c:a",
+            "flac",
+        ],
+        "jpn.mka",
+    );
+    ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=660",
+            "-ac",
+            "2",
+            "-t",
+            "3",
+            "-c:a",
+            "aac",
+        ],
+        "eng.mka",
+    );
     let ass = |text: &str| {
         format!(
             "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Default,Test,20\n\n\
@@ -866,20 +1072,36 @@ pub(crate) fn make_test_series(dir: &Path, episodes: u32) -> Vec<PathBuf> {
     };
     std::fs::write(parts.join("full.ass"), ass("Full dialogue")).unwrap();
     std::fs::write(parts.join("signs.ass"), ass("SIGN: Shop")).unwrap();
-    std::fs::write(parts.join("la.srt"), "1\n00:00:00,500 --> 00:00:02,500\nLatinoamérica\n").unwrap();
-    std::fs::write(parts.join("es.srt"), "1\n00:00:00,500 --> 00:00:02,500\nEspaña\n").unwrap();
-    let font = ["/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/liberation/LiberationSans-Regular.ttf"]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|p| p.exists())
-        .or_else(|| {
-            std::fs::read_dir("/usr/share/fonts").ok()?.flatten().find_map(|d| {
-                std::fs::read_dir(d.path()).ok()?.flatten().map(|f| f.path()).find(|p| {
-                    p.extension().is_some_and(|e| e == "ttf")
-                })
+    std::fs::write(
+        parts.join("la.srt"),
+        "1\n00:00:00,500 --> 00:00:02,500\nLatinoamérica\n",
+    )
+    .unwrap();
+    std::fs::write(
+        parts.join("es.srt"),
+        "1\n00:00:00,500 --> 00:00:02,500\nEspaña\n",
+    )
+    .unwrap();
+    let font = [
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|p| p.exists())
+    .or_else(|| {
+        std::fs::read_dir("/usr/share/fonts")
+            .ok()?
+            .flatten()
+            .find_map(|d| {
+                std::fs::read_dir(d.path())
+                    .ok()?
+                    .flatten()
+                    .map(|f| f.path())
+                    .find(|p| p.extension().is_some_and(|e| e == "ttf"))
             })
-        })
-        .expect("a .ttf font to attach");
+    })
+    .expect("a .ttf font to attach");
 
     (1..=episodes)
         .map(|ep| {
@@ -887,21 +1109,72 @@ pub(crate) fn make_test_series(dir: &Path, episodes: u32) -> Vec<PathBuf> {
             let p = |name: &str| parts.join(name);
             let mut cmd = Command::new("mkvmerge");
             cmd.arg("-q").arg("-o").arg(&out);
-            cmd.args(["--title", &format!("[Group] Show - {ep:02}"), "--generate-chapters", "interval:1s"]).arg(p("v.mkv"));
-            cmd.args(["--language", "0:jpn", "--track-name", "0:Japanese", "--default-track-flag", "0:1"]).arg(p("jpn.mka"));
-            cmd.args(["--language", "0:eng", "--track-name", "0:English", "--default-track-flag", "0:0"]).arg(p("eng.mka"));
-            cmd.args(["--language", "0:eng", "--track-name", "0:English (Full)", "--default-track-flag", "0:1"])
-                .arg(p("full.ass"));
-            cmd.args(["--language", "0:eng", "--track-name", "0:English (Signs)", "--forced-display-flag", "0:1"])
-                .args(["--default-track-flag", "0:0"])
-                .arg(p("signs.ass"));
-            cmd.args(["--language", "0:es-419", "--track-name", "0:Latin American", "--default-track-flag", "0:0"])
-                .arg(p("la.srt"));
+            cmd.args([
+                "--title",
+                &format!("[Group] Show - {ep:02}"),
+                "--generate-chapters",
+                "interval:1s",
+            ])
+            .arg(p("v.mkv"));
+            cmd.args([
+                "--language",
+                "0:jpn",
+                "--track-name",
+                "0:Japanese",
+                "--default-track-flag",
+                "0:1",
+            ])
+            .arg(p("jpn.mka"));
+            cmd.args([
+                "--language",
+                "0:eng",
+                "--track-name",
+                "0:English",
+                "--default-track-flag",
+                "0:0",
+            ])
+            .arg(p("eng.mka"));
+            cmd.args([
+                "--language",
+                "0:eng",
+                "--track-name",
+                "0:English (Full)",
+                "--default-track-flag",
+                "0:1",
+            ])
+            .arg(p("full.ass"));
+            cmd.args([
+                "--language",
+                "0:eng",
+                "--track-name",
+                "0:English (Signs)",
+                "--forced-display-flag",
+                "0:1",
+            ])
+            .args(["--default-track-flag", "0:0"])
+            .arg(p("signs.ass"));
+            cmd.args([
+                "--language",
+                "0:es-419",
+                "--track-name",
+                "0:Latin American",
+                "--default-track-flag",
+                "0:0",
+            ])
+            .arg(p("la.srt"));
             if ep < episodes {
-                cmd.args(["--language", "0:es-ES", "--track-name", "0:European", "--default-track-flag", "0:0"])
-                    .arg(p("es.srt"));
+                cmd.args([
+                    "--language",
+                    "0:es-ES",
+                    "--track-name",
+                    "0:European",
+                    "--default-track-flag",
+                    "0:0",
+                ])
+                .arg(p("es.srt"));
             }
-            cmd.args(["--attachment-mime-type", "font/ttf", "--attach-file"]).arg(&font);
+            cmd.args(["--attachment-mime-type", "font/ttf", "--attach-file"])
+                .arg(&font);
             run(&mut cmd);
             out
         })
@@ -916,9 +1189,17 @@ mod end_to_end {
     use std::process::Command;
 
     fn identify(path: &Path) -> serde_json::Value {
-        let out = Command::new("mkvmerge").arg("-J").arg(path).output().unwrap();
+        let out = Command::new("mkvmerge")
+            .arg("-J")
+            .arg(path)
+            .output()
+            .unwrap();
         let id: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert!(id["errors"].as_array().is_none_or(|e| e.is_empty()), "mkvmerge: {}", id["errors"]);
+        assert!(
+            id["errors"].as_array().is_none_or(|e| e.is_empty()),
+            "mkvmerge: {}",
+            id["errors"]
+        );
         id
     }
 
@@ -927,15 +1208,39 @@ mod end_to_end {
         let out = Command::new("ffmpeg")
             .args(["-nostdin", "-v", "error", "-i"])
             .arg(path)
-            .args(["-map", "0:v", "-map", "0:a?", "-map", "0:s?", "-c", "copy", "-f", "streamhash", "-hash", "md5", "-"])
+            .args([
+                "-map",
+                "0:v",
+                "-map",
+                "0:a?",
+                "-map",
+                "0:s?",
+                "-c",
+                "copy",
+                "-f",
+                "streamhash",
+                "-hash",
+                "md5",
+                "-",
+            ])
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         // Lines are "<stream>, <bytes>, <md5>" after "#" comment lines.
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|l| !l.starts_with('#'))
-            .map(|l| l.split(',').map(str::trim).skip(1).collect::<Vec<_>>().join(" bytes, md5 "))
+            .map(|l| {
+                l.split(',')
+                    .map(str::trim)
+                    .skip(1)
+                    .collect::<Vec<_>>()
+                    .join(" bytes, md5 ")
+            })
             .collect()
     }
 
@@ -956,14 +1261,27 @@ mod end_to_end {
                 .output()
                 .unwrap();
             let errors = String::from_utf8_lossy(&out.stderr);
-            assert!(out.status.success() && errors.trim().is_empty(), "{args:?} {}: {errors}", path.display());
+            assert!(
+                out.status.success() && errors.trim().is_empty(),
+                "{args:?} {}: {errors}",
+                path.display()
+            );
         }
-        let info = Command::new("mkvinfo").arg("--all").arg(path).output().unwrap();
-        assert!(String::from_utf8_lossy(&info.stdout).contains("Cue point"), "no cues for seeking");
+        let info = Command::new("mkvinfo")
+            .arg("--all")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&info.stdout).contains("Cue point"),
+            "no cues for seeking"
+        );
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let base = std::env::var_os("LIVE_TEST_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let base = std::env::var_os("LIVE_TEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
         let dir = base.join(format!("seadex-remux-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -986,17 +1304,26 @@ mod end_to_end {
         let inputs = make_test_series(&dir.join("src"), 3);
         let analysis = probe_all(inputs.clone()).unwrap();
 
-        let subs: Vec<_> = analysis.languages(Kind::Subtitles).into_iter().map(|l| (l.code, l.files)).collect();
+        let subs: Vec<_> = analysis
+            .languages(Kind::Subtitles)
+            .into_iter()
+            .map(|l| (l.code, l.files))
+            .collect();
         assert_eq!(subs, vec![("eng".to_owned(), 3), ("spa".to_owned(), 3)]);
         let spanish = analysis.candidates(Kind::Subtitles, "spa");
-        assert_eq!(spanish.iter().map(|c| (c.sig.name.as_str(), c.files)).collect::<Vec<_>>(), vec![
-            ("Latin American", 3),
-            ("European", 2)
-        ]);
+        assert_eq!(
+            spanish
+                .iter()
+                .map(|c| (c.sig.name.as_str(), c.files))
+                .collect::<Vec<_>>(),
+            vec![("Latin American", 3), ("European", 2)]
+        );
 
         // Japanese audio, full English subtitles.
         let title = "Frieren: Beyond Journey’s End";
-        let audio = analysis.default_candidate(Kind::Audio, "jpn", None).unwrap();
+        let audio = analysis
+            .default_candidate(Kind::Audio, "jpn", None)
+            .unwrap();
         let subtitles = analysis.default_candidate(Kind::Subtitles, "eng", Some("jpn"));
         assert_eq!(subtitles.as_ref().unwrap().name, "English (Full)");
         let out = dir.join("out");
@@ -1007,7 +1334,10 @@ mod end_to_end {
             let expected = out.join(format!("{title} - {:02}.mkv", n + 1));
             assert_eq!(item.output, expected);
             let id = identify(&expected);
-            assert_eq!(id["container"]["properties"]["title"], format!("{title} - {:02}", n + 1));
+            assert_eq!(
+                id["container"]["properties"]["title"],
+                format!("{title} - {:02}", n + 1)
+            );
             let tracks: Vec<(String, String, String, bool)> = id["tracks"]
                 .as_array()
                 .unwrap()
@@ -1028,16 +1358,33 @@ mod end_to_end {
                     // The video's flags are kept as they were (not default in these test files).
                     ("video".into(), "und".into(), "".into(), false),
                     ("audio".into(), "jpn".into(), "Japanese".into(), true),
-                    ("subtitles".into(), "eng".into(), "English (Full)".into(), true),
+                    (
+                        "subtitles".into(),
+                        "eng".into(),
+                        "English (Full)".into(),
+                        true
+                    ),
                 ]
             );
-            assert_eq!(id["attachments"].as_array().unwrap().len(), 1, "fonts kept for ASS");
-            assert!(id["chapters"].as_array().is_some_and(|c| !c.is_empty()), "chapters kept");
+            assert_eq!(
+                id["attachments"].as_array().unwrap().len(),
+                1,
+                "fonts kept for ASS"
+            );
+            assert!(
+                id["chapters"].as_array().is_some_and(|c| !c.is_empty()),
+                "chapters kept"
+            );
             // Same data, track for track.
             let before = stream_hashes(&item.input);
             let after = stream_hashes(&expected);
-            let kept = [item.video[0], item.audio.as_ref().unwrap().id, item.subtitles.as_ref().unwrap().id];
-            let expected_hashes: Vec<&str> = kept.iter().map(|&t| original_hash(&before, t)).collect();
+            let kept = [
+                item.video[0],
+                item.audio.as_ref().unwrap().id,
+                item.subtitles.as_ref().unwrap().id,
+            ];
+            let expected_hashes: Vec<&str> =
+                kept.iter().map(|&t| original_hash(&before, t)).collect();
             assert_eq!(after, expected_hashes);
             assert_plays(&expected);
         }
@@ -1046,19 +1393,43 @@ mod end_to_end {
         assert_eq!(identify(&inputs[0])["tracks"].as_array().unwrap().len(), 7);
 
         // English dub: signs-only English subtitles, still forced.
-        let audio = analysis.default_candidate(Kind::Audio, "eng", None).unwrap();
+        let audio = analysis
+            .default_candidate(Kind::Audio, "eng", None)
+            .unwrap();
         let subtitles = analysis.default_candidate(Kind::Subtitles, "eng", Some("eng"));
         assert_eq!(subtitles.as_ref().unwrap().name, "English (Signs)");
-        let dub_plan = plan(&analysis, &Choice { audio, subtitles }, title, &dir.join("dub"));
+        let dub_plan = plan(
+            &analysis,
+            &Choice { audio, subtitles },
+            title,
+            &dir.join("dub"),
+        );
         remux_all(&dub_plan[..1]);
         let id = identify(&dub_plan[0].output);
         let subs = &id["tracks"][2]["properties"];
-        assert_eq!((subs["track_name"].as_str(), subs["forced_track"].as_bool()), (Some("English (Signs)"), Some(true)));
-        assert_eq!(id["tracks"][1]["properties"]["default_track"].as_bool(), Some(true), "English audio is default");
+        assert_eq!(
+            (subs["track_name"].as_str(), subs["forced_track"].as_bool()),
+            (Some("English (Signs)"), Some(true))
+        );
+        assert_eq!(
+            id["tracks"][1]["properties"]["default_track"].as_bool(),
+            Some(true),
+            "English audio is default"
+        );
 
         // No subtitles: no fonts either.
-        let audio = analysis.default_candidate(Kind::Audio, "jpn", None).unwrap();
-        let bare = plan(&analysis, &Choice { audio, subtitles: None }, title, &dir.join("bare"));
+        let audio = analysis
+            .default_candidate(Kind::Audio, "jpn", None)
+            .unwrap();
+        let bare = plan(
+            &analysis,
+            &Choice {
+                audio,
+                subtitles: None,
+            },
+            title,
+            &dir.join("bare"),
+        );
         remux_all(&bare[..1]);
         let id = identify(&bare[0].output);
         assert_eq!(id["tracks"].as_array().unwrap().len(), 2);
@@ -1067,14 +1438,19 @@ mod end_to_end {
 
         // Cancelling leaves nothing behind.
         let cancel = AtomicBool::new(true);
-        let choice = Choice { audio: bare[0].audio.as_ref().unwrap().sig(), subtitles: None };
+        let choice = Choice {
+            audio: bare[0].audio.as_ref().unwrap().sig(),
+            subtitles: None,
+        };
         let cancelled = plan(&analysis, &choice, title, &dir.join("cancelled"));
         assert!(remux(&cancelled[0], &cancel, |_| {}).is_err());
         assert!(std::fs::read_dir(dir.join("cancelled")).is_ok_and(|mut d| d.next().is_none()));
 
         // What each subtitle choice contains.
-        let samples: HashMap<String, SubtitleSample> =
-            sample_subtitles(&analysis).into_iter().map(|(sig, s)| (sig.name, s)).collect();
+        let samples: HashMap<String, SubtitleSample> = sample_subtitles(&analysis)
+            .into_iter()
+            .map(|(sig, s)| (sig.name, s))
+            .collect();
         assert_eq!(samples["English (Full)"].lines, vec!["Full dialogue"]);
         assert_eq!(samples["English (Signs)"].lines, vec!["SIGN: Shop"]);
         assert_eq!(samples["Latin American"].events, 1);
@@ -1093,22 +1469,34 @@ mod end_to_end {
     #[test]
     #[ignore = "needs REMUX_SAMPLE_DIR, ffmpeg and mkvmerge"]
     fn remuxes_real_files_with_default_choices() {
-        let Some(sample) = std::env::var_os("REMUX_SAMPLE_DIR").map(PathBuf::from) else { return };
-        let inputs: Vec<PathBuf> =
-            std::fs::read_dir(&sample).unwrap().flatten().map(|e| e.path()).filter(|p| is_video(p)).collect();
+        let Some(sample) = std::env::var_os("REMUX_SAMPLE_DIR").map(PathBuf::from) else {
+            return;
+        };
+        let inputs: Vec<PathBuf> = std::fs::read_dir(&sample)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| is_video(p))
+            .collect();
         let analysis = probe_all(inputs).unwrap();
         let audio_lang = analysis.default_audio_language().unwrap();
         let sub_lang = analysis.default_subtitle_language();
         let choice = Choice {
-            audio: analysis.default_candidate(Kind::Audio, &audio_lang, None).unwrap(),
-            subtitles: sub_lang.and_then(|l| analysis.default_candidate(Kind::Subtitles, &l, Some(&audio_lang))),
+            audio: analysis
+                .default_candidate(Kind::Audio, &audio_lang, None)
+                .unwrap(),
+            subtitles: sub_lang
+                .and_then(|l| analysis.default_candidate(Kind::Subtitles, &l, Some(&audio_lang))),
         };
         println!("choice: {choice:?}");
         let started = std::time::Instant::now();
         let samples = sample_subtitles(&analysis);
         println!("read every subtitle track in {:.1?}:", started.elapsed());
         for (sig, sample) in samples.iter().filter(|(s, _)| s.language == "eng") {
-            println!("  {:?}: {} lines, starts {:?}", sig.name, sample.events, sample.lines);
+            println!(
+                "  {:?}: {} lines, starts {:?}",
+                sig.name, sample.events, sample.lines
+            );
         }
         let out = scratch("real");
         let real_plan = plan(&analysis, &choice, "Sample", &out);
@@ -1117,20 +1505,38 @@ mod end_to_end {
         println!("remuxed in {:.1?}", started.elapsed());
         for item in &real_plan {
             let id = identify(&item.output);
-            println!("{} ({} MiB):", item.output.display(), std::fs::metadata(&item.output).unwrap().len() >> 20);
+            println!(
+                "{} ({} MiB):",
+                item.output.display(),
+                std::fs::metadata(&item.output).unwrap().len() >> 20
+            );
             println!("  title: {}", id["container"]["properties"]["title"]);
             for t in id["tracks"].as_array().unwrap() {
                 let p = &t["properties"];
-                println!("  {} {} {} default={}", t["type"], p["language"], p["track_name"], p["default_track"]);
+                println!(
+                    "  {} {} {} default={}",
+                    t["type"], p["language"], p["track_name"], p["default_track"]
+                );
             }
             let before = stream_hashes(&item.input);
             let mut kept = item.video.clone();
             kept.push(item.audio.as_ref().unwrap().id);
             kept.extend(item.subtitles.as_ref().map(|s| s.id));
             let expected: Vec<&str> = kept.iter().map(|&t| original_hash(&before, t)).collect();
-            assert_eq!(stream_hashes(&item.output), expected, "kept tracks' data must be identical");
-            println!("  all {} kept tracks byte-identical to the original", kept.len());
-            let info = Command::new("mkvinfo").arg("--all").arg(&item.output).output().unwrap();
+            assert_eq!(
+                stream_hashes(&item.output),
+                expected,
+                "kept tracks' data must be identical"
+            );
+            println!(
+                "  all {} kept tracks byte-identical to the original",
+                kept.len()
+            );
+            let info = Command::new("mkvinfo")
+                .arg("--all")
+                .arg(&item.output)
+                .output()
+                .unwrap();
             let info = String::from_utf8_lossy(&info.stdout);
             println!(
                 "  cues: {} points, {} for subtitle lines",
@@ -1143,7 +1549,11 @@ mod end_to_end {
                 .args(["-t", "5", "-f", "null", "-"])
                 .output()
                 .unwrap();
-            assert!(seek.status.success() && seek.stderr.is_empty(), "{}", String::from_utf8_lossy(&seek.stderr));
+            assert!(
+                seek.status.success() && seek.stderr.is_empty(),
+                "{}",
+                String::from_utf8_lossy(&seek.stderr)
+            );
             println!("  seeks to 10:00 and decodes cleanly");
         }
     }

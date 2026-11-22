@@ -81,7 +81,10 @@ pub async fn search(client: &reqwest::Client, query: &str) -> Result<Vec<NyaaIte
         .context("could not reach Nyaa")?
         .error_for_status()
         .context("Nyaa search failed")?;
-    let body = resp.text().await.context("error reading Nyaa search results")?;
+    let body = resp
+        .text()
+        .await
+        .context("error reading Nyaa search results")?;
     parse_rss(&body)
 }
 
@@ -97,7 +100,9 @@ fn parse_rss(xml: &str) -> Result<Vec<NyaaItem>> {
                 .trim()
                 .to_owned()
         };
-        let Some(id) = view_id(&text("guid")) else { continue };
+        let Some(id) = view_id(&text("guid")) else {
+            continue;
+        };
         items.push(NyaaItem {
             id,
             title: text("title"),
@@ -138,7 +143,10 @@ pub async fn fetch_torrent(client: &reqwest::Client, id: u64) -> Result<Vec<u8>>
     if !status.is_success() {
         bail!("Nyaa returned HTTP {status} for {url}");
     }
-    let body = resp.bytes().await.context("error reading .torrent from Nyaa")?;
+    let body = resp
+        .bytes()
+        .await
+        .context("error reading .torrent from Nyaa")?;
     // A bencoded torrent is a dictionary, so it starts with 'd'. Anything else
     // is most likely an HTML error or DDoS-protection page.
     if body.first() != Some(&b'd') {
@@ -188,6 +196,7 @@ mod tests {
 
     #[test]
     fn builds_urls() {
+        let _net = crate::mock_http::real();
         assert_eq!(torrent_url(42), "https://nyaa.si/download/42.torrent");
         let m = magnet("143ed15e5e3df072ae91adaeb149973a887590dd");
         assert!(m.starts_with("magnet:?xt=urn:btih:143ed15e5e3df072ae91adaeb149973a887590dd&tr="));

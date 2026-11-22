@@ -10,7 +10,9 @@ use anyhow::Result;
 use reqwest::StatusCode;
 use serde_json::Value;
 
-use super::{Account, Client, Gone, Remote, RemoteFile, RemoteState, date, id, num, text, torrent_part};
+use super::{
+    Account, Client, Gone, Remote, RemoteFile, RemoteState, date, id, num, text, torrent_part,
+};
 
 /// The `data` of a reply, or the error it carries.
 fn data(c: &Client, status: StatusCode, body: Value) -> Result<Value> {
@@ -36,12 +38,18 @@ fn data(c: &Client, status: StatusCode, body: Value) -> Result<Value> {
 pub(super) async fn account(c: &Client) -> Result<Account> {
     let (status, v) = c.send(c.get("/v4/user")).await?;
     let user = data(c, status, v)?["user"].clone();
-    Ok(Account { name: text(&user["username"]), premium: user["isPremium"] == true, until: date(&user["premiumUntil"]) })
+    Ok(Account {
+        name: text(&user["username"]),
+        premium: user["isPremium"] == true,
+        until: date(&user["premiumUntil"]),
+    })
 }
 
 pub(super) async fn add(c: &Client, torrent: &[u8], name: &str) -> Result<String> {
     let form = reqwest::multipart::Form::new().part("files[]", torrent_part(torrent, name));
-    let (status, v) = c.send(c.post("/v4/magnet/upload/file").multipart(form)).await?;
+    let (status, v) = c
+        .send(c.post("/v4/magnet/upload/file").multipart(form))
+        .await?;
     let file = data(c, status, v)?["files"][0].clone();
     if let Some(message) = file["error"]["message"].as_str() {
         return Err(c.error(message));
@@ -50,11 +58,16 @@ pub(super) async fn add(c: &Client, torrent: &[u8], name: &str) -> Result<String
 }
 
 pub(super) async fn status(c: &Client, magnet: &str) -> Result<Remote> {
-    let (status, v) = c.send(c.post("/v4.1/magnet/status").form(&[("id", magnet)])).await?;
+    let (status, v) = c
+        .send(c.post("/v4.1/magnet/status").form(&[("id", magnet)]))
+        .await?;
     let magnets = data(c, status, v)?["magnets"].clone();
     // One magnet comes back as an object; be ready for a list too.
     let m = match magnets {
-        Value::Array(list) => list.into_iter().next().ok_or_else(|| anyhow::Error::new(Gone))?,
+        Value::Array(list) => list
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::Error::new(Gone))?,
         other => other,
     };
     let code = num(&m["statusCode"]).unwrap_or(0);
@@ -64,23 +77,32 @@ pub(super) async fn status(c: &Client, magnet: &str) -> Result<Remote> {
             let size = num(&m["size"]).unwrap_or(0);
             RemoteState::Working {
                 status: text(&m["status"]).to_lowercase(),
-                progress: (size > 0).then(|| num(&m["downloaded"]).unwrap_or(0) as f32 / size as f32),
+                progress: (size > 0)
+                    .then(|| num(&m["downloaded"]).unwrap_or(0) as f32 / size as f32),
                 speed: num(&m["downloadSpeed"]),
                 seeders: num(&m["seeders"]),
             }
         }
         _ => RemoteState::Failed(format!("AllDebrid: {}", text(&m["status"]))),
     };
-    let files = if state == RemoteState::Ready { files(c, magnet).await? } else { Vec::new() };
+    let files = if state == RemoteState::Ready {
+        files(c, magnet).await?
+    } else {
+        Vec::new()
+    };
     Ok(Remote { state, files })
 }
 
 /// A ready magnet's files, flattened from AllDebrid's tree.
 async fn files(c: &Client, magnet: &str) -> Result<Vec<RemoteFile>> {
     // The docs list this under v4 but show it under v4.1; try both.
-    let mut reply = c.send(c.post("/v4/magnet/files").form(&[("id[]", magnet)])).await?;
+    let mut reply = c
+        .send(c.post("/v4/magnet/files").form(&[("id[]", magnet)]))
+        .await?;
     if reply.0 == StatusCode::NOT_FOUND {
-        reply = c.send(c.post("/v4.1/magnet/files").form(&[("id[]", magnet)])).await?;
+        reply = c
+            .send(c.post("/v4.1/magnet/files").form(&[("id[]", magnet)]))
+            .await?;
     }
     let entry = data(c, reply.0, reply.1)?["magnets"][0].clone();
     if let Some(message) = entry["error"]["message"].as_str() {
@@ -93,7 +115,11 @@ async fn files(c: &Client, magnet: &str) -> Result<Vec<RemoteFile>> {
 
 fn flatten(nodes: &Value, prefix: &str, out: &mut Vec<RemoteFile>) {
     for node in nodes.as_array().into_iter().flatten() {
-        let path = if prefix.is_empty() { text(&node["n"]) } else { format!("{prefix}/{}", text(&node["n"])) };
+        let path = if prefix.is_empty() {
+            text(&node["n"])
+        } else {
+            format!("{prefix}/{}", text(&node["n"]))
+        };
         if node["e"].is_array() {
             flatten(&node["e"], &path, out);
         } else {
@@ -109,20 +135,33 @@ fn flatten(nodes: &Value, prefix: &str, out: &mut Vec<RemoteFile>) {
 }
 
 pub(super) async fn link(c: &Client, file: &RemoteFile) -> Result<String> {
-    let link = file.link.as_deref().ok_or_else(|| c.error(format!("no link for {}", file.path)))?;
-    let (status, v) = c.send(c.post("/v4/link/unlock").form(&[("link", link)])).await?;
+    let link = file
+        .link
+        .as_deref()
+        .ok_or_else(|| c.error(format!("no link for {}", file.path)))?;
+    let (status, v) = c
+        .send(c.post("/v4/link/unlock").form(&[("link", link)]))
+        .await?;
     let unlocked = data(c, status, v)?;
     if let Some(url) = unlocked["link"].as_str().filter(|l| !l.is_empty()) {
         return Ok(url.to_owned());
     }
     // Some links take a moment to generate: poll every 5 seconds.
-    let delayed = id(&unlocked["delayed"]).ok_or_else(|| c.error("no download link in the reply"))?;
+    let delayed =
+        id(&unlocked["delayed"]).ok_or_else(|| c.error("no download link in the reply"))?;
     for _ in 0..60 {
         tokio::time::sleep(Duration::from_secs(5)).await;
-        let (status, v) = c.send(c.post("/v4/link/delayed").form(&[("id", delayed.as_str())])).await?;
+        let (status, v) = c
+            .send(c.post("/v4/link/delayed").form(&[("id", delayed.as_str())]))
+            .await?;
         let d = data(c, status, v)?;
         match num(&d["status"]) {
-            Some(2) => return d["link"].as_str().map(str::to_owned).ok_or_else(|| c.error("no download link in the reply")),
+            Some(2) => {
+                return d["link"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| c.error("no download link in the reply"));
+            }
             Some(3) => return Err(c.error("couldn't generate the download link")),
             _ => {}
         }
@@ -131,7 +170,9 @@ pub(super) async fn link(c: &Client, file: &RemoteFile) -> Result<String> {
 }
 
 pub(super) async fn delete(c: &Client, magnet: &str) -> Result<()> {
-    let (status, v) = c.send(c.post("/v4/magnet/delete").form(&[("id", magnet)])).await?;
+    let (status, v) = c
+        .send(c.post("/v4/magnet/delete").form(&[("id", magnet)]))
+        .await?;
     match data(c, status, v) {
         Ok(_) => Ok(()),
         Err(e) if e.downcast_ref::<Gone>().is_some() => Ok(()),
@@ -193,11 +234,23 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::AllDebrid, "key", &base);
-        assert_eq!(c.account().await.unwrap(), Account { name: "me".into(), premium: true, until: Some("2027-01-15".into()) });
+        assert_eq!(
+            c.account().await.unwrap(),
+            Account {
+                name: "me".into(),
+                premium: true,
+                until: Some("2027-01-15".into())
+            }
+        );
         let id = c.add(b"torrent", "Show").await.unwrap();
         assert_eq!(id, "77");
         match c.status(&id).await.unwrap().state {
-            RemoteState::Working { progress, speed, seeders, .. } => {
+            RemoteState::Working {
+                progress,
+                speed,
+                seeders,
+                ..
+            } => {
                 assert_eq!((progress, speed, seeders), (Some(0.5), Some(1000), Some(4)));
             }
             other => panic!("{other:?}"),
@@ -206,9 +259,15 @@ mod tests {
         assert_eq!(remote.state, RemoteState::Ready);
         let paths: Vec<&str> = remote.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["Show/Show - 01.mkv", "Show/Extras/NCOP.mkv"]);
-        assert_eq!(c.link(&id, &remote.files[0]).await.unwrap(), "https://dl.example/one");
+        assert_eq!(
+            c.link(&id, &remote.files[0]).await.unwrap(),
+            "https://dl.example/one"
+        );
         tokio::time::pause(); // the delayed link polls every 5 s
-        assert_eq!(c.link(&id, &remote.files[1]).await.unwrap(), "https://dl.example/two");
+        assert_eq!(
+            c.link(&id, &remote.files[1]).await.unwrap(),
+            "https://dl.example/two"
+        );
         c.delete(&id).await.unwrap();
     }
 
@@ -221,9 +280,24 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::AllDebrid, "k", &base);
-        assert!(c.account().await.unwrap_err().downcast_ref::<BadKey>().is_some());
-        assert!(c.status("1").await.unwrap_err().downcast_ref::<Gone>().is_some());
+        assert!(
+            c.account()
+                .await
+                .unwrap_err()
+                .downcast_ref::<BadKey>()
+                .is_some()
+        );
+        assert!(
+            c.status("1")
+                .await
+                .unwrap_err()
+                .downcast_ref::<Gone>()
+                .is_some()
+        );
         let err = c.add(b"t", "x").await.unwrap_err().to_string();
-        assert_eq!(err, "AllDebrid: Already have maximum allowed active magnets (30)");
+        assert_eq!(
+            err,
+            "AllDebrid: Already have maximum allowed active magnets (30)"
+        );
     }
 }

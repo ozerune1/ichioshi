@@ -59,10 +59,17 @@ pub async fn state(piactl: &Path) -> Result<State> {
         "Attempting" => PortForward::Attempting,
         "Failed" => PortForward::Failed,
         "Unavailable" => PortForward::Unavailable,
-        other => other.parse().map(PortForward::Port).unwrap_or_else(|_| PortForward::Other(other.to_owned())),
+        other => other
+            .parse()
+            .map(PortForward::Port)
+            .unwrap_or_else(|_| PortForward::Other(other.to_owned())),
     };
     let request_forwarding = get(piactl, "requestportforward").await? == "true";
-    Ok(State { connection, port, request_forwarding })
+    Ok(State {
+        connection,
+        port,
+        request_forwarding,
+    })
 }
 
 /// Connect (or reconnect, to apply settings). The PIA app must be open, or
@@ -83,7 +90,10 @@ async fn get(piactl: &Path, what: &str) -> Result<String> {
 
 async fn run(piactl: &Path, args: &[&str]) -> Result<String> {
     let mut command = tokio::process::Command::new(piactl);
-    command.args(["--timeout", "5"]).args(args).kill_on_drop(true);
+    command
+        .args(["--timeout", "5"])
+        .args(args)
+        .kill_on_drop(true);
     let out = tokio::time::timeout(Duration::from_secs(10), command.output())
         .await
         .context("the PIA app didn't answer")?
@@ -91,7 +101,11 @@ async fn run(piactl: &Path, args: &[&str]) -> Result<String> {
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let message = stderr.lines().chain(stdout.lines()).map(str::trim).find(|l| !l.is_empty());
+        let message = stderr
+            .lines()
+            .chain(stdout.lines())
+            .map(str::trim)
+            .find(|l| !l.is_empty());
         bail!("PIA: {}", message.unwrap_or("piactl failed"));
     }
     Ok(stdout)
@@ -109,7 +123,11 @@ pub(crate) mod tests {
         std::fs::create_dir_all(dir).unwrap();
         set(dir, "connectionstate", connection);
         set(dir, "portforward", port);
-        set(dir, "requestportforward", if request { "true" } else { "false" });
+        set(
+            dir,
+            "requestportforward",
+            if request { "true" } else { "false" },
+        );
         let script = dir.join("piactl");
         let body = format!(
             "#!/bin/sh\nd='{}'\nshift 2\nif [ \"$1\" = get ]; then cat \"$d/$2\"; exit 0; fi\n\
@@ -134,7 +152,14 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let piactl = fake_piactl(dir.path(), "Connected", "51234", true);
         let s = state(&piactl).await.unwrap();
-        assert_eq!(s, State { connection: "Connected".into(), port: PortForward::Port(51234), request_forwarding: true });
+        assert_eq!(
+            s,
+            State {
+                connection: "Connected".into(),
+                port: PortForward::Port(51234),
+                request_forwarding: true
+            }
+        );
         assert!(s.connected());
 
         set(dir.path(), "portforward", "Attempting");
@@ -144,8 +169,15 @@ pub(crate) mod tests {
         let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
         assert_eq!(calls, "set requestportforward true\nconnect\n");
 
-        std::fs::write(dir.path().join("fail"), "Connection error: daemon inactive\n").unwrap();
-        assert_eq!(connect(&piactl).await.unwrap_err().to_string(), "PIA: Connection error: daemon inactive");
+        std::fs::write(
+            dir.path().join("fail"),
+            "Connection error: daemon inactive\n",
+        )
+        .unwrap();
+        assert_eq!(
+            connect(&piactl).await.unwrap_err().to_string(),
+            "PIA: Connection error: daemon inactive"
+        );
     }
 
     /// The real PIA app on this computer, read-only (`get` commands only).

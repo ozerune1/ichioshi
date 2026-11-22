@@ -24,7 +24,9 @@ use reqwest::{RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub enum Provider {
     #[default]
     RealDebrid,
@@ -35,8 +37,13 @@ pub enum Provider {
 }
 
 impl Provider {
-    pub const ALL: [Provider; 5] =
-        [Provider::RealDebrid, Provider::AllDebrid, Provider::Premiumize, Provider::TorBox, Provider::DebridLink];
+    pub const ALL: [Provider; 5] = [
+        Provider::RealDebrid,
+        Provider::AllDebrid,
+        Provider::Premiumize,
+        Provider::TorBox,
+        Provider::DebridLink,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -84,7 +91,10 @@ pub struct Config {
 
 impl Config {
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -92,7 +102,10 @@ impl Config {
     }
 
     pub fn key(&self, provider: Provider) -> Option<&str> {
-        self.keys.get(&provider).map(|k| k.trim()).filter(|k| !k.is_empty())
+        self.keys
+            .get(&provider)
+            .map(|k| k.trim())
+            .filter(|k| !k.is_empty())
     }
 
     /// Whether new downloads go through the service (it's on and has a key).
@@ -107,7 +120,11 @@ pub struct BadKey(pub Provider);
 
 impl std::fmt::Display for BadKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} doesn't accept the API key; check it in Settings", self.0.name())
+        write!(
+            f,
+            "{} doesn't accept the API key; check it in Settings",
+            self.0.name()
+        )
     }
 }
 
@@ -139,7 +156,12 @@ pub enum RemoteState {
     /// Waiting for us to pick files (Real-Debrid).
     NeedsSelection,
     /// Fetching it, or queued. `status` is the service's own word for it.
-    Working { status: String, progress: Option<f32>, speed: Option<u64>, seeders: Option<u64> },
+    Working {
+        status: String,
+        progress: Option<f32>,
+        speed: Option<u64>,
+        seeders: Option<u64>,
+    },
     Ready,
     Failed(String),
 }
@@ -175,13 +197,23 @@ pub struct Client {
 
 impl Client {
     pub fn new(http: reqwest::Client, provider: Provider, key: &str) -> Self {
-        Self { provider, key: key.trim().to_owned(), http, base: provider.base().to_owned() }
+        Self {
+            provider,
+            key: key.trim().to_owned(),
+            http,
+            base: provider.base().to_owned(),
+        }
     }
 
     /// A client for a mock server (tests).
     #[cfg(test)]
     pub fn with_base(http: reqwest::Client, provider: Provider, key: &str, base: &str) -> Self {
-        Self { provider, key: key.to_owned(), http, base: base.to_owned() }
+        Self {
+            provider,
+            key: key.to_owned(),
+            http,
+            base: base.to_owned(),
+        }
     }
 
     pub async fn account(&self) -> Result<Account> {
@@ -234,9 +266,10 @@ impl Client {
         match self.provider {
             Provider::RealDebrid => realdebrid::link(self, file).await,
             Provider::AllDebrid => alldebrid::link(self, file).await,
-            Provider::Premiumize | Provider::DebridLink => {
-                file.link.clone().ok_or_else(|| anyhow!("{} gave no link for {}", self.provider.name(), file.path))
-            }
+            Provider::Premiumize | Provider::DebridLink => file
+                .link
+                .clone()
+                .ok_or_else(|| anyhow!("{} gave no link for {}", self.provider.name(), file.path)),
             Provider::TorBox => torbox::link(self, id, file).await,
         }
     }
@@ -275,7 +308,10 @@ impl Client {
     /// Send a request; returns the HTTP status and the body parsed as JSON
     /// (`Null` for an empty or non-JSON body).
     async fn send(&self, req: RequestBuilder) -> Result<(StatusCode, Value)> {
-        let resp = req.send().await.map_err(|e| anyhow!("could not reach {}: {e}", self.provider.name()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| anyhow!("could not reach {}: {e}", self.provider.name()))?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
@@ -324,9 +360,12 @@ fn text(v: &Value) -> String {
 fn date(v: &Value) -> Option<String> {
     match v {
         Value::Number(_) | Value::String(_) if num(v).is_some_and(|t| t > 0) => {
-            chrono::DateTime::from_timestamp(num(v)? as i64, 0).map(|d| d.format("%Y-%m-%d").to_string())
+            chrono::DateTime::from_timestamp(num(v)? as i64, 0)
+                .map(|d| d.format("%Y-%m-%d").to_string())
         }
-        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.format("%Y-%m-%d").to_string()),
+        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.format("%Y-%m-%d").to_string()),
         _ => None,
     }
 }
@@ -347,7 +386,10 @@ fn torrent_part(torrent: &[u8], name: &str) -> reqwest::multipart::Part {
 /// file meant for "E02.mkv".
 pub fn match_files(wanted: &[(&str, u64)], remote: &[RemoteFile]) -> Vec<Option<usize>> {
     let parts = |p: &str| -> Vec<String> {
-        p.split(['/', '\\']).filter(|c| !c.is_empty()).map(|c| c.to_lowercase()).collect()
+        p.split(['/', '\\'])
+            .filter(|c| !c.is_empty())
+            .map(|c| c.to_lowercase())
+            .collect()
     };
     let remote_parts: Vec<Vec<String>> = remote.iter().map(|f| parts(&f.path)).collect();
     // (matching components, extra remote components, wanted, remote)
@@ -358,13 +400,23 @@ pub fn match_files(wanted: &[(&str, u64)], remote: &[RemoteFile]) -> Vec<Option<
             if file.size != *size {
                 continue;
             }
-            let common = want.iter().rev().zip(remote_parts[r].iter().rev()).take_while(|(a, b)| a == b).count();
+            let common = want
+                .iter()
+                .rev()
+                .zip(remote_parts[r].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
             if common > 0 {
                 pairs.push((common, remote_parts[r].len() - common, w, r));
             }
         }
     }
-    pairs.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
+    pairs.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+            .then(a.3.cmp(&b.3))
+    });
     let mut out = vec![None; wanted.len()];
     let mut taken = vec![false; remote.len()];
     for (_, _, w, r) in pairs {
@@ -381,7 +433,13 @@ pub(crate) mod tests {
     use super::*;
 
     pub fn rf(id: &str, path: &str, size: u64) -> RemoteFile {
-        RemoteFile { id: id.into(), path: path.into(), size, selected: true, link: None }
+        RemoteFile {
+            id: id.into(),
+            path: path.into(),
+            size,
+            selected: true,
+            link: None,
+        }
     }
 
     #[test]
@@ -401,14 +459,21 @@ pub(crate) mod tests {
             ("Show - 04.mkv", 500), // not on the service
             ("Show - 03.mkv", 701), // wrong size
         ];
-        assert_eq!(match_files(&wanted, &remote), vec![Some(2), Some(4), Some(3), Some(0), None, None]);
+        assert_eq!(
+            match_files(&wanted, &remote),
+            vec![Some(2), Some(4), Some(3), Some(0), None, None]
+        );
     }
 
     #[test]
     fn config_keeps_a_key_per_service() {
         let dir = std::env::temp_dir().join(format!("seadex-debrid-config-{}", std::process::id()));
         let path = dir.join("debrid.json");
-        let mut config = Config { enabled: true, provider: Provider::TorBox, ..Default::default() };
+        let mut config = Config {
+            enabled: true,
+            provider: Provider::TorBox,
+            ..Default::default()
+        };
         assert!(!config.active(), "no key yet");
         config.keys.insert(Provider::TorBox, " tb-key ".into());
         config.keys.insert(Provider::RealDebrid, "rd-key".into());
@@ -417,7 +482,10 @@ pub(crate) mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         let loaded = Config::load(&path);
         assert_eq!(loaded, config);
@@ -431,8 +499,14 @@ pub(crate) mod tests {
         assert_eq!(num(&serde_json::json!("123")), Some(123));
         assert_eq!(num(&serde_json::json!(12.7)), Some(12));
         assert_eq!(id(&serde_json::json!(42)), Some("42".into()));
-        assert_eq!(date(&serde_json::json!(1_800_000_000)), Some("2027-01-15".into()));
-        assert_eq!(date(&serde_json::json!("2032-06-06T04:42:42.000Z")), Some("2032-06-06".into()));
+        assert_eq!(
+            date(&serde_json::json!(1_800_000_000)),
+            Some("2027-01-15".into())
+        );
+        assert_eq!(
+            date(&serde_json::json!("2032-06-06T04:42:42.000Z")),
+            Some("2032-06-06".into())
+        );
         assert_eq!(date(&serde_json::json!(0)), None);
     }
 }

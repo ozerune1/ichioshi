@@ -26,7 +26,9 @@ pub fn check(dir: &Path, index: &Path, volumes: &[PathBuf], repair: bool) -> Res
     options.repair = repair;
     // The files are where the set says; don't scan the folder for others.
     options.discover_extras = false;
-    let outcome = Par2Repairer::new(options).verify_or_repair().map_err(|e| anyhow!("PAR2: {e}"))?;
+    let outcome = Par2Repairer::new(options)
+        .verify_or_repair()
+        .map_err(|e| anyhow!("PAR2: {e}"))?;
     tracing::info!(
         "PAR2: {:?}, {} missing blocks, {} recovery blocks",
         outcome.status,
@@ -36,18 +38,28 @@ pub fn check(dir: &Path, index: &Path, volumes: &[PathBuf], repair: bool) -> Res
     Ok(match outcome.status {
         Par2RepairStatus::Verified => Check::Intact,
         Par2RepairStatus::Repaired | Par2RepairStatus::RepairPossible => Check::Repaired,
-        Par2RepairStatus::Insufficient => {
-            Check::Short { blocks: outcome.missing_blocks.saturating_sub(outcome.recovery_blocks_available).max(1) }
-        }
+        Par2RepairStatus::Insufficient => Check::Short {
+            blocks: outcome
+                .missing_blocks
+                .saturating_sub(outcome.recovery_blocks_available)
+                .max(1),
+        },
         Par2RepairStatus::ResourceLimited => return Err(anyhow!("PAR2 repair ran out of memory")),
     })
 }
 
 /// Make a PAR2 set for `files` (tests, and the fake provider).
 #[cfg(test)]
-pub fn create(dir: &Path, stem: &str, files: &[PathBuf], block: u64, recovery_blocks: u32) -> Vec<PathBuf> {
+pub fn create(
+    dir: &Path,
+    stem: &str,
+    files: &[PathBuf],
+    block: u64,
+    recovery_blocks: u32,
+) -> Vec<PathBuf> {
     use par2_rs::create::{BlockSizing, Par2Creator, Par2CreatorOptions, RecoveryAmount};
-    let mut options = Par2CreatorOptions::with_output(dir.join(stem), Some(dir.to_path_buf()), files.to_vec());
+    let mut options =
+        Par2CreatorOptions::with_output(dir.join(stem), Some(dir.to_path_buf()), files.to_vec());
     options.block_sizing = BlockSizing::Bytes(block);
     options.recovery_amount = RecoveryAmount::Count(recovery_blocks);
     let creator = Par2Creator::new(options);
@@ -56,7 +68,10 @@ pub fn create(dir: &Path, stem: &str, files: &[PathBuf], block: u64, recovery_bl
     let mut made: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().path())
-        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(stem) && p.extension().is_some_and(|e| e == "par2"))
+        .filter(|p| {
+            p.file_name().unwrap().to_string_lossy().starts_with(stem)
+                && p.extension().is_some_and(|e| e == "par2")
+        })
         .collect();
     made.sort();
     made
@@ -73,7 +88,11 @@ mod tests {
         let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
         std::fs::write(&src, &data).unwrap();
         let made = create(dir.path(), "Show - 01", std::slice::from_ref(&src), 4096, 8);
-        let index = made.iter().find(|p| !p.to_string_lossy().contains(".vol")).unwrap().clone();
+        let index = made
+            .iter()
+            .find(|p| !p.to_string_lossy().contains(".vol"))
+            .unwrap()
+            .clone();
         // Volumes next to the index are found anyway; keep them apart, as a
         // download that hasn't fetched them yet would.
         let away = tempfile::tempdir().unwrap();
@@ -88,15 +107,30 @@ mod tests {
             .collect();
         assert!(!volumes.is_empty());
 
-        assert_eq!(check(dir.path(), &index, &[], false).unwrap(), Check::Intact);
+        assert_eq!(
+            check(dir.path(), &index, &[], false).unwrap(),
+            Check::Intact
+        );
 
         // Two lost articles' worth of zeros.
         let mut damaged = data.clone();
         damaged[10_000..20_000].fill(0);
         std::fs::write(&src, &damaged).unwrap();
-        assert_eq!(check(dir.path(), &index, &[], false).unwrap(), Check::Short { blocks: 3 });
-        assert_eq!(check(dir.path(), &index, &volumes, true).unwrap(), Check::Repaired);
-        assert!(std::fs::read(&src).unwrap() == data, "repaired byte for byte");
-        assert_eq!(check(dir.path(), &index, &[], false).unwrap(), Check::Intact);
+        assert_eq!(
+            check(dir.path(), &index, &[], false).unwrap(),
+            Check::Short { blocks: 3 }
+        );
+        assert_eq!(
+            check(dir.path(), &index, &volumes, true).unwrap(),
+            Check::Repaired
+        );
+        assert!(
+            std::fs::read(&src).unwrap() == data,
+            "repaired byte for byte"
+        );
+        assert_eq!(
+            check(dir.path(), &index, &[], false).unwrap(),
+            Check::Intact
+        );
     }
 }

@@ -8,7 +8,10 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use super::{Account, Client, Gone, Remote, RemoteFile, RemoteState, date, float, id, num, text, torrent_part};
+use super::{
+    Account, Client, Gone, Remote, RemoteFile, RemoteState, date, float, id, num, text,
+    torrent_part,
+};
 
 fn check(c: &Client, body: Value) -> Result<Value> {
     if body["status"] == "success" {
@@ -24,12 +27,19 @@ fn check(c: &Client, body: Value) -> Result<Value> {
 pub(super) async fn account(c: &Client) -> Result<Account> {
     let v = check(c, c.send(c.get("/account/info")).await?.1)?;
     let until = date(&v["premium_until"]);
-    Ok(Account { name: format!("customer {}", text(&v["customer_id"])), premium: until.is_some(), until })
+    Ok(Account {
+        name: format!("customer {}", text(&v["customer_id"])),
+        premium: until.is_some(),
+        until,
+    })
 }
 
 pub(super) async fn add(c: &Client, torrent: &[u8], name: &str) -> Result<String> {
     let form = reqwest::multipart::Form::new().part("src", torrent_part(torrent, name));
-    let v = check(c, c.send(c.post("/transfer/create").multipart(form)).await?.1)?;
+    let v = check(
+        c,
+        c.send(c.post("/transfer/create").multipart(form)).await?.1,
+    )?;
     id(&v["id"]).ok_or_else(|| c.error("no transfer ID in the reply"))
 }
 
@@ -59,16 +69,26 @@ pub(super) async fn status(c: &Client, id_: &str) -> Result<Remote> {
                 out
             } else {
                 return Ok(Remote {
-                    state: RemoteState::Failed("Premiumize put the files outside your cloud (external cloud set up?)".into()),
+                    state: RemoteState::Failed(
+                        "Premiumize put the files outside your cloud (external cloud set up?)"
+                            .into(),
+                    ),
                     files: Vec::new(),
                 });
             };
-            Ok(Remote { state: RemoteState::Ready, files })
+            Ok(Remote {
+                state: RemoteState::Ready,
+                files,
+            })
         }
         "error" => {
             let message = text(&t["message"]);
             Ok(Remote {
-                state: RemoteState::Failed(if message.is_empty() { "Premiumize: transfer failed".into() } else { format!("Premiumize: {message}") }),
+                state: RemoteState::Failed(if message.is_empty() {
+                    "Premiumize: transfer failed".into()
+                } else {
+                    format!("Premiumize: {message}")
+                }),
                 files: Vec::new(),
             })
         }
@@ -88,7 +108,12 @@ pub(super) async fn status(c: &Client, id_: &str) -> Result<Remote> {
 }
 
 async fn item(c: &Client, file: &str) -> Result<RemoteFile> {
-    let v = check(c, c.send(c.get("/item/details").query(&[("id", file)])).await?.1)?;
+    let v = check(
+        c,
+        c.send(c.get("/item/details").query(&[("id", file)]))
+            .await?
+            .1,
+    )?;
     Ok(RemoteFile {
         id: file.to_owned(),
         path: text(&v["name"]),
@@ -99,15 +124,32 @@ async fn item(c: &Client, file: &str) -> Result<RemoteFile> {
 }
 
 /// Every file under a folder (listings aren't recursive).
-async fn list_folder(c: &Client, folder: &str, prefix: &str, out: &mut Vec<RemoteFile>, depth: usize) -> Result<()> {
+async fn list_folder(
+    c: &Client,
+    folder: &str,
+    prefix: &str,
+    out: &mut Vec<RemoteFile>,
+    depth: usize,
+) -> Result<()> {
     if depth > 20 {
         return Ok(());
     }
-    let v = check(c, c.send(c.get("/folder/list").query(&[("id", folder)])).await?.1)?;
+    let v = check(
+        c,
+        c.send(c.get("/folder/list").query(&[("id", folder)]))
+            .await?
+            .1,
+    )?;
     for entry in v["content"].as_array().into_iter().flatten() {
         let name = text(&entry["name"]);
-        let path = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
-        let Some(entry_id) = id(&entry["id"]) else { continue };
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let Some(entry_id) = id(&entry["id"]) else {
+            continue;
+        };
         if entry["type"] == "folder" {
             Box::pin(list_folder(c, &entry_id, &path, out, depth + 1)).await?;
         } else {
@@ -132,11 +174,26 @@ pub(super) async fn delete(c: &Client, id_: &str) -> Result<()> {
     };
     // A single file's folder_id is the folder it landed in, not its own.
     if let Some(file) = id(&t["file_id"]) {
-        check(c, c.send(c.post("/item/delete").form(&[("id", file)])).await?.1)?;
+        check(
+            c,
+            c.send(c.post("/item/delete").form(&[("id", file)]))
+                .await?
+                .1,
+        )?;
     } else if let Some(folder) = id(&t["folder_id"]) {
-        check(c, c.send(c.post("/folder/delete").form(&[("id", folder)])).await?.1)?;
+        check(
+            c,
+            c.send(c.post("/folder/delete").form(&[("id", folder)]))
+                .await?
+                .1,
+        )?;
     }
-    check(c, c.send(c.post("/transfer/delete").form(&[("id", id_)])).await?.1)?;
+    check(
+        c,
+        c.send(c.post("/transfer/delete").form(&[("id", id_)]))
+            .await?
+            .1,
+    )?;
     Ok(())
 }
 
@@ -193,26 +250,66 @@ mod tests {
         })
         .await;
         let c = Client::with_base(reqwest::Client::new(), Provider::Premiumize, "key", &base);
-        assert_eq!(c.account().await.unwrap(), Account { name: "customer 123".into(), premium: true, until: Some("2027-01-15".into()) });
+        assert_eq!(
+            c.account().await.unwrap(),
+            Account {
+                name: "customer 123".into(),
+                premium: true,
+                until: Some("2027-01-15".into())
+            }
+        );
         let id = c.add(b"t", "Show").await.unwrap();
         match c.status(&id).await.unwrap().state {
-            RemoteState::Working { status, progress, .. } => assert_eq!((status.as_str(), progress), ("Downloading 1.2 MB/s", Some(0.25))),
+            RemoteState::Working {
+                status, progress, ..
+            } => assert_eq!(
+                (status.as_str(), progress),
+                ("Downloading 1.2 MB/s", Some(0.25))
+            ),
             other => panic!("{other:?}"),
         }
         let remote = c.status(&id).await.unwrap();
         assert_eq!(remote.state, RemoteState::Ready);
-        let files: Vec<(&str, u64, Option<&str>)> = remote.files.iter().map(|f| (f.path.as_str(), f.size, f.link.as_deref())).collect();
-        assert_eq!(files, [("Show - 01.mkv", 100, Some("https://dl.example/a")), ("Extras/NCOP.mkv", 200, Some("https://dl.example/b"))]);
-        assert_eq!(c.link(&id, &remote.files[1]).await.unwrap(), "https://dl.example/b");
+        let files: Vec<(&str, u64, Option<&str>)> = remote
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.size, f.link.as_deref()))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("Show - 01.mkv", 100, Some("https://dl.example/a")),
+                ("Extras/NCOP.mkv", 200, Some("https://dl.example/b"))
+            ]
+        );
+        assert_eq!(
+            c.link(&id, &remote.files[1]).await.unwrap(),
+            "https://dl.example/b"
+        );
         c.delete(&id).await.unwrap();
-        assert_eq!(*deleted.lock().unwrap(), ["/folder/delete f1", "/transfer/delete t1"]);
-        assert!(c.status("missing").await.unwrap_err().downcast_ref::<Gone>().is_some());
+        assert_eq!(
+            *deleted.lock().unwrap(),
+            ["/folder/delete f1", "/transfer/delete t1"]
+        );
+        assert!(
+            c.status("missing")
+                .await
+                .unwrap_err()
+                .downcast_ref::<Gone>()
+                .is_some()
+        );
     }
 
     #[tokio::test]
     async fn errors_come_with_http_200() {
         let base = mock(|_| reply(200, json!({"status": "error", "message": "API key invalid", "code": "authentication_failed"}))).await;
         let c = Client::with_base(reqwest::Client::new(), Provider::Premiumize, "k", &base);
-        assert!(c.account().await.unwrap_err().downcast_ref::<BadKey>().is_some());
+        assert!(
+            c.account()
+                .await
+                .unwrap_err()
+                .downcast_ref::<BadKey>()
+                .is_some()
+        );
     }
 }

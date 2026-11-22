@@ -25,9 +25,9 @@ use librqbit::api::TorrentIdOrHash;
 use librqbit::dht::DhtPersistenceConfig;
 use librqbit::storage::StorageFactoryExt;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerMode, ListenerOptions,
-    ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig, TorrentStatsState,
-    ValidatedTorrentMetaV1Info, torrent_from_bytes,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerMode,
+    ListenerOptions, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig,
+    TorrentStatsState, ValidatedTorrentMetaV1Info, torrent_from_bytes,
 };
 
 use crate::storage::{Registry, SelectiveStorageFactory};
@@ -92,7 +92,11 @@ pub struct Engine {
 impl Engine {
     /// Start the session on `network`. Torrents from earlier runs are
     /// restored from `state_dir` and pick up where they left off.
-    pub async fn start(state_dir: &Path, default_download_dir: PathBuf, network: &Network) -> Result<Self> {
+    pub async fn start(
+        state_dir: &Path,
+        default_download_dir: PathBuf,
+        network: &Network,
+    ) -> Result<Self> {
         std::fs::create_dir_all(state_dir)
             .with_context(|| format!("could not create {}", state_dir.display()))?;
         // Torrents restored below need their folders and selections registered
@@ -101,7 +105,11 @@ impl Engine {
         registry.load_librqbit_session(&state_dir.join("session").join("session.json"));
         // Over a VPN the DHT keeps a separate identity (node ID and port), so
         // DHT nodes can't link the VPN's address to the home one.
-        let dht_file = if network.interface.is_some() { "dht-vpn.json" } else { "dht.json" };
+        let dht_file = if network.interface.is_some() {
+            "dht-vpn.json"
+        } else {
+            "dht.json"
+        };
         let opts = SessionOptions {
             // Offline: no DHT and no trackers, so nothing even looks up a name.
             disable_trackers: network.offline,
@@ -121,13 +129,16 @@ impl Engine {
             fastresume: true,
             // No seeding: see the module docs.
             disable_upload: true,
-            listen: network.port.filter(|_| !network.offline).map(|port| ListenerOptions {
-                mode: ListenerMode::TcpOnly,
-                listen_addr: (Ipv6Addr::UNSPECIFIED, port).into(),
-                enable_upnp_port_forwarding: false,
-                announce_port: Some(port),
-                ..Default::default()
-            }),
+            listen: network
+                .port
+                .filter(|_| !network.offline)
+                .map(|port| ListenerOptions {
+                    mode: ListenerMode::TcpOnly,
+                    listen_addr: (Ipv6Addr::UNSPECIFIED, port).into(),
+                    enable_upnp_port_forwarding: false,
+                    announce_port: Some(port),
+                    ..Default::default()
+                }),
             disable_local_service_discovery: true,
             default_storage_factory: Some(SelectiveStorageFactory::new(registry.clone()).boxed()),
             ..Default::default()
@@ -178,13 +189,20 @@ impl Engine {
     pub fn existing(&self, info_hash_hex: &str) -> Option<Existing> {
         let id = TorrentIdOrHash::parse(info_hash_hex).ok()?;
         let handle = self.session.get(id)?;
-        Some(Existing { only_files: handle.only_files(), output_folder: handle.output_folder().to_owned() })
+        Some(Existing {
+            only_files: handle.only_files(),
+            output_folder: handle.output_folder().to_owned(),
+        })
     }
 
     /// The listing for a torrent already in the session (to change its files).
     pub fn listing_for(&self, handle: &TorrentHandle) -> Result<Listing> {
         let mut listing = handle.with_metadata(|m| {
-            build_listing(&m.info, m.torrent_bytes.to_vec(), handle.info_hash().as_string())
+            build_listing(
+                &m.info,
+                m.torrent_bytes.to_vec(),
+                handle.info_hash().as_string(),
+            )
         })?;
         listing.existing = Some(Existing {
             only_files: handle.only_files(),
@@ -212,7 +230,8 @@ impl Engine {
             return self.reselect(&handle, only_files).await;
         }
         // Register before adding: librqbit creates the storage while adding.
-        self.registry.set(info_hash, &output_folder, only_files.as_deref());
+        self.registry
+            .set(info_hash, &output_folder, only_files.as_deref());
         let opts = AddTorrentOptions {
             only_files: only_files.clone(),
             output_folder: Some(output_folder.to_string_lossy().into_owned()),
@@ -226,8 +245,12 @@ impl Engine {
             .await?
         {
             AddTorrentResponse::Added(..) => Ok(()),
-            AddTorrentResponse::AlreadyManaged(_, handle) => self.reselect(&handle, only_files).await,
-            AddTorrentResponse::ListOnly(_) => bail!("librqbit listed the torrent instead of adding it"),
+            AddTorrentResponse::AlreadyManaged(_, handle) => {
+                self.reselect(&handle, only_files).await
+            }
+            AddTorrentResponse::ListOnly(_) => {
+                bail!("librqbit listed the torrent instead of adding it")
+            }
         }
     }
 
@@ -242,11 +265,16 @@ impl Engine {
             (ranges, m.torrent_bytes.to_vec())
         })?;
         let all = || (0..piece_ranges.len()).collect::<HashSet<usize>>();
-        let new: HashSet<usize> = only_files.as_ref().map_or_else(all, |f| f.iter().copied().collect());
-        let old: HashSet<usize> = handle.only_files().map_or_else(all, |f| f.into_iter().collect());
+        let new: HashSet<usize> = only_files
+            .as_ref()
+            .map_or_else(all, |f| f.iter().copied().collect());
+        let old: HashSet<usize> = handle
+            .only_files()
+            .map_or_else(all, |f| f.into_iter().collect());
         let info_hash = handle.info_hash();
         let output_folder = handle.output_folder().to_owned();
-        self.registry.set(info_hash, &output_folder, only_files.as_deref());
+        self.registry
+            .set(info_hash, &output_folder, only_files.as_deref());
 
         if needs_recheck(&piece_ranges, &old, &new) {
             // A newly selected file shares a piece with one already selected.
@@ -288,7 +316,11 @@ impl Engine {
         let folder = handle.output_folder().to_owned();
         let shared_folder = folder != download_dir;
         let group: Vec<TorrentHandle> = if shared_folder {
-            self.torrents().into_iter().map(|(_, h)| h).filter(|h| h.output_folder() == folder).collect()
+            self.torrents()
+                .into_iter()
+                .map(|(_, h)| h)
+                .filter(|h| h.output_folder() == folder)
+                .collect()
         } else {
             vec![handle.clone()]
         };
@@ -300,7 +332,10 @@ impl Engine {
             h.with_metadata(|m| {
                 for (i, fi) in m.file_infos.iter().enumerate() {
                     let selected = only.as_ref().is_none_or(|o| o.contains(&i));
-                    if fi.attrs.padding || !selected || !crate::remux::is_video(&fi.relative_filename) {
+                    if fi.attrs.padding
+                        || !selected
+                        || !crate::remux::is_video(&fi.relative_filename)
+                    {
                         continue;
                     }
                     if progress.get(i).copied().unwrap_or(0) >= fi.len {
@@ -346,8 +381,13 @@ impl Engine {
 
     /// Remove a torrent from the session, optionally deleting its downloaded files.
     pub async fn remove(&self, id: TorrentId, delete_files: bool) -> Result<()> {
-        let info_hash = self.session.get(TorrentIdOrHash::Id(id)).map(|h| h.info_hash());
-        self.session.delete(TorrentIdOrHash::Id(id), delete_files).await?;
+        let info_hash = self
+            .session
+            .get(TorrentIdOrHash::Id(id))
+            .map(|h| h.info_hash());
+        self.session
+            .delete(TorrentIdOrHash::Id(id), delete_files)
+            .await?;
         if let Some(hash) = info_hash {
             self.registry.remove(&hash);
         }
@@ -386,7 +426,9 @@ pub struct SeriesFiles {
 
 /// A .torrent file's info hash, as lowercase hex.
 pub fn info_hash_of(torrent_bytes: &[u8]) -> Option<String> {
-    torrent_from_bytes(torrent_bytes).ok().map(|t| t.info_hash.as_string().to_ascii_lowercase())
+    torrent_from_bytes(torrent_bytes)
+        .ok()
+        .map(|t| t.info_hash.as_string().to_ascii_lowercase())
 }
 
 /// Whether any newly selected file shares a piece with a file that was
@@ -396,9 +438,12 @@ fn needs_recheck(
     old: &HashSet<usize>,
     new: &HashSet<usize>,
 ) -> bool {
-    let overlaps = |a: &std::ops::Range<u32>, b: &std::ops::Range<u32>| a.start < b.end && b.start < a.end;
+    let overlaps =
+        |a: &std::ops::Range<u32>, b: &std::ops::Range<u32>| a.start < b.end && b.start < a.end;
     new.difference(old).any(|&added| {
-        let Some(Some(a)) = piece_ranges.get(added) else { return false };
+        let Some(Some(a)) = piece_ranges.get(added) else {
+            return false;
+        };
         old.iter().any(|&kept| {
             kept != added && matches!(piece_ranges.get(kept), Some(Some(b)) if overlaps(a, b))
         })
@@ -415,7 +460,8 @@ async fn stop_finished_torrents(session: Arc<Session>) {
             _ = cancelled.cancelled() => return,
             _ = tick.tick() => {}
         }
-        let torrents: Vec<TorrentHandle> = session.with_torrents(|it| it.map(|(_, h)| h.clone()).collect());
+        let torrents: Vec<TorrentHandle> =
+            session.with_torrents(|it| it.map(|(_, h)| h.clone()).collect());
         for handle in torrents {
             let stats = handle.stats();
             if matches!(stats.state, TorrentStatsState::Live)
@@ -431,9 +477,14 @@ async fn stop_finished_torrents(session: Arc<Session>) {
 /// Read a .torrent file's contents without the torrent engine (Debrid
 /// downloads use this; no BitTorrent session needed).
 pub fn listing_from_bytes(torrent_bytes: Vec<u8>) -> Result<Listing> {
-    let torrent = torrent_from_bytes(&torrent_bytes).map_err(|e| anyhow::anyhow!("invalid .torrent file: {e}"))?;
+    let torrent = torrent_from_bytes(&torrent_bytes)
+        .map_err(|e| anyhow::anyhow!("invalid .torrent file: {e}"))?;
     let info_hash = torrent.info_hash.as_string();
-    let info = torrent.info.data.validate().map_err(|e| anyhow::anyhow!("invalid .torrent file: {e}"))?;
+    let info = torrent
+        .info
+        .data
+        .validate()
+        .map_err(|e| anyhow::anyhow!("invalid .torrent file: {e}"))?;
     Ok(build_listing(&info, torrent_bytes.clone(), info_hash))
 }
 
@@ -466,7 +517,13 @@ fn build_listing<B: AsRef<[u8]>>(
 pub fn sanitize_folder_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == '\0' { '_' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == '\0' {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let cleaned = cleaned.trim();
     if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
@@ -487,8 +544,14 @@ mod tests {
         let set = |v: &[usize]| v.iter().copied().collect::<HashSet<usize>>();
         assert!(needs_recheck(&ranges, &set(&[1]), &set(&[0, 1])));
         assert!(!needs_recheck(&ranges, &set(&[1]), &set(&[1, 2])));
-        assert!(!needs_recheck(&ranges, &set(&[0, 1]), &set(&[1])), "deselecting never needs it");
-        assert!(!needs_recheck(&ranges, &set(&[0]), &set(&[0, 3])), "padding files don't count");
+        assert!(
+            !needs_recheck(&ranges, &set(&[0, 1]), &set(&[1])),
+            "deselecting never needs it"
+        );
+        assert!(
+            !needs_recheck(&ranges, &set(&[0]), &set(&[0, 3])),
+            "padding files don't count"
+        );
     }
 
     #[test]

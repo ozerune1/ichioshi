@@ -51,7 +51,10 @@ fn server_config(p: &Provider) -> ServerConfig {
 }
 
 fn is_login_error(e: &NntpError) -> bool {
-    matches!(e, NntpError::Auth(_) | NntpError::AuthRequired(_) | NntpError::PermissionDenied(_))
+    matches!(
+        e,
+        NntpError::Auth(_) | NntpError::AuthRequired(_) | NntpError::PermissionDenied(_)
+    )
 }
 
 impl Providers {
@@ -78,8 +81,17 @@ impl Providers {
 
     /// How many articles to fetch at once: the main providers' connections.
     pub fn workers(&self) -> usize {
-        let main: usize = self.slots.iter().filter(|s| !s.backup).map(|s| s.connections).sum();
-        let n = if main == 0 { self.slots.iter().map(|s| s.connections).sum() } else { main };
+        let main: usize = self
+            .slots
+            .iter()
+            .filter(|s| !s.backup)
+            .map(|s| s.connections)
+            .sum();
+        let n = if main == 0 {
+            self.slots.iter().map(|s| s.connections).sum()
+        } else {
+            main
+        };
         n.clamp(1, 100)
     }
 
@@ -89,14 +101,22 @@ impl Providers {
 
     /// Every provider rejected the login: the message for the first.
     pub fn all_logins_failed(&self) -> Option<String> {
-        let failed: Vec<String> = self.slots.iter().filter_map(|s| s.login_failed.lock().unwrap().clone()).collect();
+        let failed: Vec<String> = self
+            .slots
+            .iter()
+            .filter_map(|s| s.login_failed.lock().unwrap().clone())
+            .collect();
         (!self.slots.is_empty() && failed.len() == self.slots.len()).then(|| failed[0].clone())
     }
 
     /// Fetch an article's body (dot-unstuffed, still yEnc), from the first
     /// provider that has it, skipping the providers in `skip`. Returns the
     /// provider it came from.
-    pub async fn body(&self, message_id: &str, skip: &[usize]) -> Result<(Vec<u8>, usize), FetchError> {
+    pub async fn body(
+        &self,
+        message_id: &str,
+        skip: &[usize],
+    ) -> Result<(Vec<u8>, usize), FetchError> {
         let mut unreachable: Option<String> = None;
         for (i, slot) in self.slots.iter().enumerate() {
             if skip.contains(&i) {
@@ -113,7 +133,8 @@ impl Providers {
                     Err(e) => {
                         let why = format!("{}: {e}", slot.name);
                         if is_login_error(&e) {
-                            *slot.login_failed.lock().unwrap() = Some(format!("{} rejected the login", slot.name));
+                            *slot.login_failed.lock().unwrap() =
+                                Some(format!("{} rejected the login", slot.name));
                         }
                         unreachable = Some(why);
                         break;
@@ -130,7 +151,8 @@ impl Providers {
                     }
                     Ok(Err(e)) if is_login_error(&e) => {
                         slot.pool.discard(pooled);
-                        *slot.login_failed.lock().unwrap() = Some(format!("{} rejected the login", slot.name));
+                        *slot.login_failed.lock().unwrap() =
+                            Some(format!("{} rejected the login", slot.name));
                         unreachable = Some(format!("{}: {e}", slot.name));
                         break;
                     }
@@ -140,7 +162,11 @@ impl Providers {
                     }
                     Err(_) => {
                         slot.pool.discard(pooled);
-                        unreachable = Some(format!("{}: no answer for {}s", slot.name, BODY_TIMEOUT.as_secs()));
+                        unreachable = Some(format!(
+                            "{}: no answer for {}s",
+                            slot.name,
+                            BODY_TIMEOUT.as_secs()
+                        ));
                     }
                 }
             }
@@ -161,6 +187,10 @@ pub async fn check(provider: &Provider) -> Result<()> {
         }
         Ok(Err(e)) if is_login_error(&e) => Err(anyhow!("the server rejected the login ({e})")),
         Ok(Err(e)) => Err(anyhow!("{e}")),
-        Err(_) => Err(anyhow!("no answer from {}:{}", provider.host, provider.port)),
+        Err(_) => Err(anyhow!(
+            "no answer from {}:{}",
+            provider.host,
+            provider.port
+        )),
     }
 }
