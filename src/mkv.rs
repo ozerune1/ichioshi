@@ -115,6 +115,8 @@ pub struct Keep {
     pub tracks: Vec<u64>,
     /// Kept tracks to mark as default.
     pub default: Vec<u64>,
+    /// Kept tracks to mark as not default.
+    pub not_default: Vec<u64>,
     /// The new Segment title (none if empty).
     pub title: String,
     /// Keep attachments (fonts for styled subtitles).
@@ -185,6 +187,119 @@ pub fn probe(path: &Path) -> Result<MkvInfo> {
     Ok(info)
 }
 
+/// How a file's default tracks were changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultsEdit {
+    /// They already were as asked.
+    Unchanged,
+    /// Only the track list was rewritten, in its own space and the padding
+    /// after it: a few bytes at the start of the file.
+    InPlace,
+    /// The track list didn't fit, so the whole file was rewritten.
+    Rewritten,
+}
+
+/// Make the audio and subtitle tracks in `on` the default ones and every
+/// other audio and subtitle track not default. Nothing is removed, so the
+/// other tracks are still there to switch to. Video and other tracks keep
+/// their flags.
+///
+/// mkvmerge leaves padding (a Void) after the track list, and leaves out
+/// default flags that are on, so turning one off adds three bytes; those
+/// come out of the padding and the rest of the file stays put. Without
+/// room, the file is rewritten (through a temporary copy beside it).
+pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit> {
+    let src = Source::open(path)?;
+    let layout = layout(&src, false)?;
+    let at = layout.top.iter().position(|t| t.id == TRACKS).context("no track list before the video data")?;
+    let tracks = &layout.top[at];
+    let data = src.read(tracks.data_start, tracks.end)?;
+
+    let mut changed = false;
+    let mut body = Vec::new();
+    let mut numbers = Vec::new();
+    let mut switchable = Vec::new();
+    for e in children(&data) {
+        match e.id {
+            // A checksum would no longer match; it's optional.
+            CRC32 | VOID => changed = true,
+            TRACK_ENTRY => {
+                let t = parse_track(e.data);
+                numbers.push(t.number);
+                let media = matches!(t.kind, TrackKind::Audio | TrackKind::Subtitles);
+                if media {
+                    switchable.push(t.number);
+                }
+                let want = on.contains(&t.number);
+                if !media || t.default == want {
+                    body.extend_from_slice(e.raw);
+                    continue;
+                }
+                changed = true;
+                let mut fields = Vec::new();
+                let mut had_flag = false;
+                for f in children(e.data) {
+                    match f.id {
+                        CRC32 | VOID => {}
+                        FLAG_DEFAULT => {
+                            fields.extend(uint_element(FLAG_DEFAULT, u64::from(want)));
+                            had_flag = true;
+                        }
+                        _ => fields.extend_from_slice(f.raw),
+                    }
+                }
+                if !had_flag {
+                    fields.extend(uint_element(FLAG_DEFAULT, u64::from(want)));
+                }
+                body.extend(element(TRACK_ENTRY, &fields));
+            }
+            _ => body.extend_from_slice(e.raw),
+        }
+    }
+    if !changed {
+        return Ok(DefaultsEdit::Unchanged);
+    }
+    let new_tracks = element(TRACKS, &body);
+    let room_end = match layout.top.get(at + 1) {
+        Some(next) if next.id == VOID && next.start == tracks.end => next.end,
+        _ => tracks.end,
+    };
+    let room = (room_end - tracks.start) as usize;
+    let fits = new_tracks.len() == room || new_tracks.len() + 2 <= room;
+    if fits {
+        let mut bytes = new_tracks;
+        if bytes.len() < room {
+            let pad = room - bytes.len();
+            bytes.extend(void(pad));
+        }
+        drop(src);
+        let file = std::fs::OpenOptions::new().write(true).open(path).with_context(|| format!("opening {}", path.display()))?;
+        write_all_at(&file, &bytes, tracks.start)?;
+        file.sync_data()?;
+        return Ok(DefaultsEdit::InPlace);
+    }
+
+    // No room: rewrite the file with every track, flags changed.
+    let title = probe(path)?.title.unwrap_or_default();
+    let keep = Keep {
+        tracks: numbers,
+        default: switchable.iter().copied().filter(|n| on.contains(n)).collect(),
+        not_default: switchable.iter().copied().filter(|n| !on.contains(n)).collect(),
+        title,
+        attachments: true,
+    };
+    let mut tmp_name = path.file_name().context("no file name")?.to_os_string();
+    tmp_name.push(".defaults.tmp");
+    let tmp = path.with_file_name(tmp_name);
+    let result = remux(path, &tmp, &keep, &AtomicBool::new(false), |_| {});
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(DefaultsEdit::Rewritten)
+}
+
 /// Write a copy of `input` to `output` with only `keep.tracks`. `progress`
 /// gets 0.0–1.0; setting `cancel` stops it with an error.
 pub fn remux(
@@ -249,14 +364,20 @@ pub fn remux(
         if !kept_numbers.contains(&track.number) {
             continue;
         }
-        let make_default = keep.default.contains(&track.number);
+        let set_default = if keep.default.contains(&track.number) {
+            Some(true)
+        } else if keep.not_default.contains(&track.number) {
+            Some(false)
+        } else {
+            None
+        };
         let mut fields: Vec<u8> = children(entry.data)
             .iter()
-            .filter(|e| !matches!(e.id, CRC32 | VOID) && !(make_default && e.id == FLAG_DEFAULT))
+            .filter(|e| !matches!(e.id, CRC32 | VOID) && !(set_default.is_some() && e.id == FLAG_DEFAULT))
             .flat_map(|e| e.raw.iter().copied())
             .collect();
-        if make_default {
-            fields.extend(uint_element(FLAG_DEFAULT, 1));
+        if let Some(on) = set_default {
+            fields.extend(uint_element(FLAG_DEFAULT, u64::from(on)));
         }
         body.extend(element(TRACK_ENTRY, &fields));
     }
@@ -655,6 +776,8 @@ impl Source {
 /// An element directly inside the Segment.
 struct Top {
     id: u32,
+    /// Where its header starts.
+    start: u64,
     data_start: u64,
     end: u64,
 }
@@ -706,7 +829,7 @@ fn layout(src: &Source, all: bool) -> Result<Layout> {
             None if h.id == CLUSTER => unknown_cluster_end(src, data_start, segment_end)?,
             None => segment_end,
         };
-        top.push(Top { id: h.id, data_start, end });
+        top.push(Top { id: h.id, start: pos, data_start, end });
         if !all && h.id == CLUSTER {
             break;
         }
@@ -802,6 +925,22 @@ fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
 }
 
+#[cfg(unix)]
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+}
+
+#[cfg(windows)]
+fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        let n = file.seek_write(buf, offset)?;
+        buf = &buf[n..];
+        offset += n as u64;
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
@@ -820,6 +959,91 @@ fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A small Matroska file: tracks `(number, type, explicit FlagDefault)`,
+    /// `void` bytes of padding after the track list (0 for none), then a
+    /// cluster of video blocks.
+    fn synthetic(entries: &[(u64, u64, Option<u64>)], void_len: usize) -> Vec<u8> {
+        let mut seg = element(INFO, &uint_element(0x2A_D7B1, 1_000_000));
+        let mut tracks = Vec::new();
+        for &(n, kind, default) in entries {
+            let codec: &[u8] = match kind {
+                1 => b"V_MPEG4/ISO/AVC",
+                2 => b"A_AAC",
+                _ => b"S_TEXT/UTF8",
+            };
+            let mut f = uint_element(TRACK_NUMBER, n);
+            f.extend(uint_element(TRACK_UID, n + 100));
+            f.extend(uint_element(TRACK_TYPE, kind));
+            f.extend(element(CODEC_ID, codec));
+            if let Some(d) = default {
+                f.extend(uint_element(FLAG_DEFAULT, d));
+            }
+            tracks.extend(element(TRACK_ENTRY, &f));
+        }
+        seg.extend(element(TRACKS, &tracks));
+        if void_len > 0 {
+            seg.extend(void(void_len));
+        }
+        let mut cluster = uint_element(TIMESTAMP, 0);
+        for i in 0..4u8 {
+            cluster.extend(element(SIMPLE_BLOCK, &[0x81, 0, i, 0x80, b'f', b'r', b'a', b'm', b'e', b'0' + i]));
+        }
+        seg.extend(element(CLUSTER, &cluster));
+        let mut file = element(EBML, &element(DOC_TYPE, b"matroska"));
+        file.extend(element(SEGMENT, &seg));
+        file
+    }
+
+    fn defaults(path: &Path) -> Vec<(u64, bool)> {
+        probe(path).unwrap().tracks.iter().map(|t| (t.number, t.default)).collect()
+    }
+
+    const TRACKS_1_TO_5: [(u64, u64, Option<u64>); 5] = [(1, 1, None), (2, 2, None), (3, 2, None), (4, 17, None), (5, 17, Some(0))];
+
+    #[test]
+    fn sets_default_tracks_in_place_using_the_padding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.mkv");
+        let original = synthetic(&TRACKS_1_TO_5, 64);
+        std::fs::write(&path, &original).unwrap();
+        let on: HashSet<u64> = [3, 5].into();
+        assert_eq!(set_default_tracks(&path, &on).unwrap(), DefaultsEdit::InPlace);
+        assert_eq!(defaults(&path), [(1, true), (2, false), (3, true), (4, false), (5, true)]);
+        let edited = std::fs::read(&path).unwrap();
+        assert_eq!(edited.len(), original.len(), "same size");
+        let cluster = original.windows(4).position(|w| w == id_bytes(CLUSTER).as_slice()).unwrap();
+        assert_eq!(edited[cluster..], original[cluster..], "everything after the padding untouched");
+        assert_eq!(set_default_tracks(&path, &on).unwrap(), DefaultsEdit::Unchanged);
+        // And back: the flags are now explicit, so this needs no padding at all.
+        assert_eq!(set_default_tracks(&path, &[2, 4].into()).unwrap(), DefaultsEdit::InPlace);
+        assert_eq!(defaults(&path), [(1, true), (2, true), (3, false), (4, true), (5, false)]);
+    }
+
+    #[test]
+    fn flips_explicit_flags_without_padding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b.mkv");
+        let explicit = [(1, 1, Some(1)), (2, 2, Some(1)), (3, 2, Some(0)), (4, 17, Some(0))];
+        std::fs::write(&path, synthetic(&explicit, 0)).unwrap();
+        assert_eq!(set_default_tracks(&path, &[3, 4].into()).unwrap(), DefaultsEdit::InPlace);
+        assert_eq!(defaults(&path), [(1, true), (2, false), (3, true), (4, true)]);
+    }
+
+    #[test]
+    fn rewrites_the_file_when_there_is_no_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.mkv");
+        std::fs::write(&path, synthetic(&TRACKS_1_TO_5, 0)).unwrap();
+        assert_eq!(set_default_tracks(&path, &[3].into()).unwrap(), DefaultsEdit::Rewritten);
+        assert_eq!(defaults(&path), [(1, true), (2, false), (3, true), (4, false), (5, false)]);
+        let rewritten = std::fs::read(&path).unwrap();
+        for i in 0..4u8 {
+            let frame = [b'f', b'r', b'a', b'm', b'e', b'0' + i];
+            assert!(rewritten.windows(6).any(|w| w == frame), "frame {i} kept");
+        }
+        assert!(!dir.path().join("c.mkv.defaults.tmp").exists());
+    }
 
     #[test]
     fn variable_length_integers() {

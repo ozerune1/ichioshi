@@ -528,6 +528,7 @@ pub fn remux(item: &PlannedFile, cancel: &AtomicBool, mut progress: impl FnMut(f
     let mut keep = mkv::Keep {
         tracks: item.video.clone(),
         default: vec![audio.id],
+        not_default: Vec::new(),
         title: item.title.clone(),
         attachments: item.keep_attachments,
     };

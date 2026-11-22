@@ -12,6 +12,7 @@ mod live_tests;
 mod mock_http;
 mod nyaa;
 mod playlist;
+mod prefs;
 mod remux;
 mod seadex;
 mod storage;
