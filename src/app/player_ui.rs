@@ -264,6 +264,7 @@ impl App {
             return;
         };
         let before = series.watched.get(&playing.episode).is_some_and(|w| w.done);
+        let (id, episode) = (playing.series, playing.episode);
         series.watched.insert(
             playing.episode,
             Watch {
@@ -274,6 +275,9 @@ impl App {
             },
         );
         self.library.save_or_warn();
+        if done && !before {
+            self.sync_watched(id, episode);
+        }
     }
 
     /// The next (or previous) episode on disk.

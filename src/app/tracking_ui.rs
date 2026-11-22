@@ -2,7 +2,7 @@
 //! (status, score, episodes watched) from the library: on each series card
 //! and each series page. A change goes to every list you're signed in to.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +44,9 @@ pub(super) struct TrackingState {
     pub(super) signing_in: Option<SignIn>,
     seq: u64,
     pub(super) dialog: bool,
+    /// Episodes finished in the player, to put on the lists once they're
+    /// read (by AniList ID: the latest episode).
+    pub(super) to_sync: BTreeMap<u64, u32>,
 }
 
 pub(super) enum Account {
@@ -121,6 +124,7 @@ impl TrackingState {
             signing_in: None,
             seq: 0,
             dialog: false,
+            to_sync: BTreeMap::new(),
         }
     }
 
@@ -241,6 +245,44 @@ impl App {
         }
         if self.tracking.signed_in(Service::Mal) {
             self.look_up_mal_ids();
+        }
+        self.sync_watched_now();
+    }
+
+    /// An episode was finished in the player: put it on the lists.
+    pub(super) fn sync_watched(&mut self, id: u64, episode: u32) {
+        if !self.tracking.config.sync_watched || !self.tracking.any() {
+            return;
+        }
+        // Numbered past the end (counted from the show's start, say): which
+        // episode it is here isn't clear, so leave the lists be.
+        if self.episode_count(id).is_some_and(|n| n > 0 && episode > n) {
+            return;
+        }
+        let e = self.tracking.to_sync.entry(id).or_insert(episode);
+        *e = (*e).max(episode);
+    }
+
+    /// Sync finished episodes once the lists (and MyAnimeList IDs) are in:
+    /// saving before then could overwrite what's on them.
+    fn sync_watched_now(&mut self) {
+        let ready: Vec<(u64, u32)> = self
+            .tracking
+            .to_sync
+            .iter()
+            .filter(|(id, _)| !self.tracking.pending(**id))
+            .map(|(id, ep)| (*id, *ep))
+            .collect();
+        for (id, episode) in ready {
+            self.tracking.to_sync.remove(&id);
+            let saved = self.change_list_entry(id, Change::Watched(episode));
+            if !saved.is_empty() {
+                let names: Vec<&str> = saved.iter().map(|s| s.name()).collect();
+                self.set_info(format!(
+                    "Episode {episode} watched: updated {}",
+                    names.join(" and ")
+                ));
+            }
         }
     }
 
@@ -451,7 +493,9 @@ impl App {
                 self.tracking.errors.remove(&service);
                 self.set_info(format!("Signed out of {}", service.name()));
             }
-            TrackingAction::Change { id, change } => self.change_list_entry(id, change),
+            TrackingAction::Change { id, change } => {
+                self.change_list_entry(id, change);
+            }
             TrackingAction::Refresh => self.tracking.fetched.clear(),
         }
     }
@@ -525,8 +569,9 @@ impl App {
 
     /// Change an entry on every list signed in to (each keeps its other
     /// fields); shown at once, put back if saving fails.
-    fn change_list_entry(&mut self, id: u64, change: Change) {
+    fn change_list_entry(&mut self, id: u64, change: Change) -> Vec<Service> {
         let episodes = self.episode_count(id);
+        let mut saved = Vec::new();
         for service in self.tracking.services() {
             let Some(key) = self.tracking.key(service, id) else {
                 continue;
@@ -542,6 +587,7 @@ impl App {
                 .or_default()
                 .insert(key, after.clone());
             self.tracking.saving.insert((service, key));
+            saved.push(service);
             match service {
                 Service::AniList => {
                     let Some(s) = self.tracking.anilist.clone() else {
@@ -573,6 +619,7 @@ impl App {
                 }
             }
         }
+        saved
     }
 
     // ── Drawing ───────────────────────────────────────────────────────
@@ -619,6 +666,12 @@ impl App {
                     self.account_box(ui, service, actions);
                 });
             }
+            ui.add_space(8.0);
+            ui.checkbox(
+                &mut self.tracking.config.sync_watched,
+                "Update episodes watched when I finish one in the player",
+            )
+            .on_hover_text("Plan to watch, on hold or dropped become watching; the last episode completes it.");
             ui.add_space(8.0);
             if ui.button("Close").clicked() {
                 actions.push(Action::Tracking(TrackingAction::CloseDialog));

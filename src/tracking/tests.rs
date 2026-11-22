@@ -68,6 +68,51 @@ fn changes_entries() {
     );
 }
 
+#[test]
+fn watched_episodes_move_entries_along() {
+    let e = |status, score, progress| Entry {
+        status,
+        score,
+        progress,
+    };
+    let watched = |entry: Option<Entry>, n, total| Change::Watched(n).apply(entry.as_ref(), total);
+    use Status::*;
+    // Plan to watch, on hold or dropped: watching now; the score stays.
+    assert_eq!(
+        watched(Some(e(Planning, 8.0, 0)), 1, Some(12)),
+        e(Watching, 8.0, 1)
+    );
+    assert_eq!(
+        watched(Some(e(Paused, 0.0, 4)), 5, Some(12)),
+        e(Watching, 0.0, 5)
+    );
+    assert_eq!(
+        watched(Some(e(Dropped, 3.0, 2)), 3, None),
+        e(Watching, 3.0, 3)
+    );
+    // Never back (an old episode again changes nothing).
+    assert_eq!(
+        watched(Some(e(Watching, 7.0, 6)), 2, Some(12)),
+        e(Watching, 7.0, 6)
+    );
+    assert_eq!(
+        watched(Some(e(Completed, 9.0, 12)), 3, Some(12)),
+        e(Completed, 9.0, 12)
+    );
+    // The last episode completes it, rewatching too.
+    assert_eq!(
+        watched(Some(e(Watching, 8.0, 11)), 12, Some(12)),
+        e(Completed, 8.0, 12)
+    );
+    assert_eq!(
+        watched(Some(e(Rewatching, 8.0, 5)), 12, Some(12)),
+        e(Completed, 8.0, 12)
+    );
+    // Not on the list: added, watching.
+    assert_eq!(watched(None, 1, Some(12)), e(Watching, 0.0, 1));
+    assert_eq!(watched(None, 1, Some(1)), e(Completed, 0.0, 1));
+}
+
 /// A browser doing what the sign-in page asks: open it, run its script.
 async fn anilist_browser(url: String, token: &str) {
     let q = query_of(&url);
