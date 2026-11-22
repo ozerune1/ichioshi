@@ -56,6 +56,7 @@ impl App {
         }
         self.move_finished_torrents();
         self.move_finished_jobs();
+        self.hand_over_failed();
     }
 
     /// The preferences that apply to a series.

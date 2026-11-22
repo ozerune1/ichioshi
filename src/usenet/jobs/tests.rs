@@ -7,7 +7,7 @@ use super::*;
 use crate::debrid::jobs::tests::make_torrent;
 use crate::mock_http::{Resp, mock};
 use crate::usenet::Provider;
-use crate::usenet::fake::{FakeProvider, Options, Upload, upload};
+use crate::usenet::fake::{FakeProvider, Options, Upload, upload, upload_per_file};
 use crate::usenet::indexers::{Indexer, Indexers, NzbLink};
 
 const TORRENT: &str = "[Group] Show S01";
@@ -177,6 +177,42 @@ async fn moves_to_the_other_indexers_upload_when_one_cannot_be_repaired() {
     assert_eq!(v.job.nzb, 1);
     assert_eq!(v.source(), Some("TsukiHime"));
     assert!(std::fs::read(out(dir.path()).join("Show - 01.mkv")).unwrap() == r.data[0]);
+}
+
+#[tokio::test]
+async fn repairs_an_episode_with_its_own_par2_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = release();
+    let files: Vec<(&str, &[u8])> = EPISODES.iter().zip(&r.data).map(|((n, _), d)| (*n, d.as_slice())).collect();
+    let up = upload_per_file("ps", &files, 16_000, 4096, 12);
+    let fake = FakeProvider::start(up.articles.clone(), Options::default()).await;
+    fake.lose(&up.ids("Show - 02.mkv")[1..3]);
+    let links = nzb_server(vec![up.nzb()]).await;
+    let m = manager(dir.path(), vec![fake.provider("Fake")]);
+
+    // Just episode 2: its own set repairs it, without the rest of the batch.
+    m.add(&r.listing, &[1], out(dir.path()), links).unwrap();
+    let v = wait(&m, "done", is_done).await;
+    assert_eq!(v.live.missing, 2);
+    assert!(std::fs::read(out(dir.path()).join("Show - 02.mkv")).unwrap() == r.data[1]);
+    let asked = fake.requests.lock().unwrap().clone();
+    let other_sets = up.files.iter().filter(|f| f.is_par2() && !f.name.starts_with("Show - 02."));
+    assert!(other_sets.flat_map(|f| &f.segments).all(|s| !asked.contains(&s.message_id)), "only episode 2's recovery data");
+}
+
+#[tokio::test]
+async fn skips_another_indexers_copy_of_the_same_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = release();
+    let up = post("dup", &r);
+    let fake = FakeProvider::start(up.articles.clone(), Options::default()).await;
+    // Can't be repaired: one episode of a batch with one PAR2 set.
+    fake.lose(&up.ids("Show - 01.mkv")[..1]);
+    let links = nzb_server(vec![up.nzb(), up.nzb()]).await;
+    let m = manager(dir.path(), vec![fake.provider("Fake")]);
+    m.add(&r.listing, &[0], out(dir.path()), links).unwrap();
+    let v = wait(&m, "failed", |v| matches!(v.live.phase, Phase::Failed(_))).await;
+    assert_eq!(v.live.phase, Phase::Failed("TsukiHime's NZB is the same upload as AnimeTosho's".into()));
 }
 
 #[tokio::test]

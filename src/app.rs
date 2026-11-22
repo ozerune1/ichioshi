@@ -27,12 +27,14 @@ use crate::usenet::indexers::NzbLink;
 
 mod debrid_ui;
 mod drive_ui;
+mod handover;
 mod library_ui;
 mod playlist_page;
 mod remux_page;
 mod usenet_ui;
 mod vpn_ui;
 use debrid_ui::DebridState;
+use handover::Handover;
 use library_ui::{LibraryState, PagesState};
 use drive_ui::DriveState;
 use playlist_page::PlaylistPage;
@@ -117,6 +119,7 @@ enum Msg {
     Moved { key: String, name: String, result: Result<Vec<(PathBuf, PathBuf)>, String> },
     DefaultsApplied { anilist_id: u64, rel: String, applied: crate::library::Applied },
     DefaultsDone,
+    HandedOver(Result<String, String>),
     Details { id: u64, result: Result<crate::library::Details, String> },
     SeriesEntry { id: u64, result: Result<Option<seadex::Entry>, String> },
     UsenetChecked { id: u64, seq: u64, result: Result<(), String> },
@@ -442,6 +445,8 @@ pub struct App {
     lib: LibraryState,
     /// The library and series pages.
     pages: PagesState,
+    /// Failed downloads handed on to the next way of getting them.
+    handover: Handover,
     remux_seq: u64,
     /// Remuxed episodes to export together.
     playlist: Playlist,
@@ -506,6 +511,7 @@ impl App {
             library,
             lib: LibraryState::default(),
             pages: PagesState::default(),
+            handover: Handover::default(),
             remux_seq: 0,
             playlist: Playlist::load(state_dir.join("playlist.json")),
             playlist_seq: 0,
@@ -707,6 +713,7 @@ impl App {
                 Msg::Moved { key, name, result } => self.handle_moved(key, name, result),
                 Msg::DefaultsApplied { anilist_id, rel, applied } => self.handle_defaults_applied(anilist_id, rel, applied),
                 Msg::DefaultsDone => self.defaults_done(),
+                Msg::HandedOver(result) => self.handled_over(result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
             }

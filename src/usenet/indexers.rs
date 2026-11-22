@@ -115,26 +115,65 @@ impl Indexers {
         })
     }
 
-    /// Download an NZB, unpacking it if it's gzipped.
+    /// Download an NZB, unpacking it if it's gzipped. An NZB that isn't
+    /// there or is damaged comes back as [`Unusable`]: trying again won't help.
     pub async fn fetch_nzb(&self, link: &NzbLink) -> Result<Vec<u8>> {
-        let resp = self
-            .http
-            .get(&link.url)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await
-            .with_context(|| format!("could not reach {}", link.indexer.name()))?;
-        if !resp.status().is_success() {
-            bail!("{} answered HTTP {} for the NZB", link.indexer.name(), resp.status());
+        let name = link.indexer.name();
+        let mut urls = vec![link.url.clone()];
+        // TsukiHime keeps the NZBs it took over from AnimeTosho under /tosho/.
+        if link.indexer == Indexer::TsukiHime && !link.url.contains("/tosho/") {
+            urls.push(link.url.replacen("/nzbs/", "/tosho/nzbs/", 1));
         }
-        let bytes = resp.bytes().await?.to_vec();
-        if bytes.starts_with(&[0x1f, 0x8b]) {
-            let mut out = Vec::new();
-            flate2::read::GzDecoder::new(bytes.as_slice()).read_to_end(&mut out).context("could not unpack the NZB")?;
-            return Ok(out);
+        for url in &urls {
+            let resp = self
+                .http
+                .get(url)
+                .timeout(Duration::from_secs(60))
+                .send()
+                .await
+                .with_context(|| format!("could not reach {name}"))?;
+            if matches!(resp.status().as_u16(), 404 | 410) {
+                continue;
+            }
+            if !resp.status().is_success() {
+                bail!("{name} answered HTTP {} for the NZB", resp.status());
+            }
+            return unpack(name, resp.bytes().await?.to_vec());
         }
-        Ok(bytes)
+        Err(anyhow::Error::new(Unusable(format!("{name} doesn't have the NZB any more"))))
     }
+}
+
+/// An NZB that can't be used: gone, cut off, or damaged.
+#[derive(Debug)]
+pub struct Unusable(pub String);
+
+impl std::fmt::Display for Unusable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unusable {}
+
+/// Gunzip if needed, and check the NZB is whole (some are cut off).
+fn unpack(name: &str, bytes: Vec<u8>) -> Result<Vec<u8>> {
+    let text = if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut out = Vec::new();
+        if flate2::read::GzDecoder::new(bytes.as_slice()).read_to_end(&mut out).is_err() {
+            return Err(anyhow::Error::new(Unusable(format!("{name}'s NZB is cut off"))));
+        }
+        out
+    } else {
+        bytes
+    };
+    if !String::from_utf8_lossy(&text).trim_end().ends_with("</nzb>") {
+        return Err(anyhow::Error::new(Unusable(format!("{name}'s NZB is cut off"))));
+    }
+    Ok(text)
+}
+
+impl Indexers {
 }
 
 #[cfg(test)]
@@ -170,7 +209,10 @@ pub(crate) mod tests {
                 ),
                 p if p.starts_with("/tk/v1/torrents/") => reply(404, json!({"detail": "Torrent not found"})),
                 "/at/nzb/706852" => Resp::binary(200, nzb.clone()),
-                p if p.starts_with("/tks/nzbs/41407/") => {
+                p if p.starts_with("/at/nzb/") => reply(404, json!({"error": "not found"})),
+                p if p.starts_with("/tks/nzbs/41407/") => reply(404, json!({"detail": "Not found"})),
+                // Taken over from AnimeTosho: under /tosho/.
+                p if p.starts_with("/tks/tosho/nzbs/41407/") => {
                     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
                     std::io::Write::write_all(&mut gz, &nzb).unwrap();
                     Resp::binary(200, gz.finish().unwrap())
@@ -185,16 +227,33 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn finds_a_release_on_both_and_fetches_its_nzbs() {
-        let idx = mock_indexers("complete", true, b"<nzb/>".to_vec()).await;
+        let nzb = b"<nzb>\n</nzb>\n".to_vec();
+        let idx = mock_indexers("complete", true, nzb.clone()).await;
         let links = idx.lookup(&HASH.to_uppercase(), Some(2189234)).await;
         assert_eq!(links.iter().map(|l| l.indexer).collect::<Vec<_>>(), [Indexer::AnimeTosho, Indexer::TsukiHime]);
         assert!(links[1].url.ends_with(&format!("/tks/nzbs/41407/{HASH}.nzb.gz")));
         for link in &links {
-            assert_eq!(idx.fetch_nzb(link).await.unwrap(), b"<nzb/>", "{link:?}");
+            assert_eq!(idx.fetch_nzb(link).await.unwrap(), nzb, "{link:?}");
         }
         // Unknown releases, and junk hashes, have none.
         assert!(idx.lookup(&"0".repeat(40), Some(1)).await.is_empty());
         assert!(idx.lookup("not-a-hash", None).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nzbs_that_are_gone_or_cut_off_are_unusable() {
+        // Cut off mid-way, as some of TsukiHime's are.
+        let idx = mock_indexers("complete", true, b"<nzb>\n<file subject=\"x\">".to_vec()).await;
+        let links = idx.lookup(HASH, None).await;
+        for link in &links {
+            let e = idx.fetch_nzb(link).await.unwrap_err();
+            assert!(e.downcast_ref::<Unusable>().is_some(), "{e:#}");
+            assert!(e.to_string().ends_with("NZB is cut off"), "{e}");
+        }
+        let gone = NzbLink { indexer: Indexer::AnimeTosho, url: links[0].url.replace("706852", "1") };
+        let e = idx.fetch_nzb(&gone).await.unwrap_err();
+        assert_eq!(e.to_string(), "AnimeTosho doesn't have the NZB any more");
+        assert!(e.downcast_ref::<Unusable>().is_some());
     }
 
     #[tokio::test]

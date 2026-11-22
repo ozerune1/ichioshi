@@ -41,6 +41,15 @@ impl Upload {
 /// Post `files` in articles of `part` bytes, with a PAR2 set of `block`-byte
 /// blocks and `recovery` recovery blocks. `tag` keeps message IDs unique.
 pub fn upload(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u32) -> Upload {
+    post(tag, files, part, block, recovery, false)
+}
+
+/// Like [`upload`], with a PAR2 set for each file (as AnimeTosho does).
+pub fn upload_per_file(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u32) -> Upload {
+    post(tag, files, part, block, recovery, true)
+}
+
+fn post(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recovery: u32, per_file: bool) -> Upload {
     let dir = tempfile::tempdir().unwrap();
     let paths: Vec<PathBuf> = files
         .iter()
@@ -50,8 +59,20 @@ pub fn upload(tag: &str, files: &[(&str, &[u8])], part: usize, block: u64, recov
             p
         })
         .collect();
-    let stem = files[0].0.rsplit_once('.').map_or(files[0].0, |(s, _)| s);
-    let par2 = super::repair::create(dir.path(), stem, &paths, block, recovery);
+    let stem = |name: &str| name.rsplit_once('.').map_or(name.to_owned(), |(s, _)| s.to_owned());
+    let par2 = if per_file {
+        let made: Vec<PathBuf> = files
+            .iter()
+            .zip(&paths)
+            .flat_map(|((name, _), p)| super::repair::create(dir.path(), &stem(name), std::slice::from_ref(p), block, recovery))
+            .collect();
+        let mut made = made;
+        made.sort();
+        made.dedup();
+        made
+    } else {
+        super::repair::create(dir.path(), &stem(files[0].0), &paths, block, recovery)
+    };
     let mut all: Vec<(String, Vec<u8>)> = files.iter().map(|(n, d)| ((*n).to_owned(), d.to_vec())).collect();
     for p in par2 {
         all.push((p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(&p).unwrap()));

@@ -1274,3 +1274,56 @@ fn library_and_series_pages() {
     assert!(library.join("Frieren").join("Frieren - 01.mkv").exists(), "files kept");
     assert!(matches!(h.state().page, Page::Home));
 }
+
+/// A download that can't finish one way is handed on: Usenet (its NZB is
+/// gone) to the debrid service (which rejects the key), then to BitTorrent
+/// here, which is started for it.
+#[test]
+#[ignore = "renders screenshots"]
+fn failed_downloads_fall_back_to_torrents() {
+    use crate::debrid::jobs::tests::make_torrent;
+    use crate::debrid::{Config, Provider};
+    use crate::mock_http::mock;
+    use crate::mock_http::reply;
+    use crate::usenet::fake::{FakeProvider, Options};
+    use crate::usenet::indexers::{Indexer, NzbLink};
+    use serde_json::json;
+
+    let base = screens_dir("handover-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let torrent = make_torrent("[Group] Show S01", &[("Show - 01.mkv", 50_000)]);
+    let hash = info_hash_of(&torrent).unwrap();
+    let listing = crate::engine::listing_from_bytes(torrent).unwrap();
+    let server = rt.block_on(mock(|req| match req.target.split('?').next().unwrap() {
+        "/nzb/gone" => reply(404, json!({"error": "not found"})),
+        _ => reply(403, json!({"success": false, "error": "BAD_TOKEN", "detail": "The token is invalid.", "data": null})),
+    }));
+    let fake = rt.block_on(FakeProvider::start(Default::default(), Options::default()));
+    let mut usenet = crate::usenet::Config::default();
+    usenet.add(fake.provider("Fake News"));
+    usenet.save(&base.join("state").join("usenet.json")).unwrap();
+    // TorBox mode, so BitTorrent isn't running (the key is added below, for the mock).
+    Config { enabled: true, provider: Provider::TorBox, ..Default::default() }.save(&base.join("state").join("debrid.json")).unwrap();
+
+    let mut h = harness(&base, rt.handle().clone());
+    h.run_steps(3);
+    assert!(matches!(h.state().engine, EngineState::Off));
+    {
+        let a = h.state_mut();
+        a.debrid.manager.use_base_for_test(Provider::TorBox, &server);
+        a.debrid.config.keys.insert(Provider::TorBox, "key".into());
+        a.debrid.manager.set_keys(a.debrid.config.keys.clone());
+        let gone = vec![NzbLink { indexer: Indexer::AnimeTosho, url: format!("{server}/nzb/gone") }];
+        a.usenet.manager.add(&listing, &[0], base.join("downloads").join("Show"), gone).unwrap();
+    }
+    wait_until(&mut h, "a torrent here", |a| {
+        a.usenet.manager.views().is_empty()
+            && a.debrid.manager.views().is_empty()
+            && a.engine().is_some_and(|e| e.torrents().iter().any(|(_, t)| t.info_hash().as_string() == hash))
+    });
+    save(&mut h, &base, "handover.png");
+    let engine = h.state().engine().unwrap();
+    let (_, t) = engine.torrents().into_iter().next().unwrap();
+    assert_eq!(t.output_folder(), base.join("downloads").join("Show"), "same folder");
+    assert_eq!(t.only_files(), Some(vec![0]), "same files");
+}

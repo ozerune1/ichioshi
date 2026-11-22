@@ -634,6 +634,7 @@ impl Manager {
         }
         self.set_phase(live, Phase::Fetching);
         let posted = self.nzb_files(&job).await?;
+        self.not_a_repeat(&job, &posted)?;
 
         // The picked files, matched to the posted ones by name.
         let staging = job.staging();
@@ -659,10 +660,30 @@ impl Manager {
             Err(Stop::Transient(why)) => return Err(providers.all_logins_failed().map_or(Stop::Transient(why), Stop::Fatal)),
             other => other?,
         };
-        if missing > 0 {
-            self.repair(id, &providers, &posted, &staging, live, cancel).await?;
+        let damaged: Vec<String> = targets.iter().zip(&missing).filter(|(_, m)| **m > 0).map(|(t, _)| t.nzb.name.clone()).collect();
+        if !damaged.is_empty() {
+            self.repair(id, &providers, &posted, &damaged, &staging, live, cancel).await?;
         }
         self.finish(id, &staging)?;
+        Ok(())
+    }
+
+    /// Another indexer's NZB that's the same upload as one that already
+    /// failed would fail the same way: skip it.
+    fn not_a_repeat(&self, job: &Job, posted: &[NzbFile]) -> Result<(), Stop> {
+        let ids: std::collections::HashSet<&str> = posted.iter().flat_map(|f| f.segments.iter().map(|s| s.message_id.as_str())).collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for earlier in 0..job.nzb {
+            let Ok(bytes) = std::fs::read(self.dir.join("nzbs").join(format!("{}-{earlier}.nzb", job.id))) else { continue };
+            let Ok(before) = nzb::parse(&bytes) else { continue };
+            let shared = before.iter().flat_map(|f| &f.segments).filter(|s| ids.contains(s.message_id.as_str())).count();
+            if shared * 10 >= ids.len() * 9 {
+                let (now, then) = (job.nzbs[job.nzb].indexer.name(), job.nzbs[earlier].indexer.name());
+                return Err(Stop::Nzb(format!("{now}'s NZB is the same upload as {then}'s")));
+            }
+        }
         Ok(())
     }
 
@@ -673,7 +694,10 @@ impl Manager {
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(_) => {
-                let b = self.indexers.fetch_nzb(link).await?;
+                let b = self.indexers.fetch_nzb(link).await.map_err(|e| match e.downcast_ref::<super::indexers::Unusable>() {
+                    Some(u) => Stop::Nzb(u.to_string()),
+                    None => Stop::Transient(format!("{e:#}")),
+                })?;
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
@@ -685,7 +709,7 @@ impl Manager {
     }
 
     /// Fetch the targets' missing articles, writing each in place. Returns
-    /// how many articles no provider has.
+    /// how many articles of each target no provider has.
     async fn fetch(
         &self,
         id: u64,
@@ -693,7 +717,7 @@ impl Manager {
         targets: &mut [Target],
         live: &Mutex<Live>,
         cancel: &AtomicBool,
-    ) -> Result<u32, Stop> {
+    ) -> Result<Vec<u32>, Stop> {
         struct Task {
             target: usize,
             number: u32,
@@ -732,7 +756,7 @@ impl Manager {
             }
         }
         if queue.is_empty() {
-            return Ok(0);
+            return Ok(vec![0; targets.len()]);
         }
 
         let queue = Arc::new(Mutex::new(queue));
@@ -794,7 +818,7 @@ impl Manager {
         }
         drop(tx);
 
-        let mut missing = 0;
+        let mut missing = vec![0u32; targets.len()];
         let mut outcome = Ok(());
         let mut last_save = Instant::now();
         let mut window = (Instant::now(), 0usize);
@@ -820,7 +844,7 @@ impl Manager {
                     }
                 }
                 Done::Missing { target } => {
-                    missing += 1;
+                    missing[target] += 1;
                     live.lock().unwrap().missing += 1;
                     tracing::info!("an article of {} is on none of the providers", targets[target].nzb.name);
                 }
@@ -868,28 +892,60 @@ impl Manager {
         });
     }
 
-    /// Fetch the PAR2 index, then recovery volumes, smallest first, until
-    /// there are enough blocks to repair; then repair.
+    /// Repair the damaged files, each with its PAR2 set: the one named after
+    /// it (releases often have one per episode), or the release's only one.
+    #[allow(clippy::too_many_arguments)]
     async fn repair(
         &self,
         id: u64,
         providers: &Arc<Providers>,
         posted: &[NzbFile],
+        damaged: &[String],
         staging: &Path,
         live: &Mutex<Live>,
         cancel: &AtomicBool,
     ) -> Result<(), Stop> {
         let missing = live.lock().unwrap().missing;
-        let lost = |what: &str| {
-            Stop::Nzb(format!("{missing} articles are on none of your providers, and {what}"))
-        };
-        let index = posted
-            .iter()
-            .filter(|f| f.is_par2() && f.recovery_blocks().is_none())
-            .min_by_key(|f| f.encoded_bytes())
-            .ok_or_else(|| lost("the release has no PAR2 recovery data"))?;
-        let mut volumes: Vec<&NzbFile> = posted.iter().filter(|f| f.recovery_blocks().is_some()).collect();
-        volumes.sort_by_key(|f| (f.recovery_blocks(), f.encoded_bytes()));
+        let lost = |what: &str| lost(missing, what);
+        let mut sets: BTreeMap<&str, Vec<&NzbFile>> = BTreeMap::new();
+        for f in posted.iter().filter(|f| f.is_par2()) {
+            sets.entry(f.par2_set().unwrap_or_default()).or_default().push(f);
+        }
+        if sets.is_empty() {
+            return Err(lost("the release has no PAR2 recovery data"));
+        }
+        let mut by_set: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for name in damaged {
+            let own = sets.keys().filter(|s| name.starts_with(&format!("{s}."))).max_by_key(|s| s.len()).copied();
+            let set = own.or_else(|| (sets.len() == 1).then(|| *sets.keys().next().unwrap()));
+            let Some(set) = set else { return Err(lost(&format!("there's no PAR2 recovery data for {name}"))) };
+            by_set.entry(set).or_default().push(name);
+        }
+        for set in by_set.keys() {
+            self.repair_set(id, providers, &sets[set], staging, live, cancel, missing).await?;
+        }
+        Ok(())
+    }
+
+    /// Fetch a PAR2 set's index, then recovery volumes, smallest first,
+    /// until there are enough blocks to repair; then repair.
+    #[allow(clippy::too_many_arguments)]
+    async fn repair_set(
+        &self,
+        id: u64,
+        providers: &Arc<Providers>,
+        set: &[&NzbFile],
+        staging: &Path,
+        live: &Mutex<Live>,
+        cancel: &AtomicBool,
+        missing: u32,
+    ) -> Result<(), Stop> {
+        let lost = |what: &str| lost(missing, what);
+        // The index, or failing that the smallest volume (volumes carry the
+        // same description of the files).
+        let mut volumes: Vec<&NzbFile> = set.to_vec();
+        volumes.sort_by_key(|f| (f.recovery_blocks().is_some(), f.recovery_blocks(), f.encoded_bytes()));
+        let index = volumes.remove(0);
 
         self.set_phase(live, Phase::Repairing("getting the recovery index".to_owned()));
         let index_path = staging.join(&index.name);
@@ -983,6 +1039,11 @@ impl Manager {
         self.with_job(id, |job| job.done.clear());
         Ok(())
     }
+}
+
+/// Articles are missing everywhere, and they can't be made up for.
+fn lost(missing: u32, what: &str) -> Stop {
+    Stop::Nzb(format!("{missing} articles are on none of your providers, and {what}"))
 }
 
 /// Bytes a target has, judged by its articles (encoded sizes, scaled to the file).

@@ -30,6 +30,19 @@ impl NzbFile {
         self.name.to_ascii_lowercase().ends_with(".par2")
     }
 
+    /// The PAR2 set a .par2 file belongs to, by name: "Show - 01.par2" and
+    /// "Show - 01.vol03+04.par2" are both set "Show - 01".
+    pub fn par2_set(&self) -> Option<&str> {
+        let lower = self.name.to_ascii_lowercase();
+        let stem_len = lower.strip_suffix(".par2")?.len();
+        let stem = &lower[..stem_len];
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        match stem.rfind(".vol") {
+            Some(i) if stem[i + 4..].split_once('+').is_some_and(|(a, b)| digits(a) && digits(b)) => Some(&self.name[..i]),
+            _ => Some(&self.name[..stem_len]),
+        }
+    }
+
     /// For a PAR2 recovery volume (`name.vol03+04.par2`), how many recovery
     /// blocks it holds; `None` for the index file or anything else.
     pub fn recovery_blocks(&self) -> Option<u32> {
@@ -118,6 +131,8 @@ mod tests {
         assert_eq!(parse(&gz.finish().unwrap()).unwrap(), files);
 
         assert!(!files[0].is_par2() && files[1].is_par2());
+        let sets: Vec<Option<&str>> = files.iter().map(NzbFile::par2_set).collect();
+        assert_eq!(sets, [None, Some("[Group] Show - 01 [ABCD1234]"), Some("[Group] Show - 01 [ABCD1234]")]);
         assert_eq!(files.iter().map(NzbFile::recovery_blocks).collect::<Vec<_>>(), [None, None, Some(4)]);
         assert_eq!(files[0].encoded_bytes(), 200);
     }
@@ -127,6 +142,18 @@ mod tests {
         let xml = write(&[file("a.mkv", &[(2, "b@x"), (1, "a@x"), (2, "b2@x")])]);
         let got = parse(xml.as_bytes()).unwrap();
         assert_eq!(got[0].segments.iter().map(|s| s.number).collect::<Vec<_>>(), [1, 2]);
+    }
+
+    /// `NZB_SAMPLE=<a real .nzb>`: what the parser makes of it.
+    #[test]
+    #[ignore = "needs NZB_SAMPLE"]
+    fn reads_a_real_nzb() {
+        let Some(path) = std::env::var_os("NZB_SAMPLE") else { return };
+        let files = parse(&std::fs::read(path).unwrap()).unwrap();
+        for f in files.iter().take(12) {
+            println!("{:5} segments  {:?}", f.segments.len(), f.name);
+        }
+        println!("{} files", files.len());
     }
 
     #[test]
