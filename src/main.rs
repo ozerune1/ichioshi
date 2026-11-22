@@ -21,6 +21,7 @@ mod tiers;
 mod title;
 mod tracking;
 mod usenet;
+mod view;
 mod vpn;
 
 use std::time::Duration;
