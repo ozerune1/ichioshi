@@ -20,6 +20,7 @@ mod storage;
 mod tiers;
 mod title;
 mod tracking;
+mod ui_iced;
 mod usenet;
 mod view;
 mod vpn;
@@ -61,6 +62,15 @@ fn main() -> eframe::Result {
     let state_dir = dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("seadex-downloader");
+
+    // This branch's new GUI (a design prototype); `--egui` for the app as it was.
+    if !std::env::args().any(|a| a == "--egui") {
+        let dir = std::env::var_os("SEADEX_STATE_DIR").map_or(state_dir, std::path::PathBuf::from);
+        if let Err(e) = ui_iced::run(dir) {
+            eprintln!("{e}");
+        }
+        return Ok(());
+    }
 
     let result = eframe::run_native(
         APP_NAME,
