@@ -12,15 +12,15 @@ use super::{Action, App, GREEN, Msg, Page, fmt_bytes};
 use crate::playlist::{self, Item};
 
 pub(super) struct PlaylistPage {
-    out_dir: String,
-    export: Option<ExportRun>,
-    adding: bool,
+    pub(super) out_dir: String,
+    pub(super) export: Option<ExportRun>,
+    pub(super) adding: bool,
 }
 
 pub(super) struct ExportRun {
     seq: u64,
     cancel: Arc<AtomicBool>,
-    progress: f32,
+    pub(super) progress: f32,
     pub(super) result: Option<Result<PathBuf, String>>,
 }
 
@@ -32,7 +32,7 @@ impl Drop for ExportRun {
 }
 
 impl ExportRun {
-    fn running(&self) -> bool {
+    pub(super) fn running(&self) -> bool {
         self.result.is_none()
     }
 }

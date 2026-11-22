@@ -30,13 +30,13 @@ pub(super) struct UsenetState {
 #[derive(Default)]
 pub(super) struct Dialog {
     /// A copy being edited, and whether it's a new one.
-    editing: Option<(Provider, bool)>,
+    pub(super) editing: Option<(Provider, bool)>,
     /// Connection checks, by provider ID.
-    checks: HashMap<u64, Check>,
+    pub(super) checks: HashMap<u64, Check>,
     seq: u64,
 }
 
-enum Check {
+pub(super) enum Check {
     Running(u64),
     Done(Result<(), String>),
 }
@@ -65,7 +65,7 @@ impl UsenetState {
         }
     }
 
-    fn save(&self) {
+    pub(super) fn save(&self) {
         if let Err(e) = self.config.save(&self.file) {
             tracing::warn!("could not save {}: {e:#}", self.file.display());
         }

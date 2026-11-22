@@ -18,7 +18,7 @@ pub(super) struct DebridState {
     pub(super) manager: Arc<Manager>,
     /// The last account check for the chosen service.
     pub(super) account: Option<(Provider, Result<Account, String>)>,
-    checking: bool,
+    pub(super) checking: bool,
     seq: u64,
 }
 
@@ -39,7 +39,7 @@ impl DebridState {
         }
     }
 
-    fn save(&self) {
+    pub(super) fn save(&self) {
         if let Err(e) = self.config.save(&self.file) {
             tracing::warn!("could not save {}: {e:#}", self.file.display());
         }

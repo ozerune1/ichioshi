@@ -520,7 +520,7 @@ impl Coverage<'_> {
         }
     }
 
-    fn last(&self) -> u32 {
+    pub(super) fn last(&self) -> u32 {
         match self {
             Coverage::Batch { files, .. } => files.keys().max().copied().unwrap_or(0),
             Coverage::PerEpisode(items) => items.keys().max().copied().unwrap_or(0),
@@ -529,7 +529,7 @@ impl Coverage<'_> {
     }
 
     /// Why an episode can't be downloaded.
-    fn why_not(&self) -> String {
+    pub(super) fn why_not(&self) -> String {
         match self {
             Coverage::Nothing(why) => (*why).to_owned(),
             Coverage::Loading => "Reading the release's files…".to_owned(),
@@ -542,9 +542,9 @@ impl Coverage<'_> {
 #[derive(Default)]
 pub(super) struct PagesState {
     pub(super) stats: HashMap<u64, SeriesStats>,
-    last_stats: Option<Instant>,
+    pub(super) last_stats: Option<Instant>,
     /// AniList details being fetched, and when fetches failed.
-    details_loading: HashSet<u64>,
+    pub(super) details_loading: HashSet<u64>,
     details_failed: HashMap<u64, Instant>,
     /// Details of anime not in the library.
     pub(super) details: HashMap<u64, Details>,
@@ -1751,7 +1751,7 @@ pub(super) fn lang_prefs_editor(ui: &mut Ui, salt: u64, prefs: &mut LangPrefs) -
 }
 
 /// "Airing: episode 9 on Sat 29 Nov", "Finished", …
-fn airing_line(d: &Details) -> Option<String> {
+pub(super) fn airing_line(d: &Details) -> Option<String> {
     if let Some((episode, at)) = d.next_episode {
         let when = chrono::DateTime::from_timestamp(at, 0)?.with_timezone(&chrono::Local);
         return Some(format!(

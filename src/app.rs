@@ -29,6 +29,7 @@ use crate::usenet::indexers::NzbLink;
 
 mod debrid_ui;
 mod drive_ui;
+pub(crate) mod gui;
 mod handover;
 mod library_ui;
 mod player_ui;
@@ -293,6 +294,7 @@ enum Msg {
 }
 
 /// Things the user clicked this frame.
+#[derive(Clone)]
 enum Action {
     Search,
     OpenAnime(usize),
@@ -436,6 +438,8 @@ enum Page {
     Remux(RemuxPage),
     Playlist(PlaylistPage),
     Player(player_ui::PlayerPage),
+    /// Folders, languages, accounts and services (the iced GUI's page).
+    Settings,
 }
 
 struct AnimePage {
@@ -874,6 +878,35 @@ impl App {
             text: text.into(),
             error: false,
         });
+    }
+
+    /// Stop downloads cleanly, as the app closes.
+    fn shut_down(&mut self) {
+        // Debrid and Usenet downloads resume from their partial files next time.
+        self.debrid.manager.stop();
+        self.usenet.manager.stop();
+        // Pause torrents cleanly so they resume quickly next time.
+        if let Some(engine) = self.engine() {
+            let stop = async {
+                let _ = tokio::time::timeout(Duration::from_secs(3), engine.stop()).await;
+            };
+            // On a runtime thread already (the iced GUI's), wait without
+            // blocking the runtime.
+            if tokio::runtime::Handle::try_current().is_ok() {
+                tokio::task::block_in_place(|| self.rt.block_on(stop));
+            } else {
+                self.rt.block_on(stop);
+            }
+        }
+    }
+
+    /// Close whatever dialog is open (Escape).
+    fn close_dialogs(&mut self) {
+        self.confirm_delete = None;
+        self.pages.languages = None;
+        self.tracking.dialog = false;
+        self.usenet.dialog = None;
+        self.drive.browser = None;
     }
 
     /// Write the settings to `settings.json` if they changed.
@@ -2723,6 +2756,7 @@ impl eframe::App for App {
             Page::Remux(rp) => self.remux_page(ui, rp, &mut actions),
             Page::Playlist(pp) => self.playlist_page(ui, pp, &mut actions),
             Page::Downloads => self.downloads_panel(ui, &mut actions),
+            Page::Settings => self.library_page(ui, &mut actions),
         });
         self.page = page;
 
@@ -2746,15 +2780,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // While the GL context is still there.
         self.close_player();
-        // Debrid and Usenet downloads resume from their partial files next time.
-        self.debrid.manager.stop();
-        self.usenet.manager.stop();
-        // Pause torrents cleanly so they resume quickly next time.
-        if let Some(engine) = self.engine() {
-            self.rt.block_on(async {
-                let _ = tokio::time::timeout(Duration::from_secs(3), engine.stop()).await;
-            });
-        }
+        self.shut_down();
     }
 }
 

@@ -22,15 +22,15 @@ pub(super) struct RemuxPage {
     pub(super) series: SeriesFiles,
     pub(super) title: String,
     /// Where the title came from.
-    title_note: String,
-    out_dir: String,
+    pub(super) title_note: String,
+    pub(super) out_dir: String,
     /// The folder was typed or picked, so it no longer follows the title.
-    out_dir_edited: bool,
+    pub(super) out_dir_edited: bool,
     pub(super) seq: u64,
     pub(super) analysis: Option<Analysis>,
     /// What each subtitle choice contains, once read.
     pub(super) samples: HashMap<TrackSig, SubtitleSample>,
-    error: Option<String>,
+    pub(super) error: Option<String>,
     pub(super) audio_lang: Option<String>,
     pub(super) audio: Option<TrackSig>,
     /// `None` for no subtitles.
@@ -69,7 +69,7 @@ pub(super) enum FileState {
 }
 
 impl RemuxPage {
-    fn running(&self) -> bool {
+    pub(super) fn running(&self) -> bool {
         self.run.as_ref().is_some_and(|r| !r.finished)
     }
 
@@ -126,7 +126,7 @@ impl RemuxPage {
         });
     }
 
-    fn refresh_audio_track(&mut self) {
+    pub(super) fn refresh_audio_track(&mut self) {
         let Some(a) = &self.analysis else { return };
         self.audio = self
             .audio_lang
@@ -136,7 +136,7 @@ impl RemuxPage {
         self.refresh_subtitle_track();
     }
 
-    fn refresh_subtitle_track(&mut self) {
+    pub(super) fn refresh_subtitle_track(&mut self) {
         let Some(a) = &self.analysis else { return };
         self.subs = self
             .sub_lang
@@ -147,7 +147,7 @@ impl RemuxPage {
 
 /// Remuxed copies go in `<library>/Remuxed/<title>`, apart from the series'
 /// own folder (which keeps the downloads, all tracks intact).
-fn default_out_dir(library_dir: &Path, title: &str) -> String {
+pub(super) fn default_out_dir(library_dir: &Path, title: &str) -> String {
     let title = title.trim();
     let name = if title.is_empty() {
         "Remuxes".to_owned()

@@ -19,14 +19,14 @@ use iced::{
 use iced_video_player::VideoPlayer;
 
 use super::Message;
-use super::pages::{ACCENT, BOLD, MEDIUM, SEMI, fill_color, rounded};
 use super::player::{Msg, Panel, Player, SKIP, Setting, TrackChoice, clock};
+use super::style::{ACCENT, BOLD, MEDIUM, SEMI, fill_color, rounded};
 use crate::player::{Part, TrackKind};
 
 macro_rules! icons {
     ($($name:ident = $file:literal;)*) => {
         $(static $name: LazyLock<svg::Handle> =
-            LazyLock::new(|| svg::Handle::from_memory(include_bytes!(concat!("../../assets/icons/", $file, ".svg")).as_slice()));)*
+            LazyLock::new(|| svg::Handle::from_memory(include_bytes!(concat!("../../../assets/icons/", $file, ".svg")).as_slice()));)*
     };
 }
 

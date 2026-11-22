@@ -19,7 +19,7 @@ use crate::tracking::{
 const REFRESH: Duration = Duration::from_secs(15 * 60);
 
 pub(super) struct SignIn {
-    service: Service,
+    pub(super) service: Service,
     seq: u64,
     cancel: Arc<AtomicBool>,
     pub(super) url: Option<String>,
@@ -37,7 +37,7 @@ pub(super) struct TrackingState {
     fetched: HashMap<Service, Instant>,
     /// AniList IDs being looked up for MyAnimeList's, and ones it hasn't got.
     looking_up: HashSet<u64>,
-    no_mal: HashSet<u64>,
+    pub(super) no_mal: HashSet<u64>,
     lookup_failed: Option<Instant>,
     pub(super) saving: HashSet<(Service, u64)>,
     pub(super) errors: HashMap<Service, String>,
@@ -128,10 +128,24 @@ impl TrackingState {
         }
     }
 
-    fn save(&self) {
+    pub(super) fn save(&self) {
         if let Err(e) = self.config.save(&self.file) {
             tracing::warn!("couldn't save {}: {e:#}", self.file.display());
         }
+    }
+
+    /// Signed in to AniList as "jake", with `list` as the list (tests and
+    /// screenshots: nothing is fetched).
+    #[cfg(test)]
+    pub(super) fn pretend_lists(&mut self, list: HashMap<u64, Entry>) {
+        self.config.anilist.token = Some("token".into());
+        self.config.anilist.user = Some(crate::tracking::anilist::User {
+            id: 1,
+            name: "jake".into(),
+        });
+        self.endpoints.anilist_api = "http://127.0.0.1:9".into();
+        self.fetched.insert(Service::AniList, Instant::now());
+        self.lists.insert(Service::AniList, list);
     }
 
     pub(super) fn signed_in(&self, service: Service) -> bool {
@@ -174,7 +188,7 @@ impl TrackingState {
 
     /// Still working out where the anime is (lists loading, or its
     /// MyAnimeList ID being looked up).
-    fn pending(&self, anilist_id: u64) -> bool {
+    pub(super) fn pending(&self, anilist_id: u64) -> bool {
         self.services().iter().any(|s| !self.lists.contains_key(s))
             || (self.signed_in(Service::Mal)
                 && self.key(Service::Mal, anilist_id).is_none()
@@ -556,7 +570,7 @@ impl App {
     }
 
     /// How many episodes an anime has, if known.
-    fn episode_count(&self, id: u64) -> Option<u32> {
+    pub(super) fn episode_count(&self, id: u64) -> Option<u32> {
         let shown = match &self.page {
             Page::Anime(ap) if ap.anime.anilist_id == id => ap.anime.episodes,
             _ => None,
@@ -972,7 +986,7 @@ fn entry_text(e: &Entry, episodes: Option<u32>) -> String {
 
 /// The same entry, as far as each site can say (MyAnimeList's scores are
 /// whole numbers).
-fn same(a: &Entry, b: &Entry) -> bool {
+pub(super) fn same(a: &Entry, b: &Entry) -> bool {
     a.status == b.status
         && a.progress == b.progress
         && (a.score.round() - b.score.round()).abs() < 0.5

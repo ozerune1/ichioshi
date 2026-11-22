@@ -17,9 +17,9 @@ pub(super) struct VpnState {
     file: PathBuf,
     pub(super) monitor: Monitor,
     /// The forwarded-port field's text.
-    port_text: String,
+    pub(super) port_text: String,
     /// A PIA command is running.
-    busy: bool,
+    pub(super) busy: bool,
     /// The loopback interface, for running torrents offline.
     loopback: Option<String>,
     /// Torrents need the VPN, which is down: why. (The engine runs offline.)
@@ -48,7 +48,7 @@ impl VpnState {
         }
     }
 
-    fn save(&self) {
+    pub(super) fn save(&self) {
         if let Err(e) = self.config.save(&self.file) {
             tracing::warn!("could not save {}: {e:#}", self.file.display());
         }

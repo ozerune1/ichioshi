@@ -20,37 +20,37 @@ pub(super) struct DriveState {
     /// Google's servers (a mock one in tests).
     endpoints: Endpoints,
     pub(super) drive: Option<Arc<Drive>>,
-    signing_in: Option<SignInJob>,
+    pub(super) signing_in: Option<SignInJob>,
     pub(super) browser: Option<FolderBrowser>,
     /// The latest upload. It belongs to the app, not a page, so it keeps
     /// going while you browse.
-    upload: Option<UploadRun>,
+    pub(super) upload: Option<UploadRun>,
     seq: u64,
 }
 
-struct SignInJob {
+pub(super) struct SignInJob {
     seq: u64,
     cancel: Arc<AtomicBool>,
     /// The consent page, to open again if the browser didn't.
-    url: Option<String>,
+    pub(super) url: Option<String>,
 }
 
 pub(super) struct FolderBrowser {
     /// Where we are: ("Google Drive", Top), ("My Drive", root), ("Anime", ...).
-    trail: Vec<(String, Place)>,
-    entries: Option<Result<Vec<Entry>, String>>,
+    pub(super) trail: Vec<(String, Place)>,
+    pub(super) entries: Option<Result<Vec<Entry>, String>>,
     seq: u64,
-    link: String,
-    checking_link: bool,
-    link_error: Option<String>,
+    pub(super) link: String,
+    pub(super) checking_link: bool,
+    pub(super) link_error: Option<String>,
 }
 
-struct UploadRun {
+pub(super) struct UploadRun {
     seq: u64,
     cancel: Arc<AtomicBool>,
-    progress: f32,
-    file: PathBuf,
-    result: Option<Result<Uploaded, String>>,
+    pub(super) progress: f32,
+    pub(super) file: PathBuf,
+    pub(super) result: Option<Result<Uploaded, String>>,
     /// The file's size, for the time estimate.
     size: u64,
     /// The last progress report and when it came.
@@ -156,7 +156,7 @@ impl UploadRun {
         }
     }
 
-    fn running(&self) -> bool {
+    pub(super) fn running(&self) -> bool {
         self.result.is_none()
     }
 
@@ -183,7 +183,7 @@ impl UploadRun {
         Some((left - now.saturating_duration_since(self.last.1).as_secs_f64()).max(1.0))
     }
 
-    fn time_left(&self, now: Instant) -> String {
+    pub(super) fn time_left(&self, now: Instant) -> String {
         match (self.seconds_left(now), self.speed) {
             (Some(left), Some(speed)) => format!(
                 "about {} left · {}",
@@ -771,7 +771,7 @@ pub(super) const SETUP_STEPS: [&str; 7] = [
      click Advanced, then “Go to (your app name) (unsafe)”, and allow access to Drive.",
 ];
 
-fn file_name(path: &Path) -> String {
+pub(super) fn file_name(path: &Path) -> String {
     path.file_name()
         .unwrap_or_default()
         .to_string_lossy()
@@ -779,7 +779,7 @@ fn file_name(path: &Path) -> String {
 }
 
 /// "1234…apps.googleusercontent.com" → "1234…".
-fn short_client_id(id: &str) -> String {
+pub(super) fn short_client_id(id: &str) -> String {
     let head: String = id.chars().take(12).collect();
     format!("{head}…")
 }

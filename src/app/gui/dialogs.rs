@@ -1,0 +1,502 @@
+//! Dialogs over the page: confirming deletes, the library's languages,
+//! Usenet providers, and choosing a Google Drive folder.
+
+use iced::widget::{Column, Row, column, container, row, space, text};
+use iced::{Alignment, Element, Fill};
+
+use super::library::rule;
+use super::series::lang_editor;
+use super::{Gui, Message, act, edit};
+use crate::app::usenet_ui::{Check, Dialog};
+use crate::app::{Action, DeleteTarget};
+use crate::gdrive::Place;
+use crate::usenet::Provider;
+
+use super::style::*;
+
+/// Change the provider being edited.
+fn on_form(f: impl Fn(&mut Provider) + Send + Sync + 'static) -> Message {
+    edit(move |g| {
+        if let Some(Dialog {
+            editing: Some((p, _)),
+            ..
+        }) = &mut g.app.usenet.dialog
+        {
+            f(p);
+        }
+    })
+}
+
+/// Change the provider list (and save it).
+fn on_providers(f: impl Fn(&mut Vec<Provider>) + Send + Sync + 'static) -> Message {
+    edit(move |g| {
+        f(&mut g.app.usenet.config.providers);
+        g.app.usenet.save();
+    })
+}
+
+fn buttons<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    let mut r = Row::new().spacing(10).push(space::horizontal());
+    for i in items {
+        r = r.push(i);
+    }
+    r.into()
+}
+
+impl Gui {
+    /// The open dialog, if any, over `base`.
+    pub(super) fn dialogs<'a>(&'a self, base: Element<'a, Message>) -> Element<'a, Message> {
+        let a = &self.app;
+        if let Some((target, name)) = &a.confirm_delete {
+            return self.confirm_delete(base, *target, name);
+        }
+        if let Some(prefs) = &a.pages.languages {
+            let content = column![
+                dialog_title(
+                    "Languages".into(),
+                    Some(
+                        "Which audio and subtitles play by default, for every series without \
+                         its own. Every track stays in the files."
+                            .into()
+                    )
+                ),
+                gap(16.0),
+                lang_editor(prefs, |p| edit(
+                    move |g| g.app.pages.languages = Some(p.clone())
+                )),
+                gap(20.0),
+                buttons(vec![
+                    secondary("Cancel", Some(edit(|g| g.app.pages.languages = None))),
+                    primary(
+                        "Save",
+                        Some(edit(|g| {
+                            if let Some(p) = g.app.pages.languages.take() {
+                                g.app.settings.prefs = p;
+                                g.app.recheck_defaults();
+                                g.app.pages.last_stats = None;
+                            }
+                        }))
+                    ),
+                ]),
+            ];
+            return dialog(
+                base,
+                content.into(),
+                520.0,
+                edit(|g| g.app.pages.languages = None),
+            );
+        }
+        if let Some(d) = &a.usenet.dialog {
+            return dialog(
+                base,
+                self.usenet_dialog(d),
+                640.0,
+                edit(|g| g.app.usenet.dialog = None),
+            );
+        }
+        if a.drive.browser.is_some() {
+            return dialog(
+                base,
+                self.drive_browser(),
+                580.0,
+                act(Action::DriveCloseBrowser),
+            );
+        }
+        base
+    }
+
+    fn confirm_delete<'a>(
+        &'a self,
+        base: Element<'a, Message>,
+        target: DeleteTarget,
+        name: &str,
+    ) -> Element<'a, Message> {
+        let note = match target {
+            DeleteTarget::Series(id) => {
+                let folder = self
+                    .app
+                    .library
+                    .find(id)
+                    .map(|s| s.folder.display().to_string())
+                    .unwrap_or_default();
+                format!(
+                    "This removes “{name}” from your library and deletes its folder, {folder}, \
+                     with everything in it. It can't be undone."
+                )
+            }
+            _ => format!(
+                "This removes “{name}” and deletes its files from disk. It can't be undone."
+            ),
+        };
+        let confirm = match target {
+            DeleteTarget::Torrent(id) => Action::Remove {
+                id,
+                delete_files: true,
+            },
+            DeleteTarget::Debrid(id) => Action::DebridRemove {
+                id,
+                delete_files: true,
+            },
+            DeleteTarget::Usenet(id) => Action::UsenetRemove {
+                id,
+                delete_files: true,
+            },
+            DeleteTarget::Series(id) => Action::RemoveSeries {
+                id,
+                delete_files: true,
+            },
+        };
+        let cancel = edit(|g| g.app.confirm_delete = None);
+        let content = column![
+            dialog_title("Delete downloaded files?".into(), Some(note)),
+            gap(20.0),
+            buttons(vec![
+                secondary("Cancel", Some(cancel.clone())),
+                danger("Delete", Some(act(confirm))),
+            ]),
+        ];
+        dialog(base, content.into(), 480.0, cancel)
+    }
+
+    /// Usenet providers: add, edit, check, order.
+    fn usenet_dialog<'a>(&'a self, d: &'a Dialog) -> Element<'a, Message> {
+        let title = dialog_title(
+            "Usenet providers".into(),
+            Some(
+                "Articles come from the main providers, in this order. Backup (block) accounts \
+                 are only asked for articles the main ones don't have."
+                    .into(),
+            ),
+        );
+        if let Some((p, new)) = &d.editing {
+            return column![title, gap(16.0), provider_form(p, *new)].into();
+        }
+        let providers = &self.app.usenet.config.providers;
+        let count = providers.len();
+        let mut list = Column::new().spacing(10);
+        if providers.is_empty() {
+            list = list.push(weak("No providers yet."));
+        }
+        for (i, p) in providers.iter().enumerate() {
+            let id = p.id;
+            let security = if p.tls { "TLS" } else { "no encryption" };
+            let role = if p.backup { " · backup" } else { "" };
+            let check_state: Element<'_, Message> = match d.checks.get(&id) {
+                Some(Check::Running(_)) => weak("Connecting…").into(),
+                Some(Check::Done(Ok(()))) => text("✓ Connected and logged in")
+                    .size(13)
+                    .color(GREEN)
+                    .into(),
+                Some(Check::Done(Err(e))) => error_text(e.clone()).into(),
+                None => small("Check", Some(act(Action::UsenetCheck(id)))),
+            };
+            let editing = p.clone();
+            list = list.push(
+                container(
+                    column![
+                        row![
+                            check(p.label().to_owned(), p.enabled, move |on| on_providers(
+                                move |ps| {
+                                    if let Some(x) = ps.iter_mut().find(|x| x.id == id) {
+                                        x.enabled = on;
+                                    }
+                                }
+                            )),
+                            weak(format!(
+                                "{}:{} · {security} · {} connections{role}",
+                                p.host, p.port, p.connections
+                            )),
+                        ]
+                        .spacing(12)
+                        .align_y(Alignment::Center),
+                        row![
+                            check_state,
+                            space::horizontal(),
+                            small(
+                                "Up",
+                                (i > 0).then(|| on_providers(move |ps| ps.swap(i, i - 1)))
+                            ),
+                            small(
+                                "Down",
+                                (i + 1 < count).then(|| on_providers(move |ps| ps.swap(i, i + 1)))
+                            ),
+                            small(
+                                "Edit",
+                                Some(edit(move |g| {
+                                    if let Some(d) = &mut g.app.usenet.dialog {
+                                        d.editing = Some((editing.clone(), false));
+                                    }
+                                }))
+                            ),
+                            small(
+                                "Remove",
+                                Some(on_providers(move |ps| ps.retain(|x| x.id != id)))
+                            ),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(10),
+                )
+                .padding(14)
+                .width(Fill)
+                .style(|_| card_style(SURFACE2.scale_alpha(0.5))),
+            );
+        }
+        column![
+            title,
+            gap(16.0),
+            list,
+            gap(16.0),
+            row![
+                secondary(
+                    "Add provider",
+                    Some(edit(|g| {
+                        if let Some(d) = &mut g.app.usenet.dialog {
+                            d.editing = Some((Provider::default(), true));
+                        }
+                    }))
+                ),
+                space::horizontal(),
+                primary("Done", Some(edit(|g| g.app.usenet.dialog = None))),
+            ],
+        ]
+        .into()
+    }
+
+    /// Choosing the Google Drive folder uploads go to.
+    fn drive_browser(&self) -> Element<'_, Message> {
+        let Some(b) = &self.app.drive.browser else {
+            return space().into();
+        };
+        let mut trail = Row::new().spacing(6).align_y(Alignment::Center);
+        let last = b.trail.len().saturating_sub(1);
+        for (depth, (name, _)) in b.trail.iter().enumerate() {
+            if depth == last {
+                trail = trail.push(text(name.clone()).size(14).font(SEMI).color(TEXT));
+            } else {
+                trail = trail
+                    .push(link(
+                        name.clone(),
+                        Some(act(Action::DriveBrowseBack(depth))),
+                    ))
+                    .push(text("›").size(14).color(FAINT));
+            }
+        }
+        let mut entries = Column::new().spacing(2);
+        match &b.entries {
+            None => entries = entries.push(weak("Loading…")),
+            Some(Err(e)) => entries = entries.push(error_text(e.clone())),
+            Some(Ok(list)) if list.is_empty() => {
+                entries = entries.push(weak("No folders in here."))
+            }
+            Some(Ok(list)) => {
+                for entry in list {
+                    entries = entries.push(
+                        iced::widget::button(
+                            row![
+                                text("▸").size(13).color(ACCENT),
+                                text(entry.name.clone()).size(14).color(TEXT)
+                            ]
+                            .spacing(10),
+                        )
+                        .width(Fill)
+                        .padding([8, 10])
+                        .on_press(act(Action::DriveBrowseInto(entry.clone())))
+                        .style(|_, status| iced::widget::button::Style {
+                            background: Some(fill_color(
+                                if matches!(status, iced::widget::button::Status::Hovered) {
+                                    SURFACE2
+                                } else {
+                                    iced::Color::TRANSPARENT
+                                },
+                            )),
+                            text_color: TEXT,
+                            border: rounded(8.0),
+                            ..Default::default()
+                        }),
+                    );
+                }
+            }
+        }
+        let here = matches!(b.trail.last(), Some((_, Place::Folder(_))));
+        let use_label = match b.trail.last() {
+            Some((name, Place::Folder(_))) => format!("Upload to “{name}”"),
+            _ => "Open a folder to upload to it".to_owned(),
+        };
+        let mut c = column![
+            dialog_title("Choose the upload folder".into(), None),
+            gap(10.0),
+            trail,
+            gap(8.0),
+            rule(),
+            container(iced::widget::scrollable(entries).style(scroll_style)).height(300),
+            rule(),
+            gap(10.0),
+            buttons(vec![
+                secondary("Cancel", Some(act(Action::DriveCloseBrowser))),
+                primary(use_label, here.then(|| act(Action::DriveUseFolder))),
+            ]),
+            gap(16.0),
+            weak("Or paste a folder's link (e.g. one shared with you):"),
+            row![
+                field("https://drive.google.com/drive/folders/…", &b.link)
+                    .on_input(|l| edit(move |g| {
+                        if let Some(b) = &mut g.app.drive.browser {
+                            b.link = l.clone();
+                        }
+                    }))
+                    .on_submit(act(Action::DriveUseLink))
+                    .width(Fill),
+                secondary(
+                    if b.checking_link {
+                        "Checking…"
+                    } else {
+                        "Use link"
+                    },
+                    (!b.checking_link && !b.link.trim().is_empty())
+                        .then(|| act(Action::DriveUseLink))
+                ),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(0);
+        if let Some(e) = &b.link_error {
+            c = c.push(gap(6.0)).push(error_text(e.clone()));
+        }
+        c.into()
+    }
+}
+
+/// A Usenet provider's server, account and connections.
+fn provider_form<'a>(p: &Provider, new: bool) -> Element<'a, Message> {
+    let line = |name: &'static str, input: Element<'a, Message>| {
+        row![text(name).size(13).color(MUTED).width(110), input]
+            .spacing(10)
+            .align_y(Alignment::Center)
+    };
+    let number = |n: u16| if n == 0 { String::new() } else { n.to_string() };
+    let digits = |s: &str| -> u16 {
+        s.chars()
+            .filter(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0)
+    };
+    let tls = p.tls;
+    let save_ok = !p.host.trim().is_empty() && p.port > 0 && p.connections > 0;
+    column![
+        text(if new {
+            "Add a provider"
+        } else {
+            "Edit provider"
+        })
+        .size(16)
+        .font(SEMI)
+        .color(TEXT),
+        line(
+            "Name",
+            field("e.g. Eweka", &p.name)
+                .on_input(|v| on_form(move |p| p.name = v.clone()))
+                .into()
+        ),
+        line(
+            "Server",
+            field("news.example.com", &p.host)
+                .on_input(|v| on_form(move |p| p.host = v.clone()))
+                .into()
+        ),
+        line(
+            "Port",
+            row![
+                field("563", &number(p.port))
+                    .on_input(move |v| {
+                        let port = digits(&v);
+                        on_form(move |p| p.port = port)
+                    })
+                    .width(100),
+                check("Encrypted (TLS)", tls, |on| on_form(move |p| {
+                    p.tls = on;
+                    p.port = match (on, p.port) {
+                        (true, 119) => 563,
+                        (false, 563) => 119,
+                        (_, port) => port,
+                    };
+                })),
+            ]
+            .spacing(14)
+            .align_y(Alignment::Center)
+            .into()
+        ),
+        line(
+            "Username",
+            field("", &p.username)
+                .on_input(|v| on_form(move |p| p.username = v.clone()))
+                .into()
+        ),
+        line(
+            "Password",
+            field("", &p.password)
+                .secure(true)
+                .on_input(|v| on_form(move |p| p.password = v.clone()))
+                .into()
+        ),
+        line(
+            "Connections",
+            row![
+                field("20", &number(p.connections))
+                    .on_input(move |v| {
+                        let n = digits(&v).min(100);
+                        on_form(move |p| p.connections = n)
+                    })
+                    .width(100),
+                weak("How many your plan allows (often 20–60). More is faster."),
+            ]
+            .spacing(14)
+            .align_y(Alignment::Center)
+            .into()
+        ),
+        line(
+            "",
+            check(
+                "Backup (block) account: only for articles the others lack",
+                p.backup,
+                |on| on_form(move |p| p.backup = on)
+            )
+        ),
+        gap(8.0),
+        buttons(vec![
+            secondary(
+                "Cancel",
+                Some(edit(|g| {
+                    if let Some(d) = &mut g.app.usenet.dialog {
+                        d.editing = None;
+                    }
+                }))
+            ),
+            primary(
+                "Save",
+                save_ok.then(|| edit(|g| {
+                    let Some(d) = &mut g.app.usenet.dialog else {
+                        return;
+                    };
+                    let Some((mut p, new)) = d.editing.take() else {
+                        return;
+                    };
+                    p.host = p.host.trim().to_owned();
+                    let config = &mut g.app.usenet.config;
+                    if new {
+                        config.add(p);
+                    } else if let Some(slot) = config.providers.iter_mut().find(|x| x.id == p.id) {
+                        d.checks.remove(&p.id);
+                        *slot = p;
+                    }
+                    g.app.usenet.save();
+                }))
+            ),
+        ]),
+    ]
+    .spacing(12)
+    .into()
+}
