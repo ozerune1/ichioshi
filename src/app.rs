@@ -46,8 +46,15 @@ const VIDEO_EXTENSIONS: &[&str] = &["mkv", "mp4", "m4v", "avi", "webm", "mov", "
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
+    /// Where everything went before the library (now: playlist exports).
     download_dir: PathBuf,
+    /// The library: one folder per series.
+    library_dir: PathBuf,
     prefer_dual_audio: bool,
+    /// Which audio and subtitles play by default, unless a series says otherwise.
+    prefs: crate::prefs::LangPrefs,
+    /// Old downloads have been moved into the library.
+    migrated: bool,
 }
 
 impl Default for Settings {
@@ -56,9 +63,23 @@ impl Default for Settings {
             download_dir: dirs::download_dir()
                 .or_else(dirs::home_dir)
                 .unwrap_or_else(|| PathBuf::from(".")),
+            library_dir: default_library_dir(),
             prefer_dual_audio: false,
+            prefs: Default::default(),
+            migrated: false,
         }
     }
+}
+
+/// `~/Videos/Anime` (or the platform's videos folder). Tests never touch it.
+fn default_library_dir() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join("seadex-downloader-test-library");
+    }
+    dirs::video_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join("Videos")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Anime")
 }
 
 /// Results of background work, sent back to the UI thread.
@@ -70,6 +91,7 @@ enum Msg {
     NyaaDone { seq: u64, result: Result<Vec<NyaaRelease>, String> },
     DownloadStarted(Result<String, String>),
     FolderPicked(Option<PathBuf>),
+    LibraryFolderPicked(Option<PathBuf>),
     RemuxProbed { seq: u64, result: Result<Analysis, String> },
     RemuxTitle { seq: u64, found: Option<AnimeRef> },
     RemuxSamples { seq: u64, samples: Vec<(crate::remux::TrackSig, crate::remux::SubtitleSample)> },
@@ -110,6 +132,7 @@ enum Action {
     AskDelete { id: TorrentId, name: String },
     OpenFolder(PathBuf),
     PickFolder,
+    PickLibraryFolder,
     OpenRemux(TorrentHandle),
     StartRemux,
     CancelRemux,
@@ -261,6 +284,9 @@ struct FilesPage {
     filter: String,
     /// Where the release is on Usenet (files pickers only).
     nzbs: Vec<NzbLink>,
+    /// Where the download goes (the series' library folder), unless it's
+    /// already downloading somewhere.
+    folder: Option<PathBuf>,
 }
 
 impl FilesPage {
@@ -274,7 +300,7 @@ impl FilesPage {
             .iter()
             .map(|f| Row { label: f.path.clone(), len: f.len, seeders: None })
             .collect();
-        Self { back, subtitle, picker: Picker::Files(listing), rows, checked, filter: String::new(), nzbs: Vec::new() }
+        Self { back, subtitle, picker: Picker::Files(listing), rows, checked, filter: String::new(), nzbs: Vec::new(), folder: None }
     }
 
     fn episodes(
@@ -301,6 +327,7 @@ impl FilesPage {
             checked,
             filter: String::new(),
             nzbs: Vec::new(),
+            folder: None,
         }
     }
 
@@ -322,10 +349,12 @@ impl FilesPage {
         }
     }
 
-    fn output_folder(&self, download_dir: &Path) -> PathBuf {
+    fn output_folder(&self, library_dir: &Path) -> PathBuf {
         match &self.picker {
-            Picker::Files(listing) => listing.output_folder(download_dir),
-            Picker::Episodes { folder, .. } => download_dir.join(folder),
+            Picker::Files(listing) if listing.existing.is_some() => listing.output_folder(library_dir),
+            _ if self.folder.is_some() => self.folder.clone().unwrap(),
+            Picker::Files(listing) => listing.output_folder(library_dir),
+            Picker::Episodes { folder, .. } => library_dir.join(folder),
         }
     }
 
@@ -427,6 +456,7 @@ impl App {
         let debrid = DebridState::load(&state_dir, rt.clone(), cc.egui_ctx.clone());
         let vpn = VpnState::load(&state_dir, &rt, cc.egui_ctx.clone());
         let usenet = UsenetState::load(&state_dir, rt.clone(), cc.egui_ctx.clone(), http.clone());
+        let library = Library::load(state_dir.join("library.json"), &expand_home(&settings.library_dir));
 
         let mut app = Self {
             rt,
@@ -448,7 +478,7 @@ impl App {
             starting_download: false,
             confirm_delete: None,
             status: None,
-            library: Library::load(state_dir.join("library.json")),
+            library,
             remux_seq: 0,
             playlist: Playlist::load(state_dir.join("playlist.json")),
             playlist_seq: 0,
@@ -511,11 +541,12 @@ impl App {
 
     /// The download folder setting, with a leading `~` expanded.
     fn download_dir(&self) -> PathBuf {
-        let dir = &self.settings.download_dir;
-        match (dir.strip_prefix("~"), dirs::home_dir()) {
-            (Ok(rest), Some(home)) => home.join(rest),
-            _ => dir.clone(),
-        }
+        expand_home(&self.settings.download_dir)
+    }
+
+    /// The library folder setting, with a leading `~` expanded.
+    fn library_dir(&self) -> PathBuf {
+        expand_home(&self.settings.library_dir)
     }
 
     fn set_info(&mut self, text: impl Into<String>) {
@@ -569,8 +600,10 @@ impl App {
                             if matches!(self.page, Page::Anime(_))
                                 && let Page::Anime(ap) = std::mem::replace(&mut self.page, Page::Home)
                             {
+                                let folder = self.library.folder_for(&new_series(&ap.anime), &self.library_dir());
                                 let mut page = FilesPage::new(listing, Some(ap), subtitle);
                                 page.nzbs = nzbs;
+                                page.folder = Some(folder);
                                 self.page = Page::Files(page);
                             }
                         }
@@ -614,8 +647,14 @@ impl App {
                         Err(e) => self.set_error(e),
                     }
                 }
-                Msg::FolderPicked(Some(dir)) => self.settings.download_dir = dir,
-                Msg::FolderPicked(None) => {}
+                // "Change…" on the files page: this download only.
+                Msg::FolderPicked(Some(dir)) => {
+                    if let Page::Files(fp) = &mut self.page {
+                        fp.folder = Some(dir);
+                    }
+                }
+                Msg::FolderPicked(None) | Msg::LibraryFolderPicked(None) => {}
+                Msg::LibraryFolderPicked(Some(dir)) => self.settings.library_dir = dir,
                 Msg::Info(text) => self.set_info(text),
                 Msg::Error(text) => self.set_error(text),
                 msg @ (Msg::RemuxProbed { .. }
@@ -762,11 +801,23 @@ impl App {
             Action::DebridAskDelete { id, name } => self.confirm_delete = Some((DeleteTarget::Debrid(id), name)),
             Action::DebridEditFiles(id) => self.debrid_edit_files(id),
             Action::DebridOpenRemux(id) => self.debrid_open_remux(id),
+            Action::PickLibraryFolder => {
+                let start = self.library_dir();
+                let start = start.ancestors().find(|p| p.is_dir()).map(Path::to_owned).unwrap_or(start);
+                self.spawn(async move {
+                    let picked = rfd::AsyncFileDialog::new().set_title("Library folder").set_directory(&start).pick_folder().await;
+                    Msg::LibraryFolderPicked(picked.map(|f| f.path().to_owned()))
+                });
+            }
             Action::PickFolder => {
-                let start = self.download_dir();
+                let start = match &self.page {
+                    Page::Files(fp) => fp.output_folder(&self.library_dir()),
+                    _ => self.library_dir(),
+                };
+                let start = start.ancestors().find(|p| p.is_dir()).map(Path::to_owned).unwrap_or(start);
                 self.spawn(async move {
                     let picked = rfd::AsyncFileDialog::new()
-                        .set_title("Download folder")
+                        .set_title("Save this download in")
                         .set_directory(&start)
                         .pick_folder()
                         .await;
@@ -842,7 +893,10 @@ impl App {
                         let title = format!("{} · {group}", ap.anime.title);
                         let folder = sanitize_folder_name(&format!("{} [{group}]", ap.anime.title));
                         self.cancel_listing();
-                        self.page = Page::Files(FilesPage::episodes(items, title, folder, Some(ap), subtitle));
+                        let series_folder = self.library.folder_for(&new_series(&ap.anime), &self.library_dir());
+                        let mut page = FilesPage::episodes(items, title, folder, Some(ap), subtitle);
+                        page.folder = Some(series_folder);
+                        self.page = Page::Files(page);
                         return;
                     }
                 }
@@ -940,19 +994,16 @@ impl App {
             self.set_error(format!("Select at least one of the {}", fp.unit()));
             return;
         }
-        let output_folder = fp.output_folder(&self.download_dir());
+        let output_folder = fp.output_folder(&self.library_dir());
         if let Some(ap) = &fp.back {
             let hashes: Vec<String> = match &fp.picker {
                 Picker::Files(listing) => info_hash_of(&listing.torrent_bytes).into_iter().collect(),
                 Picker::Episodes { items, .. } => selected.iter().map(|&i| items[i].1.info_hash.clone()).collect(),
             };
-            let anime = &ap.anime;
-            let anime_ref = AnimeRef {
-                anilist_id: anime.anilist_id,
-                english: anime.english.clone(),
-                romaji: anime.romaji.clone(),
-            };
-            self.library.record(hashes, anime_ref);
+            // Downloading something adds its series to the library.
+            let new = new_series(&ap.anime);
+            let root = self.library_dir();
+            self.library.record(hashes, &new, &root);
         }
         let Page::Files(fp) = &self.page else { return };
         let provider = self.debrid.config.provider;
@@ -1140,20 +1191,20 @@ impl App {
             self.vpn_settings(ui, actions);
             ui.separator();
         }
-        ui.strong("Download folder");
+        ui.strong("Library folder");
         ui.horizontal(|ui| {
-            let mut text = self.settings.download_dir.display().to_string();
+            let mut text = self.settings.library_dir.display().to_string();
             if ui
                 .add(egui::TextEdit::singleline(&mut text).desired_width(280.0))
                 .changed()
             {
-                self.settings.download_dir = PathBuf::from(text);
+                self.settings.library_dir = PathBuf::from(text);
             }
             if ui.button("Browse…").clicked() {
-                actions.push(Action::PickFolder);
+                actions.push(Action::PickLibraryFolder);
             }
         });
-        ui.weak("Multi-file torrents get their own folder inside it.");
+        ui.weak("Each series gets its own folder here; downloads go straight into it.");
         ui.separator();
         ui.checkbox(&mut self.settings.prefer_dual_audio, "Prefer dual-audio releases")
             .on_hover_text(
@@ -1768,7 +1819,7 @@ impl App {
                             if !existing && ui.small_button("Change…").clicked() {
                                 actions.push(Action::PickFolder);
                             }
-                            let folder = fp.output_folder(&self.download_dir());
+                            let folder = fp.output_folder(&self.library_dir());
                             let folder = folder.display().to_string();
                             ui.add(egui::Label::new(RichText::new(&folder).monospace()).truncate())
                                 .on_hover_text(&folder);
@@ -2076,6 +2127,19 @@ fn cover(ui: &mut Ui, url: Option<&str>, size: egui::Vec2) {
     }
 }
 
+/// What the library needs to know to add an anime.
+fn new_series(anime: &Anime) -> crate::library::NewSeries {
+    crate::library::NewSeries {
+        anilist_id: anime.anilist_id,
+        english: anime.english.clone(),
+        romaji: anime.romaji.clone(),
+        cover: anime.cover_large.clone().or(anime.cover_small.clone()),
+        format: anime.format.clone(),
+        year: anime.year,
+        episodes: anime.episodes,
+    }
+}
+
 fn result_badge(anime: &Anime, prefer_dual_audio: bool) -> RichText {
     let Some(entry) = &anime.entry else {
         return RichText::new("Not on SeaDex · will rank Nyaa releases by group").weak();
@@ -2150,6 +2214,14 @@ fn fmt_bytes(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// A path with a leading `~` expanded.
+fn expand_home(dir: &Path) -> PathBuf {
+    match (dir.strip_prefix("~"), dirs::home_dir()) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => dir.to_owned(),
     }
 }
 

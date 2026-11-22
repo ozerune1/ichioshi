@@ -1,12 +1,21 @@
-//! Which AniList anime each download belongs to, by torrent info hash.
-//! Remuxes are named after it. Saved as JSON in the app's state folder.
+//! Your anime library: the series you've added, each with its own folder
+//! under the library folder, the downloads that belong to it, its language
+//! preferences, and its AniList details. Saved as JSON in the app's state
+//! folder.
+//!
+//! The first version of this file only remembered which AniList anime each
+//! torrent belonged to (by info hash); that's read and turned into series.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::engine::sanitize_folder_name;
+use crate::prefs::LangPrefs;
+
+/// Which anime something belongs to (names remuxes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnimeRef {
     pub anilist_id: u64,
@@ -21,76 +30,321 @@ impl AnimeRef {
     }
 }
 
+/// AniList's details about a series.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Details {
+    pub native: Option<String>,
+    pub synonyms: Vec<String>,
+    /// Plain text.
+    pub description: Option<String>,
+    pub genres: Vec<String>,
+    /// Out of 100.
+    pub score: Option<u32>,
+    /// FINISHED, RELEASING, NOT_YET_RELEASED, CANCELLED, HIATUS.
+    pub status: Option<String>,
+    pub format: Option<String>,
+    pub episodes: Option<u32>,
+    /// Minutes per episode.
+    pub duration: Option<u32>,
+    pub season: Option<String>,
+    pub year: Option<i32>,
+    pub source: Option<String>,
+    pub studios: Vec<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    /// The next episode and when it airs (Unix time).
+    pub next_episode: Option<(u32, i64)>,
+    pub cover: Option<String>,
+    pub banner: Option<String>,
+    /// When these were fetched (Unix time).
+    pub fetched: i64,
+}
+
+/// A file whose default tracks have been set: with which preferences, and
+/// the file's size and modification time then (a changed file is redone).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Applied {
+    pub key: String,
+    pub len: u64,
+    pub modified: i64,
+    /// Why it couldn't be done (not Matroska, say); not retried until the file changes.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Series {
+    pub anilist_id: u64,
+    pub english: Option<String>,
+    pub romaji: Option<String>,
+    /// Its folder in the library.
+    pub folder: PathBuf,
+    /// When it was added (Unix time).
+    #[serde(default)]
+    pub added: i64,
+    #[serde(default)]
+    pub cover: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub year: Option<i32>,
+    #[serde(default)]
+    pub episodes: Option<u32>,
+    /// Its own language preferences (else the library's).
+    #[serde(default)]
+    pub prefs: Option<LangPrefs>,
+    /// Torrents downloaded for it, by info hash.
+    #[serde(default)]
+    pub downloads: BTreeSet<String>,
+    #[serde(default)]
+    pub details: Option<Details>,
+    /// Files whose default tracks are set, by path within the folder.
+    #[serde(default)]
+    pub applied: BTreeMap<String, Applied>,
+}
+
+impl Series {
+    pub fn title(&self) -> &str {
+        self.english.as_deref().or(self.romaji.as_deref()).unwrap_or("Untitled")
+    }
+
+    pub fn anime_ref(&self) -> AnimeRef {
+        AnimeRef { anilist_id: self.anilist_id, english: self.english.clone(), romaji: self.romaji.clone() }
+    }
+
+    /// The video files in its folder (and folders inside it), sorted.
+    pub fn video_files(&self) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        collect_videos(&self.folder, 3, &mut files);
+        files.sort();
+        files
+    }
+}
+
+fn collect_videos(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        let name = e.file_name();
+        // Staging folders and partial downloads aren't episodes yet.
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        match e.file_type() {
+            Ok(t) if t.is_dir() && depth > 0 => collect_videos(&path, depth - 1, out),
+            Ok(t) if t.is_file() && crate::remux::is_video(&path) => out.push(path),
+            _ => {}
+        }
+    }
+}
+
+/// What to know about an anime to add it.
+#[derive(Debug, Clone, Default)]
+pub struct NewSeries {
+    pub anilist_id: u64,
+    pub english: Option<String>,
+    pub romaji: Option<String>,
+    pub cover: Option<String>,
+    pub format: Option<String>,
+    pub year: Option<i32>,
+    pub episodes: Option<u32>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Saved {
+    series: Vec<Series>,
+}
+
 pub struct Library {
     path: PathBuf,
-    by_info_hash: HashMap<String, AnimeRef>,
+    pub series: Vec<Series>,
 }
 
 impl Library {
-    /// Load from `path`; a missing or unreadable file gives an empty library.
-    pub fn load(path: PathBuf) -> Self {
-        let by_info_hash = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| match serde_json::from_str(&text) {
-                Ok(map) => Some(map),
-                Err(e) => {
-                    tracing::warn!("ignoring unreadable {}: {e}", path.display());
-                    None
-                }
-            })
-            .unwrap_or_default();
-        Self { path, by_info_hash }
+    /// Load from `path`; series added from the old format get folders
+    /// under `root`. A missing or unreadable file gives an empty library.
+    pub fn load(path: PathBuf, root: &Path) -> Self {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let series = if text.trim().is_empty() {
+            Vec::new()
+        } else if let Ok(saved) = serde_json::from_str::<Saved>(&text) {
+            saved.series
+        } else if let Ok(old) = serde_json::from_str::<HashMap<String, AnimeRef>>(&text) {
+            let mut lib = Self { path: path.clone(), series: Vec::new() };
+            let mut old: Vec<(String, AnimeRef)> = old.into_iter().collect();
+            old.sort_by(|a, b| a.0.cmp(&b.0));
+            for (hash, anime) in old {
+                let new = NewSeries { anilist_id: anime.anilist_id, english: anime.english, romaji: anime.romaji, ..Default::default() };
+                lib.add(&new, root).downloads.insert(hash.to_ascii_lowercase());
+            }
+            lib.save_or_warn();
+            lib.series
+        } else {
+            tracing::warn!("ignoring unreadable {}", path.display());
+            Vec::new()
+        };
+        Self { path, series }
     }
 
-    pub fn get(&self, info_hash: &str) -> Option<&AnimeRef> {
-        self.by_info_hash.get(&info_hash.to_ascii_lowercase())
+    fn save(&self) -> Result<()> {
+        crate::fsutil::write_private(&self.path, &serde_json::to_vec_pretty(&Saved { series: self.series.clone() })?)
     }
 
-    /// Remember that these torrents belong to `anime`, and save.
-    pub fn record(&mut self, info_hashes: impl IntoIterator<Item = String>, anime: AnimeRef) {
-        for hash in info_hashes {
-            self.by_info_hash.insert(hash.to_ascii_lowercase(), anime.clone());
-        }
+    pub fn save_or_warn(&self) {
         if let Err(e) = self.save() {
             tracing::warn!("could not save {}: {e:#}", self.path.display());
         }
     }
 
-    fn save(&self) -> Result<()> {
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = tmp_path(&self.path);
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&self.by_info_hash)?)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path)?;
-        Ok(())
+    /// The anime a torrent belongs to.
+    pub fn get(&self, info_hash: &str) -> Option<AnimeRef> {
+        self.series_for(info_hash).map(Series::anime_ref)
     }
-}
 
-fn tmp_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    path.with_file_name(name)
+    pub fn series_for(&self, info_hash: &str) -> Option<&Series> {
+        let hash = info_hash.to_ascii_lowercase();
+        self.series.iter().find(|s| s.downloads.contains(&hash))
+    }
+
+    pub fn find(&self, anilist_id: u64) -> Option<&Series> {
+        self.series.iter().find(|s| s.anilist_id == anilist_id)
+    }
+
+    pub fn find_mut(&mut self, anilist_id: u64) -> Option<&mut Series> {
+        self.series.iter_mut().find(|s| s.anilist_id == anilist_id)
+    }
+
+    /// The folder a series has, or would get under `root`.
+    pub fn folder_for(&self, new: &NewSeries, root: &Path) -> PathBuf {
+        if let Some(s) = self.find(new.anilist_id) {
+            return s.folder.clone();
+        }
+        let title = new.english.as_deref().or(new.romaji.as_deref()).unwrap_or("Untitled");
+        let name = sanitize_folder_name(title);
+        let taken = |p: &Path| self.series.iter().any(|s| s.folder == p);
+        let plain = root.join(&name);
+        if !taken(&plain) {
+            return plain;
+        }
+        let with_year = new.year.map(|y| root.join(format!("{name} ({y})")));
+        match with_year {
+            Some(p) if !taken(&p) => p,
+            _ => root.join(format!("{name} [{}]", new.anilist_id)),
+        }
+    }
+
+    /// Add a series (or return it if it's there), and save.
+    pub fn add(&mut self, new: &NewSeries, root: &Path) -> &mut Series {
+        if let Some(i) = self.series.iter().position(|s| s.anilist_id == new.anilist_id) {
+            // Fill in what wasn't known before.
+            let s = &mut self.series[i];
+            s.cover = s.cover.take().or(new.cover.clone());
+            s.format = s.format.take().or(new.format.clone());
+            s.year = s.year.or(new.year);
+            s.episodes = s.episodes.or(new.episodes);
+            return &mut self.series[i];
+        }
+        let folder = self.folder_for(new, root);
+        self.series.push(Series {
+            anilist_id: new.anilist_id,
+            english: new.english.clone(),
+            romaji: new.romaji.clone(),
+            folder,
+            added: chrono::Utc::now().timestamp(),
+            cover: new.cover.clone(),
+            format: new.format.clone(),
+            year: new.year,
+            episodes: new.episodes,
+            prefs: None,
+            downloads: BTreeSet::new(),
+            details: None,
+            applied: BTreeMap::new(),
+        });
+        self.save_or_warn();
+        self.series.last_mut().unwrap()
+    }
+
+    /// Remember that these torrents belong to a series (added if needed), and save.
+    pub fn record(&mut self, info_hashes: impl IntoIterator<Item = String>, new: &NewSeries, root: &Path) {
+        let series = self.add(new, root);
+        for hash in info_hashes {
+            series.downloads.insert(hash.to_ascii_lowercase());
+        }
+        self.save_or_warn();
+    }
+
+    /// Take a series out of the library (its files are left alone).
+    pub fn remove(&mut self, anilist_id: u64) -> Option<Series> {
+        let i = self.series.iter().position(|s| s.anilist_id == anilist_id)?;
+        let s = self.series.remove(i);
+        self.save_or_warn();
+        Some(s)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn round_trips_and_ignores_hash_case() {
-        let dir = std::env::temp_dir().join(format!("seadex-library-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("library.json");
-        let anime = AnimeRef { anilist_id: 1, english: None, romaji: Some("Sousou no Frieren".into()) };
+    fn new(id: u64, english: &str, year: i32) -> NewSeries {
+        NewSeries { anilist_id: id, english: Some(english.into()), year: Some(year), ..Default::default() }
+    }
 
-        let mut lib = Library::load(path.clone());
-        assert!(lib.get("ABC").is_none());
-        lib.record(["ABCdef".to_owned()], anime.clone());
-        let lib = Library::load(path);
-        assert_eq!(lib.get("abcDEF"), Some(&anime));
-        assert_eq!(lib.get("abcdef").unwrap().title(), Some("Sousou no Frieren"));
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn adds_series_with_their_own_folders_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Anime");
+        let path = dir.path().join("library.json");
+        let mut lib = Library::load(path.clone(), &root);
+        assert!(lib.series.is_empty() && lib.get("ABC").is_none());
+
+        lib.record(["ABCdef".to_owned()], &new(1, "Frieren: Beyond Journey's End", 2023), &root);
+        assert_eq!(lib.find(1).unwrap().folder, root.join("Frieren: Beyond Journey's End"));
+        // Same title, another anime: the year tells them apart, then the ID.
+        lib.add(&new(2, "Frieren: Beyond Journey's End", 2026), &root);
+        lib.add(&new(3, "Frieren: Beyond Journey's End", 2026), &root);
+        assert_eq!(lib.find(2).unwrap().folder, root.join("Frieren: Beyond Journey's End (2026)"));
+        assert_eq!(lib.find(3).unwrap().folder, root.join("Frieren: Beyond Journey's End [3]"));
+        // Adding again changes nothing but what was missing.
+        lib.add(&NewSeries { cover: Some("c.png".into()), ..new(1, "Other name", 2000) }, &root);
+        assert_eq!(lib.series.len(), 3);
+        assert_eq!(lib.find(1).unwrap().cover.as_deref(), Some("c.png"));
+
+        let lib = Library::load(path, &root);
+        assert_eq!(lib.get("abcDEF").unwrap().anilist_id, 1);
+        assert_eq!(lib.series_for("ABCDEF").unwrap().title(), "Frieren: Beyond Journey's End");
+        assert_eq!(lib.series.len(), 3);
+    }
+
+    #[test]
+    fn turns_the_old_torrent_map_into_series() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Anime");
+        let path = dir.path().join("library.json");
+        let a = AnimeRef { anilist_id: 7, english: None, romaji: Some("Sousou no Frieren".into()) };
+        let old: HashMap<&str, &AnimeRef> = [("AAA", &a), ("bbb", &a)].into();
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let lib = Library::load(path.clone(), &root);
+        assert_eq!(lib.series.len(), 1);
+        let s = &lib.series[0];
+        assert_eq!((s.anilist_id, s.title(), s.folder.clone()), (7, "Sousou no Frieren", root.join("Sousou no Frieren")));
+        assert_eq!(s.downloads, ["aaa".to_owned(), "bbb".to_owned()].into());
+        // Saved in the new format.
+        assert_eq!(Library::load(path, &root).series, lib.series);
+    }
+
+    #[test]
+    fn finds_episodes_but_not_partial_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lib = Library::load(dir.path().join("l.json"), dir.path());
+        let s = lib.add(&new(1, "Show", 2026), dir.path()).clone();
+        std::fs::create_dir_all(s.folder.join("Extras")).unwrap();
+        std::fs::create_dir_all(s.folder.join(".usenet-3")).unwrap();
+        for f in ["Show - 01.mkv", "Show - 02.mkv", "Extras/NCOP.mkv", "notes.txt", ".usenet-3/Show - 03.mkv"] {
+            std::fs::write(s.folder.join(f), b"x").unwrap();
+        }
+        let names: Vec<String> = s.video_files().iter().map(|p| p.strip_prefix(&s.folder).unwrap().display().to_string()).collect();
+        assert_eq!(names, ["Extras/NCOP.mkv", "Show - 01.mkv", "Show - 02.mkv"]);
     }
 }

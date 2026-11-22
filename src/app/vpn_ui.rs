@@ -104,7 +104,7 @@ impl App {
             tracing::info!("torrents go through {interface}{port}");
         }
         let (current, lock) = (self.engine_seq.clone(), self.engine_lock.clone());
-        let (state_dir, default_dir) = (self.state_dir.clone(), self.download_dir());
+        let (state_dir, default_dir) = (self.state_dir.clone(), self.library_dir());
         self.spawn(async move {
             // One start or stop at a time, in order: sessions share files and ports.
             let _turn = lock.lock().await;

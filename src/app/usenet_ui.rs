@@ -307,8 +307,8 @@ impl App {
     }
 
     pub(super) fn usenet_open_remux(&mut self, id: u64) {
-        let Some(series) = self.usenet.manager.series_files(id, &self.download_dir()) else { return };
-        let known = series.info_hashes.iter().find_map(|h| self.library.get(h)).cloned();
+        let Some(series) = self.usenet.manager.series_files(id, &self.library_dir()) else { return };
+        let known = series.info_hashes.iter().find_map(|h| self.library.get(h));
         self.open_remux_series(series, known);
     }
 

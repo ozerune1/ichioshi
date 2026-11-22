@@ -77,7 +77,9 @@ fn harness(base: &Path, handle: tokio::runtime::Handle) -> Harness<'static, App>
         .build_eframe(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             let mut app = App::new(cc, handle, state_dir);
-            app.settings.download_dir = downloads;
+            // Never the real library or Downloads.
+            app.settings.download_dir = downloads.clone();
+            app.settings.library_dir = downloads;
             app
         })
 }
@@ -264,7 +266,7 @@ fn render_remux_page() {
     click(&mut h, "Remux 3 episodes");
     wait_until(&mut h, "remux", |a| matches!(&a.page, Page::Remux(rp) if rp.run.as_ref().is_some_and(|r| r.finished)));
     save(&mut h, &base, "3-remux-done.png");
-    let out = base.join("downloads").join("Frieren: Beyond Journey’s End");
+    let out = base.join("downloads").join("Remuxed").join("Frieren: Beyond Journey’s End");
     let mut made: Vec<String> =
         std::fs::read_dir(&out).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     made.sort();
@@ -918,11 +920,15 @@ fn downloads_from_usenet() {
     click(&mut h, "Files");
     h.run_steps(5);
     save(&mut h, &base, "usenet-4-done.png");
-    let out = base.join("downloads").join("[Group] Show S01");
+    // Into the series' folder in the library, which now lists it.
+    let out = base.join("downloads").join("Show");
     assert!(std::fs::read(out.join("Show - 01.mkv")).unwrap() == data[0]);
     assert!(std::fs::read(out.join("Show - 03.mkv")).unwrap() == data[2]);
     assert!(!out.join("Show - 02.mkv").exists());
     assert!(h.state().engine().is_none_or(|e| e.torrents().is_empty()), "nothing went to BitTorrent");
+    let series = h.state().library.find(1).expect("added to the library");
+    assert_eq!(series.folder, out);
+    assert!(series.downloads.contains(&hash));
 
     // The providers dialog: check the login.
     click(&mut h, "⚙ Settings");

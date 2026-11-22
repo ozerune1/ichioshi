@@ -101,18 +101,20 @@ impl RemuxPage {
     }
 }
 
-fn default_out_dir(download_dir: &Path, title: &str) -> String {
+/// Remuxed copies go in `<library>/Remuxed/<title>`, apart from the series'
+/// own folder (which keeps the downloads, all tracks intact).
+fn default_out_dir(library_dir: &Path, title: &str) -> String {
     let title = title.trim();
     let name = if title.is_empty() { "Remuxes".to_owned() } else { remux::sanitize_filename(title) };
-    download_dir.join(name).display().to_string()
+    library_dir.join("Remuxed").join(name).display().to_string()
 }
 
 impl App {
     pub(super) fn open_remux(&mut self, handle: TorrentHandle) {
         let Some(engine) = self.engine() else { return };
-        match engine.series_files(&handle, &self.download_dir()) {
+        match engine.series_files(&handle, &self.library_dir()) {
             Ok(series) => {
-                let known = series.info_hashes.iter().find_map(|h| self.library.get(h)).cloned();
+                let known = series.info_hashes.iter().find_map(|h| self.library.get(h));
                 self.open_remux_series(series, known);
             }
             Err(e) => self.set_error(format!("Can't remux this yet: {e:#}")),
@@ -136,7 +138,7 @@ impl App {
         let query = title::anilist_query(&series.name);
         self.cancel_listing();
         self.page = Page::Remux(RemuxPage {
-            out_dir: default_out_dir(&self.download_dir(), &title),
+            out_dir: default_out_dir(&self.library_dir(), &title),
             series,
             title,
             title_note,
@@ -173,7 +175,7 @@ impl App {
     }
 
     pub(super) fn handle_remux_msg(&mut self, msg: Msg) {
-        let download_dir = self.download_dir();
+        let download_dir = self.library_dir();
         let Page::Remux(rp) = &mut self.page else { return };
         let mut sample = None;
         match msg {
@@ -347,7 +349,7 @@ impl App {
         }
         ui.add_space(8.0);
 
-        let download_dir = self.download_dir();
+        let download_dir = self.library_dir();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.add_enabled_ui(!locked, |ui| {
                 egui::Grid::new("remux_settings").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
