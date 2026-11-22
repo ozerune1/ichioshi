@@ -23,9 +23,6 @@ const FLAGS_TEXT: &str = "soft-colorbalance+deinterlace+soft-volume+text+audio+v
 pub enum Frames {
     /// For iced_video_player (it converts to RGB on the GPU).
     Nv12,
-    /// For tests and thumbnails.
-    #[cfg(test)]
-    Rgba,
 }
 
 /// A playbin for `path`, and the appsink its frames arrive at.
@@ -35,8 +32,6 @@ pub fn pipeline(path: &Path, frames: Frames) -> Result<(gst::Pipeline, gst_app::
         .map_err(|()| anyhow!("{} isn't a full path", path.display()))?;
     let format = match frames {
         Frames::Nv12 => "NV12",
-        #[cfg(test)]
-        Frames::Rgba => "RGBA",
     };
     // Dithered: 10-bit anime down to 8 bits without banding.
     let sink = gst::parse::bin_from_description(
@@ -71,15 +66,27 @@ pub fn pipeline(path: &Path, frames: Frames) -> Result<(gst::Pipeline, gst_app::
     Ok((pipeline, appsink))
 }
 
-/// Tracks and chapters, from the file (Matroska), as the player lists them:
-/// a track's `id` is its index among playbin's streams of that kind.
-pub fn describe(path: &Path) -> (Vec<Track>, Vec<Chapter>, Option<usize>, Option<usize>) {
+/// What the player needs to know about a file's tracks and chapters.
+#[derive(Debug, Default)]
+pub struct Described {
+    /// As the player lists them: a track's `id` is its index among
+    /// playbin's streams of its kind.
+    pub tracks: Vec<Track>,
+    pub chapters: Vec<Chapter>,
+    /// The file's default audio and subtitles (indices).
+    pub audio: Option<usize>,
+    pub subs: Option<usize>,
+    /// Each subtitle track's number in the file and codec, by index.
+    pub sub_tracks: Vec<(u64, String)>,
+}
+
+/// Tracks and chapters, from the file (Matroska).
+pub fn describe(path: &Path) -> Described {
     let Ok(info) = crate::mkv::probe(path) else {
-        return (Vec::new(), Vec::new(), None, None);
+        return Described::default();
     };
-    let mut tracks = Vec::new();
+    let mut d = Described::default();
     let (mut audio_i, mut sub_i) = (0i64, 0i64);
-    let (mut audio, mut subs) = (None, None);
     for t in &info.tracks {
         let (kind, index) = match t.kind {
             crate::mkv::TrackKind::Audio => {
@@ -88,6 +95,7 @@ pub fn describe(path: &Path) -> (Vec<Track>, Vec<Chapter>, Option<usize>, Option
             }
             crate::mkv::TrackKind::Subtitles => {
                 sub_i += 1;
+                d.sub_tracks.push((t.number, t.codec_id.clone()));
                 (TrackKind::Sub, sub_i - 1)
             }
             _ => continue,
@@ -95,12 +103,12 @@ pub fn describe(path: &Path) -> (Vec<Track>, Vec<Chapter>, Option<usize>, Option
         // The file's defaults (the library sets them from your languages).
         if t.default {
             match kind {
-                TrackKind::Audio if audio.is_none() => audio = Some(index as usize),
-                TrackKind::Sub if subs.is_none() => subs = Some(index as usize),
+                TrackKind::Audio if d.audio.is_none() => d.audio = Some(index as usize),
+                TrackKind::Sub if d.subs.is_none() => d.subs = Some(index as usize),
                 _ => {}
             }
         }
-        tracks.push(Track {
+        d.tracks.push(Track {
             id: index,
             kind,
             title: Some(t.name.clone()).filter(|n| !n.is_empty()),
@@ -117,10 +125,10 @@ pub fn describe(path: &Path) -> (Vec<Track>, Vec<Chapter>, Option<usize>, Option
             selected: false,
         });
     }
-    if audio.is_none() && audio_i > 0 {
-        audio = Some(0);
+    if d.audio.is_none() && audio_i > 0 {
+        d.audio = Some(0);
     }
-    let chapters = info
+    d.chapters = info
         .chapters
         .iter()
         .map(|(start, title)| Chapter {
@@ -129,7 +137,12 @@ pub fn describe(path: &Path) -> (Vec<Track>, Vec<Chapter>, Option<usize>, Option
             start: *start,
         })
         .collect();
-    (tracks, chapters, audio, subs)
+    d
+}
+
+/// Whether libass can draw a subtitle codec (text: SRT, ASS, WebVTT).
+pub fn is_text_subtitle(codec_id: &str) -> bool {
+    codec_id.starts_with("S_TEXT/") || matches!(codec_id, "S_ASS" | "S_SSA")
 }
 
 pub fn set_audio(pipeline: &gst::Pipeline, index: usize) {
@@ -145,38 +158,6 @@ pub fn set_subtitles(pipeline: &gst::Pipeline, index: Option<usize>) {
         }
         None => pipeline.set_property_from_str("flags", FLAGS),
     }
-}
-
-/// One frame at `at` seconds, as RGBA (tests, comparisons).
-#[cfg(test)]
-pub fn frame_at(path: &Path, at: f64, subtitles: Option<usize>) -> Result<image::RgbaImage> {
-    let (pipeline, sink) = pipeline(path, Frames::Rgba)?;
-    pipeline.set_property("mute", true);
-    set_subtitles(&pipeline, subtitles);
-    let result = (|| {
-        pipeline.set_state(gst::State::Paused)?;
-        let (r, _, _) = pipeline.state(gst::ClockTime::from_seconds(10));
-        r?;
-        pipeline.seek_simple(
-            gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
-            gst::ClockTime::from_nseconds((at * 1e9) as u64),
-        )?;
-        let (r, _, _) = pipeline.state(gst::ClockTime::from_seconds(10));
-        r?;
-        let sample = sink.pull_preroll().map_err(|e| anyhow!("no frame: {e}"))?;
-        let caps = sample.caps().context("no caps")?;
-        let info = gstreamer_video::VideoInfo::from_caps(caps)?;
-        let buffer = sample.buffer().context("no buffer")?;
-        let map = buffer.map_readable()?;
-        let (w, h, stride) = (info.width(), info.height(), info.stride()[0] as usize);
-        let mut pixels = Vec::with_capacity(w as usize * h as usize * 4);
-        for y in 0..h as usize {
-            pixels.extend_from_slice(&map[y * stride..y * stride + w as usize * 4]);
-        }
-        image::RgbaImage::from_raw(w, h, pixels).context("frame size")
-    })();
-    let _ = pipeline.set_state(gst::State::Null);
-    result
 }
 
 /// Whether GStreamer (with playbin and libass) is there; tests skip without.
@@ -296,13 +277,85 @@ pub(crate) mod tests {
         ok.then_some(out)
     }
 
+    /// A clip with one subtitle line, 2–6 s (SRT or ASS).
+    pub(crate) fn one_line(dir: &Path, kind: &str) -> Option<std::path::PathBuf> {
+        let sub = dir.join(format!("line.{kind}"));
+        let text = if kind == "srt" {
+            "1\n00:00:02,000 --> 00:00:06,000\nHELLO THERE\n".to_owned()
+        } else {
+            "[Script Info]\nScriptType: v4.00+\nPlayResX: 640\nPlayResY: 360\n\n[V4+ Styles]\n\
+             Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+             Style: Default,Inter,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1\n\n\
+             [Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+             Dialogue: 0,0:00:02.00,0:00:06.00,Default,,0,0,0,,HELLO THERE\n"
+                .to_owned()
+        };
+        std::fs::write(&sub, text).ok()?;
+        let out = dir.join(format!("line-{kind}.mkv"));
+        let ok = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=640x360:r=24:d=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=d=10",
+            ])
+            .arg("-i")
+            .arg(&sub)
+            .args([
+                "-map",
+                "0",
+                "-map",
+                "1",
+                "-map",
+                "2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-g",
+                "24",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .args([
+                "-c:a",
+                "flac",
+                "-c:s",
+                if kind == "srt" { "srt" } else { "ass" },
+            ])
+            .arg(&out)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(out)
+    }
+
     #[test]
     fn describes_tracks_and_chapters() {
         let dir = tempfile::tempdir().unwrap();
         let Some(file) = crate::player::tests::sample_episode(dir.path(), "Show - 01.mkv") else {
             return;
         };
-        let (tracks, chapters, audio, subs) = describe(&file);
+        let Described {
+            tracks,
+            chapters,
+            audio,
+            subs,
+            sub_tracks,
+        } = describe(&file);
+        assert_eq!(
+            sub_tracks
+                .iter()
+                .map(|(_, c)| c.as_str())
+                .collect::<Vec<_>>(),
+            ["S_TEXT/ASS", "S_TEXT/ASS"]
+        );
         let labels: Vec<String> = tracks.iter().map(Track::label).collect();
         assert_eq!(
             labels,
@@ -323,35 +376,5 @@ pub(crate) mod tests {
                 (4.0, crate::player::Part::Ending)
             ]
         );
-    }
-
-    /// GStreamer draws styled subtitles into the frames (libass): the
-    /// picture where the sign is changes with subtitles on.
-    #[test]
-    fn draws_styled_subtitles_into_frames() {
-        if !available() {
-            eprintln!("skipping: no GStreamer with playbin and assrender");
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let Some(file) = typeset_sample(dir.path()) else {
-            return;
-        };
-        let with = frame_at(&file, 1.0, Some(0)).unwrap();
-        let without = frame_at(&file, 1.0, None).unwrap();
-        assert_eq!(with.dimensions(), (1920, 1080));
-        // The dialogue line's area, bottom middle.
-        let differs = |x0: u32, y0: u32, x1: u32, y1: u32| {
-            (y0..y1)
-                .step_by(4)
-                .flat_map(|y| (x0..x1).step_by(4).map(move |x| (x, y)))
-                .filter(|&(x, y)| with.get_pixel(x, y) != without.get_pixel(x, y))
-                .count()
-        };
-        assert!(differs(400, 960, 1520, 1040) > 200, "dialogue drawn in");
-        assert!(differs(150, 120, 900, 300) > 200, "the sign drawn in");
-        if let Some(out) = std::env::var_os("COMPARE_DIR") {
-            with.save(Path::new(&out).join("gstreamer.png")).unwrap();
-        }
     }
 }

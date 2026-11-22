@@ -407,7 +407,8 @@ impl Track {
                 parts.push(format!("{codec}{ch}"));
             }
         }
-        if self.forced {
+        // Unless the title says so already ("German (Forced)").
+        if self.forced && !parts.iter().any(|p| p.to_lowercase().contains("forced")) {
             parts.push("forced".into());
         }
         if self.external {

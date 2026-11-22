@@ -18,6 +18,7 @@ mod prefs;
 mod remux;
 mod seadex;
 mod storage;
+mod subs;
 mod tiers;
 mod title;
 mod tracking;

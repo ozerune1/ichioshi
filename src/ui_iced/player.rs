@@ -6,17 +6,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::anyhow;
-use iced::widget::{
-    button, column, container, mouse_area, pick_list, row, slider, space, stack, text,
-};
-use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length};
-use iced_video_player::{Video, VideoPlayer};
+use std::sync::Arc;
 
-use super::Message;
-use super::pages::{
-    ACCENT, BOLD, LINE, MEDIUM, MUTED, SEMI, TEXT, accent_gradient, fill_color, rounded,
-};
+use anyhow::anyhow;
+use iced::widget::image;
+use iced_video_player::Video;
+
 use crate::gst_video::{self, Frames};
 use crate::player::{Chapter, Part, Track, TrackKind};
 
@@ -33,9 +28,35 @@ impl std::fmt::Display for TrackChoice {
     }
 }
 
+/// A panel over the picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Panel {
+    /// Audio and subtitles.
+    Tracks,
+    Settings,
+}
+
+/// The player's settings (switches in its settings panel).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setting {
+    SkipOpenings,
+    SkipEndings,
+    Autoplay,
+}
+
 #[derive(Clone, Debug)]
 pub enum Msg {
     TogglePause,
+    /// A click on the picture: closes a panel, else play/pause.
+    Surface,
+    Panel(Panel),
+    Setting(Setting, bool),
+    /// A new frame is up: subtitles for its moment.
+    Frame,
+    /// The file's subtitles (and fonts), read in the background.
+    SubsLoaded(PathBuf, Option<Arc<crate::mkv::TextSubtitles>>),
+    /// Subtitles later (positive) or earlier, in milliseconds.
+    SubDelay(i64),
     Seek(f64),
     SeekDone,
     SeekBy(f64),
@@ -57,8 +78,7 @@ pub struct Player {
     pub series: u64,
     pub episode: u32,
     pub path: PathBuf,
-    /// "Frieren - 05".
-    pub title: String,
+    pub series_title: String,
     /// The episode's own title.
     pub name: Option<String>,
     pub tracks: Vec<Track>,
@@ -78,10 +98,28 @@ pub struct Player {
     pub active: Instant,
     /// Chapters skipped automatically in this episode.
     pub skipped: HashSet<usize>,
+    pub panel: Option<Panel>,
+    /// Each subtitle track's number in the file and codec, by index.
+    sub_tracks: Vec<(u64, String)>,
+    /// Text subtitles, drawn by libass over the picture.
+    text_subs: Option<Arc<crate::mkv::TextSubtitles>>,
+    ass: Option<crate::subs::Renderer>,
+    /// What libass drew last, and for which moment and size.
+    pub overlay: Option<image::Handle>,
+    drawn_for: Option<(i64, (u32, u32), i32)>,
+    /// The window's size in pixels (subtitles are drawn at the picture's
+    /// size in it).
+    pub view_px: (u32, u32),
+    /// Pixels per point.
+    pub scale: f32,
+    pub sub_delay_ms: i64,
 }
 
 /// How far "Skip 85s" (and the J and L keys) go: an anime opening's usual
 /// length.
+/// How much of the window's bottom the controls take, in points.
+pub const CONTROLS_HEIGHT: f64 = 140.0;
+
 pub const SKIP: f64 = 85.0;
 
 /// "1:23", "1:02:03".
@@ -101,18 +139,31 @@ impl Player {
         path: &Path,
         start: Option<f64>,
         (series, episode): (u64, u32),
-        title: String,
+        series_title: String,
         name: Option<String>,
         volume: f64,
     ) -> anyhow::Result<Self> {
         let (pipeline, sink) = gst_video::pipeline(path, Frames::Nv12)?;
-        let (tracks, chapters, audio, subs) = gst_video::describe(path);
+        let gst_video::Described {
+            tracks,
+            chapters,
+            audio,
+            subs,
+            sub_tracks,
+        } = gst_video::describe(path);
         let mut video =
             Video::from_gst_pipeline(pipeline, sink, None).map_err(|e| anyhow!("{e}"))?;
         if let Some(a) = audio {
             gst_video::set_audio(&video.pipeline(), a);
         }
-        gst_video::set_subtitles(&video.pipeline(), subs);
+        // Text subtitles are drawn here (libass); GStreamer only draws
+        // image ones (PGS, VobSub).
+        let bitmap = subs.filter(|i| {
+            sub_tracks
+                .get(*i)
+                .is_some_and(|(_, c)| !gst_video::is_text_subtitle(c))
+        });
+        gst_video::set_subtitles(&video.pipeline(), bitmap);
         video.set_volume((volume / 100.0).clamp(0.0, 1.5));
         if let Some(at) = start {
             let _ = video.seek(Duration::from_secs_f64(at), true);
@@ -122,7 +173,7 @@ impl Player {
             series,
             episode,
             path: path.to_owned(),
-            title,
+            series_title,
             name,
             tracks,
             chapters,
@@ -135,6 +186,15 @@ impl Player {
             last_saved: Instant::now(),
             active: Instant::now(),
             skipped: HashSet::new(),
+            panel: None,
+            sub_tracks,
+            text_subs: None,
+            ass: None,
+            overlay: None,
+            drawn_for: None,
+            view_px: (1440, 900),
+            scale: 1.0,
+            sub_delay_ms: 0,
         })
     }
 
@@ -196,6 +256,86 @@ impl Player {
         let secs = secs.clamp(0.0, self.duration().max(0.0));
         self.ended = false;
         let _ = self.video.seek(Duration::from_secs_f64(secs), accurate);
+        self.draw_subs(Some(secs));
+    }
+
+    /// The file's subtitles are read: show the chosen ones.
+    pub fn subs_loaded(&mut self, subs: Arc<crate::mkv::TextSubtitles>) {
+        if crate::subs::available() {
+            self.ass = crate::subs::Renderer::new(&subs).ok();
+        }
+        self.text_subs = Some(subs);
+        self.apply_subs();
+    }
+
+    /// Route the chosen subtitles: text to libass, images to GStreamer.
+    fn apply_subs(&mut self) {
+        let chosen = self.subs.and_then(|i| self.sub_tracks.get(i).cloned());
+        let text = chosen
+            .as_ref()
+            .filter(|(_, codec)| gst_video::is_text_subtitle(codec));
+        gst_video::set_subtitles(
+            &self.video.pipeline(),
+            if chosen.is_some() && text.is_none() {
+                self.subs
+            } else {
+                None
+            },
+        );
+        let (w, h) = self.video.size();
+        if let Some(ass) = &mut self.ass {
+            let track = text.and_then(|(n, _)| self.text_subs.as_ref()?.tracks.get(n));
+            ass.set_track(track, (w.max(0) as u32, h.max(0) as u32));
+        }
+        self.overlay = None;
+        self.drawn_for = None;
+        self.draw_subs(None);
+    }
+
+    /// The picture's size in the window, in pixels.
+    fn picture_px(&self) -> (u32, u32) {
+        let (vw, vh) = self.video.size();
+        let (ww, wh) = self.view_px;
+        if vw <= 0 || vh <= 0 || ww == 0 || wh == 0 {
+            return (0, 0);
+        }
+        let s = (ww as f64 / vw as f64).min(wh as f64 / vh as f64);
+        (
+            (vw as f64 * s).round() as u32,
+            (vh as f64 * s).round() as u32,
+        )
+    }
+
+    /// Draw the subtitles for the moment shown (or `at`, after a seek).
+    pub fn draw_subs(&mut self, at: Option<f64>) {
+        if self.ass.is_none() {
+            return;
+        }
+        let size = self.picture_px();
+        let at = at.unwrap_or_else(|| self.video.position().as_secs_f64());
+        let now = (at * 1000.0).round() as i64 - self.sub_delay_ms;
+        // Dialogue moves up out of the controls' way while they show (as
+        // Netflix does, and mpv's sub-pos): by as much of the picture as
+        // they cover.
+        let raise = if self.controls_shown() && size.1 > 0 {
+            let covered =
+                CONTROLS_HEIGHT * self.scale as f64 - (self.view_px.1 as f64 - size.1 as f64) / 2.0;
+            (covered.max(0.0) / size.1 as f64 * 100.0).ceil() + 1.0
+        } else {
+            0.0
+        };
+        if self.drawn_for == Some((now, size, raise as i32)) {
+            return;
+        }
+        self.drawn_for = Some((now, size, raise as i32));
+        let Some(ass) = &mut self.ass else { return };
+        match ass.draw(now, size, raise) {
+            crate::subs::Drawn::Unchanged => {}
+            crate::subs::Drawn::Empty => self.overlay = None,
+            crate::subs::Drawn::Image(px) => {
+                self.overlay = Some(image::Handle::from_rgba(size.0, size.1, px))
+            }
+        }
     }
 
     pub fn skip_part(&mut self) {
@@ -206,7 +346,10 @@ impl Player {
 
     /// The controls' own changes (the app handles going places).
     pub fn update(&mut self, msg: Msg) {
-        self.active = Instant::now();
+        // What you do brings the controls up; what the video does doesn't.
+        if !matches!(msg, Msg::Frame | Msg::SubsLoaded(..)) {
+            self.active = Instant::now();
+        }
         match msg {
             Msg::TogglePause => {
                 if self.ended {
@@ -219,6 +362,7 @@ impl Player {
             Msg::Seek(to) => {
                 self.dragging = Some(to);
                 let _ = self.video.seek(Duration::from_secs_f64(to), false);
+                self.draw_subs(Some(to));
             }
             Msg::SeekDone => {
                 if let Some(to) = self.dragging.take() {
@@ -245,16 +389,36 @@ impl Player {
                 }
             }
             Msg::Subs(c) => {
-                gst_video::set_subtitles(&self.video.pipeline(), c.index);
                 self.subs = c.index;
+                self.apply_subs();
+            }
+            Msg::Frame => self.draw_subs(None),
+            Msg::SubsLoaded(path, Some(subs)) if path == self.path => self.subs_loaded(subs),
+            Msg::SubsLoaded(..) => {}
+            Msg::SubDelay(d) => {
+                self.sub_delay_ms += d;
+                self.drawn_for = None;
+                self.draw_subs(None);
             }
             Msg::SkipPart => self.skip_part(),
+            Msg::Surface => match self.panel.take() {
+                Some(_) => {}
+                None => self.update(Msg::TogglePause),
+            },
+            Msg::Panel(panel) => {
+                self.panel = if self.panel == Some(panel) {
+                    None
+                } else {
+                    Some(panel)
+                }
+            }
             Msg::Ended => self.ended = true,
-            Msg::Moved | Msg::Next | Msg::Prev | Msg::Fullscreen | Msg::Back => {}
+            Msg::Moved | Msg::Next | Msg::Prev | Msg::Fullscreen | Msg::Back | Msg::Setting(..) => {
+            }
         }
     }
 
-    fn choices(&self, kind: TrackKind) -> Vec<TrackChoice> {
+    pub(super) fn choices(&self, kind: TrackKind) -> Vec<TrackChoice> {
         let mut out: Vec<TrackChoice> = self
             .tracks
             .iter()
@@ -269,384 +433,32 @@ impl Player {
                 0,
                 TrackChoice {
                     index: None,
-                    label: "No subtitles".into(),
+                    label: "Off".into(),
                 },
             );
         }
         out
     }
 
-    fn chosen(&self, kind: TrackKind) -> Option<TrackChoice> {
-        let index = if kind == TrackKind::Audio {
+    pub(super) fn chosen(&self, kind: TrackKind) -> Option<usize> {
+        if kind == TrackKind::Audio {
             self.audio
         } else {
             self.subs
-        };
-        self.choices(kind).into_iter().find(|c| c.index == index)
+        }
     }
 
-    /// The page: the picture, and the controls while the mouse moves (or
-    /// when paused).
-    pub fn view<'a>(
-        &'a self,
-        next: Option<u32>,
-        prev: Option<u32>,
-        fullscreen: bool,
-    ) -> Element<'a, Message> {
-        let picture = VideoPlayer::new(&self.video)
-            .width(Fill)
-            .height(Fill)
-            .content_fit(ContentFit::Contain)
-            .on_end_of_stream(Message::Player(Msg::Ended));
-        let base = mouse_area(
-            container(picture)
-                .width(Fill)
-                .height(Fill)
-                .style(|_| black()),
-        )
-        .on_press(Message::Player(Msg::TogglePause))
-        .on_double_click(Message::Player(Msg::Fullscreen))
-        .on_move(|_| Message::Player(Msg::Moved));
-        let show = self.paused()
+    pub(super) fn dragging(&self) -> bool {
+        self.dragging.is_some()
+    }
+
+    /// Whether the controls are up: paused, at the end, in a panel, or the
+    /// mouse moved lately.
+    pub(super) fn controls_shown(&self) -> bool {
+        self.paused()
             || self.ended
-            || self.dragging.is_some()
-            || self.active.elapsed() < Duration::from_millis(2500);
-        let mut layers = vec![Element::from(base)];
-
-        // Skip the opening or ending, whenever it's on; without chapters
-        // that say where they are, 85 seconds (an opening's usual length).
-        let named = self
-            .chapters
-            .iter()
-            .any(|c| matches!(c.part, Part::Opening | Part::Ending));
-        let label = match self.current_part() {
-            Some((_, chapter, end)) if named => {
-                let last = (end - self.duration()).abs() < 0.5;
-                match chapter.part {
-                    Part::Opening => Some(("Skip opening  ⏵", Msg::SkipPart)),
-                    Part::Ending if last && next.is_some() => Some(("Next episode  ⏵", Msg::Next)),
-                    Part::Ending => Some(("Skip ending  ⏵", Msg::SkipPart)),
-                    _ => None,
-                }
-            }
-            _ if !named && show && self.duration() - self.position() > SKIP => {
-                Some(("Skip 85s  ⏵", Msg::SeekBy(SKIP)))
-            }
-            _ => None,
-        };
-        if let Some((label, msg)) = label {
-            let b = button(text(label).size(15).font(SEMI).color(Color::WHITE))
-                .padding([11, 20])
-                .on_press(Message::Player(msg))
-                .style(|_, _| button::Style {
-                    background: Some(fill_color(Color {
-                        a: 0.75,
-                        ..Color::BLACK
-                    })),
-                    text_color: Color::WHITE,
-                    border: Border {
-                        color: Color::WHITE.scale_alpha(0.35),
-                        width: 1.0,
-                        radius: 10.0.into(),
-                    },
-                    ..button::Style::default()
-                });
-            let gap = if show { 120.0 } else { 40.0 };
-            let b: Element<'a, Message> = if label.starts_with("Skip 85s") {
-                iced::widget::tooltip(
-                    b,
-                    container(
-                        text("No chapters say where the opening is: 85 seconds on (L)")
-                            .size(12)
-                            .color(TEXT),
-                    )
-                    .padding(8)
-                    .style(|_| container::Style {
-                        background: Some(fill_color(Color::BLACK.scale_alpha(0.85))),
-                        border: rounded(6.0),
-                        ..Default::default()
-                    }),
-                    iced::widget::tooltip::Position::Top,
-                )
-                .into()
-            } else {
-                b.into()
-            };
-            layers.push(
-                container(b)
-                    .width(Fill)
-                    .height(Fill)
-                    .align_x(Alignment::End)
-                    .align_y(Alignment::End)
-                    .padding(iced::Padding {
-                        bottom: gap,
-                        right: 32.0,
-                        ..Default::default()
-                    })
-                    .into(),
-            );
-        }
-
-        // At the end, with nothing playing next: what's next.
-        if self.ended
-            && let Some(n) = next
-        {
-            let b = button(
-                text(format!("▶  Episode {n}"))
-                    .size(18)
-                    .font(BOLD)
-                    .color(Color::WHITE),
-            )
-            .padding([14, 26])
-            .on_press(Message::Player(Msg::Next))
-            .style(|_, _| button::Style {
-                background: Some(accent_gradient()),
-                text_color: Color::WHITE,
-                border: rounded(12.0),
-                ..button::Style::default()
-            });
-            layers.push(
-                container(
-                    column![text("Up next").size(13).color(MUTED), b]
-                        .spacing(10)
-                        .align_x(Alignment::Center),
-                )
-                .center(Fill)
-                .into(),
-            );
-        }
-
-        if show {
-            layers.push(self.controls(next, prev, fullscreen));
-        }
-        stack(layers).width(Fill).height(Fill).into()
-    }
-
-    fn controls<'a>(
-        &'a self,
-        next: Option<u32>,
-        prev: Option<u32>,
-        fullscreen: bool,
-    ) -> Element<'a, Message> {
-        let flat = |label: &'static str, size: u32| text(label).size(size).color(TEXT);
-        let icon = |label: &'static str, msg: Option<Msg>| {
-            button(flat(label, 18))
-                .padding([6, 10])
-                .on_press_maybe(msg.map(p))
-                .style(|_, status| button::Style {
-                    background: (status == button::Status::Hovered)
-                        .then(|| fill_color(Color::WHITE.scale_alpha(0.1))),
-                    text_color: if status == button::Status::Disabled {
-                        MUTED
-                    } else {
-                        TEXT
-                    },
-                    border: rounded(8.0),
-                    ..button::Style::default()
-                })
-        };
-
-        let top = container(
-            row![
-                button(row![text("←").size(15), text("Back").size(14).font(MEDIUM)].spacing(6))
-                    .padding([8, 14])
-                    .on_press(p(Msg::Back))
-                    .style(|_, _| button::Style {
-                        background: Some(fill_color(Color::WHITE.scale_alpha(0.1))),
-                        text_color: TEXT,
-                        border: rounded(9.0),
-                        ..button::Style::default()
-                    }),
-                column![
-                    iced::widget::tooltip(
-                        text(self.title.clone())
-                            .size(17)
-                            .font(BOLD)
-                            .color(Color::WHITE),
-                        container(text(self.path.display().to_string()).size(12).color(TEXT))
-                            .padding(8)
-                            .style(|_| container::Style {
-                                background: Some(fill_color(Color::BLACK.scale_alpha(0.85))),
-                                border: rounded(6.0),
-                                ..Default::default()
-                            }),
-                        iced::widget::tooltip::Position::Bottom,
-                    ),
-                    text(self.name.clone().unwrap_or_default())
-                        .size(13)
-                        .color(MUTED),
-                ]
-                .spacing(1),
-            ]
-            .spacing(16)
-            .align_y(Alignment::Center),
-        )
-        .padding([16, 24])
-        .width(Fill)
-        .style(|_| gradient_style(true));
-
-        let (pos, dur) = (self.position(), self.duration().max(0.001));
-        let seek = stack![
-            container(self.chapter_strip(dur))
-                .height(18)
-                .align_y(Alignment::Center),
-            slider(0.0..=dur, pos.min(dur), |v| p(Msg::Seek(v)))
-                .on_release(p(Msg::SeekDone))
-                .step(0.1)
-                .height(18)
-                .style(|_, _| slider::Style {
-                    rail: slider::Rail {
-                        backgrounds: (
-                            fill_color(ACCENT.scale_alpha(0.85)),
-                            Background::Color(Color::TRANSPARENT)
-                        ),
-                        width: 5.0,
-                        border: rounded(3.0),
-                    },
-                    handle: slider::Handle {
-                        shape: slider::HandleShape::Circle { radius: 7.0 },
-                        background: fill_color(Color::WHITE),
-                        border_width: 0.0,
-                        border_color: Color::TRANSPARENT,
-                    },
-                }),
-        ];
-
-        let play = if self.paused() || self.ended {
-            "▶"
-        } else {
-            "⏸"
-        };
-        let audio = pick_list(
-            self.choices(TrackKind::Audio),
-            self.chosen(TrackKind::Audio),
-            |c| p(Msg::Audio(c)),
-        )
-        .text_size(13)
-        .padding([6, 10])
-        .width(230)
-        .style(pick_style);
-        let subs = pick_list(
-            self.choices(TrackKind::Sub),
-            self.chosen(TrackKind::Sub),
-            |c| p(Msg::Subs(c)),
-        )
-        .text_size(13)
-        .padding([6, 10])
-        .width(230)
-        .style(pick_style);
-        let speaker = if self.video.muted() || self.volume <= 0.0 {
-            "🔇"
-        } else {
-            "🔊"
-        };
-        let buttons = row![
-            icon("⏮", prev.map(|_| Msg::Prev)),
-            icon(play, Some(Msg::TogglePause)),
-            icon("⏭", next.map(|_| Msg::Next)),
-            text(format!("{} / {}", clock(pos), clock(self.duration())))
-                .size(13)
-                .font(MEDIUM)
-                .color(TEXT),
-            space().width(10),
-            icon(speaker, Some(Msg::Mute)),
-            slider(0.0..=150.0, self.volume, |v| p(Msg::Volume(v)))
-                .width(110)
-                .height(14),
-            space::horizontal(),
-            audio,
-            subs,
-            icon(if fullscreen { "⤡" } else { "⤢" }, Some(Msg::Fullscreen)),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-        let bottom = container(column![seek, buttons].spacing(8))
-            .padding([14, 24])
-            .width(Fill)
-            .style(|_| gradient_style(false));
-        column![top, space::vertical(), bottom]
-            .width(Fill)
-            .height(Fill)
-            .into()
-    }
-
-    /// The chapters as a strip under the seek bar: openings and endings
-    /// tinted.
-    fn chapter_strip<'a>(&self, dur: f64) -> Element<'a, Message> {
-        if self.chapters.is_empty() {
-            return container(space())
-                .width(Fill)
-                .height(5)
-                .style(|_| container::Style {
-                    background: Some(fill_color(Color::WHITE.scale_alpha(0.2))),
-                    border: rounded(3.0),
-                    ..Default::default()
-                })
-                .into();
-        }
-        let mut strip = row![].spacing(2).height(5);
-        for (i, c) in self.chapters.iter().enumerate() {
-            let end = self.chapters.get(i + 1).map_or(dur, |n| n.start);
-            let share = (((end - c.start) / dur) * 1000.0).round().max(1.0) as u16;
-            let color = match c.part {
-                Part::Opening | Part::Ending => Color::from_rgba8(0xff, 0xc8, 0x50, 0.55),
-                _ => Color::WHITE.scale_alpha(0.22),
-            };
-            strip = strip.push(
-                container(space())
-                    .width(Length::FillPortion(share))
-                    .height(5)
-                    .style(move |_| container::Style {
-                        background: Some(fill_color(color)),
-                        border: rounded(2.0),
-                        ..Default::default()
-                    }),
-            );
-        }
-        strip.into()
-    }
-}
-
-fn p(m: Msg) -> Message {
-    Message::Player(m)
-}
-
-fn black() -> container::Style {
-    container::Style {
-        background: Some(fill_color(Color::BLACK)),
-        ..Default::default()
-    }
-}
-
-fn gradient_style(top: bool) -> container::Style {
-    let (a, b) = if top { (0.75, 0.0) } else { (0.0, 0.85) };
-    container::Style {
-        background: Some(Background::Gradient(
-            iced::gradient::Linear::new(std::f32::consts::PI)
-                .add_stop(0.0, Color { a, ..Color::BLACK })
-                .add_stop(
-                    1.0,
-                    Color {
-                        a: b,
-                        ..Color::BLACK
-                    },
-                )
-                .into(),
-        )),
-        ..Default::default()
-    }
-}
-
-fn pick_style(_: &iced::Theme, _: pick_list::Status) -> pick_list::Style {
-    pick_list::Style {
-        text_color: TEXT,
-        placeholder_color: MUTED,
-        handle_color: MUTED,
-        background: fill_color(Color::WHITE.scale_alpha(0.08)),
-        border: Border {
-            color: LINE,
-            width: 1.0,
-            radius: 8.0.into(),
-        },
+            || self.panel.is_some()
+            || self.dragging()
+            || self.active.elapsed() < Duration::from_millis(2500)
     }
 }

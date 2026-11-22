@@ -730,6 +730,231 @@ pub fn subtitle_samples(
     Ok(samples)
 }
 
+/// One subtitle line as stored: when (milliseconds) and the block's data
+/// (for ASS, "ReadOrder,Layer,Style,...,Text"; for SRT, the text).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubEvent {
+    pub start_ms: i64,
+    pub duration_ms: i64,
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SubTrack {
+    pub codec_id: String,
+    /// The ASS header (styles), for ASS tracks.
+    pub codec_private: Vec<u8>,
+    pub events: Vec<SubEvent>,
+}
+
+/// A file's text subtitle tracks (by track number) and attached fonts:
+/// everything a subtitle renderer needs.
+#[derive(Clone, Debug, Default)]
+pub struct TextSubtitles {
+    pub tracks: HashMap<u64, SubTrack>,
+    pub fonts: Vec<(String, Vec<u8>)>,
+}
+
+/// How a track's blocks are stored: as is, zlib, or with a stripped header.
+enum Stored {
+    Plain,
+    Zlib,
+    Stripped(Vec<u8>),
+}
+
+/// Read every text subtitle track (SRT, ASS, WebVTT) and the attached fonts,
+/// walking only block headers past video and audio.
+pub fn text_subtitles(path: &Path) -> Result<TextSubtitles> {
+    const TIMESTAMP_SCALE: u32 = 0x2A_D7B1;
+    const CODEC_PRIVATE: u32 = 0x63A2;
+    const CONTENT_ENCODING: u32 = 0x6240;
+    const CONTENT_COMPRESSION: u32 = 0x5034;
+    const COMP_ALGO: u32 = 0x4254;
+    const COMP_SETTINGS: u32 = 0x4255;
+    const ATTACHED_FILE: u32 = 0x61A7;
+    const FILE_NAME: u32 = 0x466E;
+    const FILE_MIME: u32 = 0x4660;
+    const FILE_DATA: u32 = 0x465C;
+    let src = Source::open(path)?;
+    let layout = layout_full(&src)?;
+    let mut scale: u64 = 1_000_000;
+    let mut out = TextSubtitles::default();
+    let mut stored: HashMap<u64, Stored> = HashMap::new();
+    for top in &layout.top {
+        match top.id {
+            INFO => {
+                let data = src.read(top.data_start, top.end)?;
+                if let Some(e) = children(&data).iter().find(|e| e.id == TIMESTAMP_SCALE) {
+                    scale = uint(e.data).max(1);
+                }
+            }
+            TRACKS => {
+                let data = src.read(top.data_start, top.end)?;
+                for entry in children(&data).into_iter().filter(|e| e.id == TRACK_ENTRY) {
+                    let info = parse_track(entry.data);
+                    if !info.codec_id.starts_with("S_TEXT/")
+                        && !matches!(info.codec_id.as_str(), "S_ASS" | "S_SSA")
+                    {
+                        continue;
+                    }
+                    let parts = children(entry.data);
+                    let private = parts
+                        .iter()
+                        .find(|e| e.id == CODEC_PRIVATE)
+                        .map(|e| e.data.to_vec())
+                        .unwrap_or_default();
+                    let mut how = Stored::Plain;
+                    if let Some(enc) = parts.iter().find(|e| e.id == CONTENT_ENCODINGS) {
+                        for encoding in children(enc.data)
+                            .into_iter()
+                            .filter(|e| e.id == CONTENT_ENCODING)
+                        {
+                            if let Some(comp) = children(encoding.data)
+                                .into_iter()
+                                .find(|e| e.id == CONTENT_COMPRESSION)
+                            {
+                                let c = children(comp.data);
+                                let algo = c
+                                    .iter()
+                                    .find(|e| e.id == COMP_ALGO)
+                                    .map_or(0, |e| uint(e.data));
+                                how = match algo {
+                                    0 => Stored::Zlib,
+                                    3 => Stored::Stripped(
+                                        c.iter()
+                                            .find(|e| e.id == COMP_SETTINGS)
+                                            .map(|e| e.data.to_vec())
+                                            .unwrap_or_default(),
+                                    ),
+                                    _ => continue,
+                                };
+                            }
+                        }
+                    }
+                    stored.insert(info.number, how);
+                    out.tracks.insert(
+                        info.number,
+                        SubTrack {
+                            codec_id: info.codec_id,
+                            codec_private: private,
+                            events: Vec::new(),
+                        },
+                    );
+                }
+            }
+            ATTACHMENTS => {
+                let data = src.read(top.data_start, top.end)?;
+                for file in children(&data)
+                    .into_iter()
+                    .filter(|e| e.id == ATTACHED_FILE)
+                {
+                    let parts = children(file.data);
+                    let name = parts
+                        .iter()
+                        .find(|e| e.id == FILE_NAME)
+                        .map(|e| string(e.data))
+                        .unwrap_or_default();
+                    let mime = parts
+                        .iter()
+                        .find(|e| e.id == FILE_MIME)
+                        .map(|e| string(e.data))
+                        .unwrap_or_default();
+                    let lower = name.to_ascii_lowercase();
+                    let font = mime.contains("font")
+                        || [".ttf", ".otf", ".ttc"].iter().any(|x| lower.ends_with(x));
+                    if font && let Some(d) = parts.iter().find(|e| e.id == FILE_DATA) {
+                        out.fonts.push((name, d.data.to_vec()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if out.tracks.is_empty() {
+        return Ok(out);
+    }
+    let unpack = |track: u64, payload: &[u8]| -> Option<Vec<u8>> {
+        match stored.get(&track)? {
+            Stored::Plain => Some(payload.to_vec()),
+            Stored::Zlib => {
+                let mut v = Vec::new();
+                std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(payload), &mut v)
+                    .ok()?;
+                Some(v)
+            }
+            Stored::Stripped(head) => Some([head.as_slice(), payload].concat()),
+        }
+    };
+    let ms = |ticks: i64| ticks * scale as i64 / 1_000_000;
+    for cluster in layout.top.iter().filter(|t| t.id == CLUSTER) {
+        let mut cluster_time: i64 = 0;
+        let mut pos = cluster.data_start;
+        while pos < cluster.end {
+            let Some((h, data_start)) = src.header_at(pos)? else {
+                break;
+            };
+            let Some(size) = h.size else { break };
+            let end = data_start + size;
+            let take = |block: &[u8], duration: Option<u64>, out: &mut TextSubtitles| {
+                let Some((track, n)) = vint(block, false) else {
+                    return;
+                };
+                if !out.tracks.contains_key(&track) || block.len() < n + 3 {
+                    return;
+                }
+                let relative = i16::from_be_bytes([block[n], block[n + 1]]) as i64;
+                let Some(data) = unpack(track, &block[n + 3..]) else {
+                    return;
+                };
+                let start_ms = ms(cluster_time + relative);
+                let duration_ms = duration.map_or(-1, |d| ms(d as i64));
+                if let Some(t) = out.tracks.get_mut(&track) {
+                    t.events.push(SubEvent {
+                        start_ms,
+                        duration_ms,
+                        data,
+                    });
+                }
+            };
+            match h.id {
+                TIMESTAMP => cluster_time = uint(&src.read(data_start, end)?) as i64,
+                SIMPLE_BLOCK => {
+                    let head = src.read(data_start, (data_start + 12).min(end))?;
+                    if let Some((track, _)) = vint(&head, false)
+                        && out.tracks.contains_key(&track)
+                    {
+                        take(&src.read(data_start, end)?, None, &mut out);
+                    }
+                }
+                BLOCK_GROUP if size <= 4 << 20 => {
+                    let group = src.read(data_start, end)?;
+                    let parts = children(&group);
+                    let duration = parts
+                        .iter()
+                        .find(|c| c.id == BLOCK_DURATION)
+                        .map(|c| uint(c.data));
+                    for block in parts.iter().filter(|c| c.id == BLOCK) {
+                        take(block.data, duration, &mut out);
+                    }
+                }
+                _ => {}
+            }
+            pos = end;
+        }
+    }
+    // Lines without a duration last until the next one (at most 5 s).
+    for t in out.tracks.values_mut() {
+        t.events.sort_by_key(|e| e.start_ms);
+        for i in 0..t.events.len() {
+            if t.events[i].duration_ms < 0 {
+                let next = t.events.get(i + 1).map_or(i64::MAX, |n| n.start_ms);
+                t.events[i].duration_ms = (next - t.events[i].start_ms).clamp(0, 5000);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The readable text of one subtitle event, without styling.
 fn subtitle_text(codec_id: &str, payload: &[u8]) -> Option<String> {
     static MARKUP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{[^}]*\}|<[^>]*>").unwrap());

@@ -5,6 +5,7 @@
 mod lists;
 mod pages;
 mod player;
+mod player_view;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -34,6 +35,9 @@ pub enum Message {
     DismissNote,
     Tick,
     Key(Key, keyboard::Modifiers),
+    /// The window's size (logical) and display scale.
+    Resized(iced::Size),
+    Scale(f32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +90,8 @@ pub struct App {
     player: Option<player::Player>,
     player_settings: crate::player::Settings,
     fullscreen: bool,
+    window: iced::Size,
+    scale: f32,
     note: Option<(String, bool, Instant)>,
     /// A demo library: lists and downloads from its files, not the sites.
     demo: bool,
@@ -95,7 +101,10 @@ pub fn run(state_dir: PathBuf) -> iced::Result {
     iced::application(
         move || {
             let app = App::new(&state_dir);
-            (app, Task::done(Message::Tick))
+            let scale = iced::window::latest()
+                .and_then(iced::window::scale_factor)
+                .map(Message::Scale);
+            (app, Task::batch([Task::done(Message::Tick), scale]))
         },
         App::update,
         App::view,
@@ -141,6 +150,8 @@ impl App {
             player: None,
             player_settings: crate::player::Settings::default(),
             fullscreen: false,
+            window: iced::Size::new(1440.0, 900.0),
+            scale: 1.0,
             note: None,
             demo,
         };
@@ -210,6 +221,16 @@ impl App {
             }
             Message::Tick => self.tick(),
             Message::Key(key, modifiers) => self.key(key, modifiers),
+            Message::Resized(size) => {
+                self.window = size;
+                self.size_player();
+                Task::none()
+            }
+            Message::Scale(scale) => {
+                self.scale = scale;
+                self.size_player();
+                Task::none()
+            }
         }
     }
 
@@ -257,6 +278,10 @@ impl App {
             {
                 p.skip_part();
             }
+            // Paused, no frames arrive: subtitles for seeks while paused.
+            if p.paused() {
+                p.draw_subs(None);
+            }
             if !p.paused() && p.last_saved.elapsed() > Duration::from_secs(15) {
                 self.save_progress();
             }
@@ -270,6 +295,19 @@ impl App {
             self.rebuild();
         }
         Task::batch(tasks)
+    }
+
+    /// Tell the player its size in pixels (subtitles are drawn at it).
+    fn size_player(&mut self) {
+        let px = (
+            (self.window.width * self.scale).round() as u32,
+            (self.window.height * self.scale).round() as u32,
+        );
+        if let Some(p) = &mut self.player {
+            p.view_px = px;
+            p.scale = self.scale;
+            p.draw_subs(None);
+        }
     }
 
     /// Remember how far the episode playing got; a newly finished one goes
@@ -324,7 +362,7 @@ impl App {
             return Task::none();
         };
         let start = series.watched.get(&episode).and_then(Watch::resume_at);
-        let title = format!("{} - {episode:02}", series.title());
+        let title = series.title().to_owned();
         let name = series
             .details
             .as_ref()
@@ -340,6 +378,7 @@ impl App {
         match player::Player::open(&path, start, (id, episode), title, name, volume) {
             Ok(p) => {
                 self.player = Some(p);
+                self.size_player();
                 if self.page != Page::Player {
                     self.back = self.page;
                     self.page = Page::Player;
@@ -347,6 +386,20 @@ impl App {
                 if let Some(at) = start {
                     self.note(format!("Resuming at {}", player::clock(at)), false);
                 }
+                // The subtitles and fonts, read off the UI thread.
+                return Task::perform(
+                    async move {
+                        let read = path.clone();
+                        let subs =
+                            tokio::task::spawn_blocking(move || crate::mkv::text_subtitles(&read))
+                                .await;
+                        (
+                            path,
+                            subs.ok().and_then(Result::ok).map(std::sync::Arc::new),
+                        )
+                    },
+                    |(path, subs)| Message::Player(player::Msg::SubsLoaded(path, subs)),
+                );
             }
             Err(e) => self.note(format!("Couldn't play it: {e:#}"), true),
         }
@@ -373,6 +426,15 @@ impl App {
                 self.fullscreen = !self.fullscreen;
                 set_fullscreen(self.fullscreen)
             }
+            Msg::Setting(setting, on) => {
+                let s = &mut self.player_settings;
+                match setting {
+                    player::Setting::SkipOpenings => s.skip_openings = on,
+                    player::Setting::SkipEndings => s.skip_endings = on,
+                    player::Setting::Autoplay => s.autoplay = on,
+                }
+                Task::none()
+            }
             Msg::Next | Msg::Prev => {
                 let forward = matches!(msg, Msg::Next);
                 match (
@@ -395,6 +457,21 @@ impl App {
                         (self.neighbour(true), self.player.as_ref().map(|p| p.series))
                 {
                     return self.play(id, ep);
+                }
+                Task::none()
+            }
+            Msg::SubDelay(d) => {
+                if let Some(p) = &mut self.player {
+                    p.update(Msg::SubDelay(d));
+                    let ms = p.sub_delay_ms;
+                    self.note(
+                        format!(
+                            "Subtitle delay {}{:.1} s",
+                            if ms > 0 { "+" } else { "" },
+                            ms as f64 / 1000.0
+                        ),
+                        false,
+                    );
                 }
                 Task::none()
             }
@@ -437,6 +514,8 @@ impl App {
             Key::Character("s") => Msg::SkipPart,
             Key::Character("n") => Msg::Next,
             Key::Character("p") => Msg::Prev,
+            Key::Character("z") => Msg::SubDelay(-100),
+            Key::Character("x") => Msg::SubDelay(100),
             Key::Named(Named::Escape) if self.fullscreen => Msg::Fullscreen,
             Key::Named(Named::Escape) => Msg::Back,
             _ => return Task::none(),
@@ -447,6 +526,7 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick),
+            iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             keyboard::listen().filter_map(key_message),
         ])
     }
@@ -458,6 +538,7 @@ impl App {
                     self.neighbour(true),
                     self.neighbour(false),
                     self.fullscreen,
+                    &self.player_settings,
                 ));
             }
             (Page::Library | Page::Player, _) => self.library(),
@@ -546,6 +627,62 @@ mod tests {
         }
     }
 
+    /// Read the playing episode's subtitles now (the app does it in the
+    /// background, which the simulator doesn't run).
+    fn load_subs(app: &mut App) {
+        let p = app.player.as_mut().unwrap();
+        let subs = crate::mkv::text_subtitles(&p.path).unwrap();
+        p.subs_loaded(std::sync::Arc::new(subs));
+    }
+
+    /// A line that began before a seek is on screen right after it (the
+    /// bug GStreamer's own subtitles had: resuming and skipping lost lines).
+    #[test]
+    #[ignore = "needs GStreamer, libass and ffmpeg"]
+    fn shows_the_line_a_seek_lands_in() {
+        if !crate::gst_video::available() || !crate::subs::available() {
+            eprintln!("skipping: no GStreamer or libass");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let mut library = Library::load(state.join("library.json"), dir.path());
+        let new = crate::library::NewSeries {
+            anilist_id: 9,
+            english: Some("Show".into()),
+            ..Default::default()
+        };
+        let folder = library.add(&new, dir.path()).folder.clone();
+        let Some(sample) = crate::gst_video::tests::one_line(&dir.path().join("sample"), "srt")
+        else {
+            return;
+        };
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::copy(&sample, folder.join("Show - 01.mkv")).unwrap();
+        library.save_or_warn();
+
+        let mut app = App::new(&state);
+        let _ = app.update(Message::Play(9, 1));
+        load_subs(&mut app);
+        assert!(
+            app.player.as_ref().unwrap().overlay.is_none(),
+            "nothing before 2 s"
+        );
+        app.player.as_mut().unwrap().seek_to(3.5, true);
+        assert!(
+            app.player.as_ref().unwrap().overlay.is_some(),
+            "the 2–6 s line, at 3.5 s"
+        );
+        app.player.as_mut().unwrap().seek_to(7.0, true);
+        assert!(
+            app.player.as_ref().unwrap().overlay.is_none(),
+            "gone after 6 s"
+        );
+        // A delay moves it: 3 seconds later, it's on at 7 s.
+        let _ = app.update(Message::Player(player::Msg::SubDelay(3000)));
+        assert!(app.player.as_ref().unwrap().overlay.is_some());
+    }
+
     /// Whether the app as drawn now shows `label`.
     fn shows(app: &App, label: &str) -> bool {
         let settings = iced::Settings {
@@ -588,13 +725,13 @@ mod tests {
             a.player.as_ref().unwrap().position() > 0.3
         });
         assert!(app.player.as_ref().unwrap().chapters.is_empty());
-        assert!(!shows(&app, "Skip opening  ⏵"));
-        click(&mut app, "Skip 85s  ⏵");
+        assert!(!shows(&app, "Skip opening"));
+        click(&mut app, "Skip 85s");
         wait(&mut app, "85 seconds on", |a| {
             a.player.as_ref().unwrap().position() >= 85.0
         });
         let _ = app.update(Message::Player(player::Msg::Moved));
-        assert!(!shows(&app, "Skip 85s  ⏵"), "less than 85 seconds left");
+        assert!(!shows(&app, "Skip 85s"), "less than 85 seconds left");
     }
 
     fn wait(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
@@ -675,6 +812,7 @@ mod tests {
         let _ = app.update(Message::Go(Page::Series(9)));
         click(&mut app, "▶  Play episode 1");
         assert_eq!(app.page, Page::Player);
+        load_subs(&mut app);
         let p = app.player.as_ref().unwrap();
         let labels: Vec<String> = p.tracks.iter().map(crate::player::Track::label).collect();
         assert_eq!(labels, ["Japanese · FLAC 1.0", "English · Full Subtitles"]);
@@ -689,9 +827,14 @@ mod tests {
         wait(&mut app, "playing", |a| {
             a.player.as_ref().unwrap().position() > 0.5
         });
-        assert!(!shows(&app, "Skip 85s  ⏵"));
+        assert!(!shows(&app, "Skip 85s"));
+        let _ = app.update(Message::Player(player::Msg::Frame));
+        assert!(
+            app.player.as_ref().unwrap().overlay.is_some(),
+            "the typeset subtitles, by libass"
+        );
         snapshot(&app, &out.join("1-opening"));
-        click(&mut app, "Skip opening  ⏵");
+        click(&mut app, "Skip opening");
         wait(&mut app, "past the opening", |a| {
             a.player.as_ref().unwrap().position() >= 2.0
         });
@@ -728,6 +871,82 @@ mod tests {
         assert_eq!(app.page, Page::Series(9));
         assert!(app.player.is_none());
         snapshot(&app, &out.join("3-series"));
+    }
+
+    /// `PLAYER_SAMPLE=<a real episode>`: screenshots of the player with it
+    /// (paused with subtitles, the audio & subtitles panel, settings, and
+    /// playing with the controls hidden), in `$LIVE_TEST_DIR/player-design`.
+    #[test]
+    #[ignore = "needs PLAYER_SAMPLE"]
+    fn player_screens() {
+        let Some(file) = std::env::var_os("PLAYER_SAMPLE").map(PathBuf::from) else {
+            return;
+        };
+        let at: f64 = std::env::var("PLAYER_AT")
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(122.5);
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let mut library = Library::load(state.join("library.json"), dir.path());
+        let new = crate::library::NewSeries {
+            anilist_id: 9,
+            english: Some("The Way of the Househusband".into()),
+            ..Default::default()
+        };
+        let folder = library.add(&new, dir.path()).folder.clone();
+        std::fs::create_dir_all(&folder).unwrap();
+        // A link, not a copy: the episode isn't touched.
+        std::os::unix::fs::symlink(&file, folder.join("The Way of the Househusband - 01.mkv"))
+            .unwrap();
+        library.save_or_warn();
+        let out = std::env::var_os("LIVE_TEST_DIR").map_or(dir.path().join("screens"), |d| {
+            PathBuf::from(d).join("player-design")
+        });
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+
+        let mut app = App::new(&state);
+        // The simulator draws at twice the size.
+        let _ = app.update(Message::Scale(2.0));
+        let _ = app.update(Message::Play(9, 1));
+        assert!(app.player.is_some(), "didn't play: {:?}", app.note);
+        load_subs(&mut app);
+        app.player.as_mut().unwrap().name = Some("Okay, not too shabby".into());
+        app.player.as_mut().unwrap().seek_to(at, true);
+        wait(&mut app, "there", |a| {
+            a.player.as_ref().unwrap().position() >= at + 0.3
+        });
+        // Each snapshot is a new renderer, which only gets the picture from
+        // a new frame: panels are shown playing.
+        let frame = |app: &mut App| {
+            let _ = app.update(Message::Player(player::Msg::Frame));
+        };
+        let _ = app.update(Message::Player(player::Msg::Panel(player::Panel::Tracks)));
+        frame(&mut app);
+        snapshot(&app, &out.join("2-tracks"));
+        let _ = app.update(Message::Player(player::Msg::Panel(player::Panel::Settings)));
+        frame(&mut app);
+        snapshot(&app, &out.join("3-settings"));
+        let _ = app.update(Message::Player(player::Msg::Panel(player::Panel::Settings)));
+        let back = app.player.as_ref().unwrap().position() - 1.2;
+        app.player.as_mut().unwrap().seek_to(back, true);
+        wait(&mut app, "back", |a| {
+            a.player.as_ref().unwrap().position() >= back + 0.3
+        });
+        let _ = app.update(Message::Player(player::Msg::TogglePause));
+        wait(&mut app, "paused", |a| a.player.as_ref().unwrap().paused());
+        frame(&mut app);
+        snapshot(&app, &out.join("1-paused"));
+        let _ = app.update(Message::Player(player::Msg::TogglePause));
+        std::thread::sleep(Duration::from_millis(400));
+        app.player.as_mut().unwrap().active = Instant::now() - Duration::from_secs(10);
+        frame(&mut app);
+        assert!(
+            !app.player.as_ref().unwrap().controls_shown(),
+            "frames don't count as activity"
+        );
+        snapshot(&app, &out.join("4-playing"));
     }
 
     /// `DEMO_DIR=<demo library>`: screenshots of each page, in

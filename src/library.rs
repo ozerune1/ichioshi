@@ -192,7 +192,12 @@ fn collect_videos(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
         if name.to_string_lossy().starts_with('.') {
             continue;
         }
-        match e.file_type() {
+        // Linked episodes count too: follow symlinks.
+        let kind = match e.file_type() {
+            Ok(t) if t.is_symlink() => std::fs::metadata(&path).map(|m| m.file_type()),
+            other => other,
+        };
+        match kind {
             Ok(t) if t.is_dir() && depth > 0 => collect_videos(&path, depth - 1, out),
             Ok(t) if t.is_file() && crate::remux::is_video(&path) => out.push(path),
             _ => {}
