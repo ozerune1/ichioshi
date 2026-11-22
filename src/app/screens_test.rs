@@ -1061,3 +1061,55 @@ fn per_episode_releases_prefer_usenet() {
     }
     assert!(h.state().debrid.manager.views().is_empty(), "nothing went to TorBox");
 }
+
+/// Old downloads move into the library: a finished Usenet download in the
+/// old download folder, and an old remux folder named after the series.
+#[test]
+#[ignore = "renders screenshots"]
+fn moves_old_downloads_into_the_library() {
+    use crate::debrid::jobs::tests::make_torrent;
+    use crate::library::NewSeries;
+    use crate::mock_http::{Resp, mock};
+    use crate::usenet::fake::{FakeProvider, Options, upload};
+    use crate::usenet::indexers::{Indexer, NzbLink};
+
+    let base = screens_dir("library-move-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let episode: Vec<u8> = (0..120_000u32).map(|i| (i % 241) as u8).collect();
+    let torrent = make_torrent("[Group] Show", &[("Show - 01.mkv", 120_000)]);
+    let hash = info_hash_of(&torrent).unwrap();
+    let listing = crate::engine::listing_from_bytes(torrent).unwrap();
+    let up = upload("mv", &[("Show - 01.mkv", &episode)], 40_000, 8192, 4);
+    let fake = rt.block_on(FakeProvider::start(up.articles.clone(), Options::default()));
+    let nzb = up.nzb().into_bytes();
+    let server = rt.block_on(mock(move |_| Resp::binary(200, nzb.clone())));
+    let links = vec![NzbLink { indexer: Indexer::TsukiHime, url: format!("{server}/nzb/0") }];
+    let mut usenet = crate::usenet::Config::default();
+    usenet.add(fake.provider("Fake News"));
+    usenet.save(&base.join("state").join("usenet.json")).unwrap();
+
+    let mut h = harness(&base, rt.handle().clone());
+    let downloads = base.join("downloads");
+    let library = base.join("Anime");
+    {
+        let a = h.state_mut();
+        a.settings.library_dir = library.clone();
+        let new = NewSeries { anilist_id: 5, english: Some("Show".into()), ..Default::default() };
+        a.library.record([hash.clone()], &new, &library);
+        // An old remux, in a folder named after the series.
+        std::fs::create_dir_all(downloads.join("Show")).unwrap();
+        std::fs::write(downloads.join("Show").join("Show - 02.mkv"), b"remuxed episode 2").unwrap();
+        // An old download, finishing outside the library.
+        a.usenet.manager.add(&listing, &[0], downloads.join("[Group] Show"), links).unwrap();
+    }
+    let folder = library.join("Show");
+    wait_until(&mut h, "moved", |a| {
+        a.usenet.manager.views().is_empty() && folder.join("Show - 01.mkv").exists() && folder.join("Show - 02.mkv").exists()
+    });
+    save(&mut h, &base, "library-moved.png");
+    assert!(std::fs::read(folder.join("Show - 01.mkv")).unwrap() == episode);
+    assert_eq!(std::fs::read(folder.join("Show - 02.mkv")).unwrap(), b"remuxed episode 2");
+    assert!(!downloads.join("Show").exists() && !downloads.join("[Group] Show").exists(), "emptied folders go");
+    assert!(downloads.exists(), "the downloads folder stays");
+    assert!(h.state().settings.migrated);
+}

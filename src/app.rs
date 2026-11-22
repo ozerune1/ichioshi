@@ -27,11 +27,13 @@ use crate::usenet::indexers::NzbLink;
 
 mod debrid_ui;
 mod drive_ui;
+mod library_ui;
 mod playlist_page;
 mod remux_page;
 mod usenet_ui;
 mod vpn_ui;
 use debrid_ui::DebridState;
+use library_ui::LibraryState;
 use drive_ui::DriveState;
 use playlist_page::PlaylistPage;
 use remux_page::RemuxPage;
@@ -112,6 +114,7 @@ enum Msg {
     DriveUploadDone { seq: u64, result: Result<crate::gdrive::Uploaded, String>, expired: bool },
     DebridAccount { seq: u64, provider: crate::debrid::Provider, result: Result<crate::debrid::Account, String> },
     NzbLookup { hash: String, links: Vec<NzbLink> },
+    Moved { key: String, name: String, result: Result<Vec<(PathBuf, PathBuf)>, String> },
     UsenetChecked { id: u64, seq: u64, result: Result<(), String> },
     Info(String),
     Error(String),
@@ -415,8 +418,10 @@ pub struct App {
     confirm_delete: Option<(DeleteTarget, String)>,
     status: Option<Status>,
 
-    /// Which AniList anime each download belongs to.
+    /// Your series, their folders and preferences.
     library: Library,
+    /// Moving downloads into the library, setting default tracks.
+    lib: LibraryState,
     remux_seq: u64,
     /// Remuxed episodes to export together.
     playlist: Playlist,
@@ -479,6 +484,7 @@ impl App {
             confirm_delete: None,
             status: None,
             library,
+            lib: LibraryState::default(),
             remux_seq: 0,
             playlist: Playlist::load(state_dir.join("playlist.json")),
             playlist_seq: 0,
@@ -677,6 +683,7 @@ impl App {
                 | Msg::DriveUploadDone { .. }) => self.handle_drive_msg(msg),
                 msg @ Msg::DebridAccount { .. } => self.handle_debrid_msg(msg),
                 msg @ (Msg::NzbLookup { .. } | Msg::UsenetChecked { .. }) => self.handle_usenet_msg(msg),
+                Msg::Moved { key, name, result } => self.handle_moved(key, name, result),
             }
         }
     }
@@ -1933,6 +1940,7 @@ impl eframe::App for App {
         self.handle_messages();
         self.sync_engine();
         self.request_nzb_lookups();
+        self.tidy_library();
         let mut actions = Vec::new();
 
         egui::Panel::top("top_bar").show(ui, |ui| self.top_bar(ui, &mut actions));

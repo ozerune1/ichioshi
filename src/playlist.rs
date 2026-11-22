@@ -77,6 +77,18 @@ impl Playlist {
         self.save();
     }
 
+    /// A file moved: point its entries at the new place.
+    pub fn relocate(&mut self, from: &Path, to: &Path) {
+        let mut changed = false;
+        for item in self.items.iter_mut().filter(|i| i.path == from) {
+            item.path = to.to_owned();
+            changed = true;
+        }
+        if changed {
+            self.save();
+        }
+    }
+
     fn save(&self) {
         let result = (|| -> Result<()> {
             if let Some(dir) = self.file.parent() {

@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::sanitize_folder_name;
@@ -283,6 +283,71 @@ impl Library {
     }
 }
 
+/// Move `files` (paths relative to `from`) to the same places under `to`.
+/// A name already taken gets " (2)" and so on; across drives, files are
+/// copied and then deleted. Folders left empty are removed, except
+/// `protected` ones. Returns what moved where.
+pub fn move_files(from: &Path, to: &Path, files: &[String], protected: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut moved = Vec::new();
+    for rel in files {
+        let src = from.join(rel);
+        if !src.is_file() {
+            continue;
+        }
+        let dest = free_name(&to.join(rel));
+        move_file(&src, &dest).with_context(|| format!("moving {}", src.display()))?;
+        moved.push((src, dest));
+    }
+    // Tidy up the folders the files were in.
+    let mut dirs: Vec<PathBuf> = moved.iter().filter_map(|(src, _)| src.parent().map(Path::to_owned)).collect();
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    dirs.dedup();
+    for dir in dirs {
+        let mut d = dir.as_path();
+        while d.starts_with(from) && !is_protected(d, protected) && std::fs::remove_dir(d).is_ok() {
+            match d.parent() {
+                Some(p) => d = p,
+                None => break,
+            }
+        }
+    }
+    Ok(moved)
+}
+
+fn is_protected(dir: &Path, protected: &[PathBuf]) -> bool {
+    dir.parent().is_none() || dirs::home_dir().is_some_and(|h| h == dir) || protected.iter().any(|p| p.starts_with(dir))
+}
+
+/// `path`, or "name (2).ext" and so on if that's taken.
+fn free_name(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_owned();
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (2..)
+        .map(|n| path.with_file_name(format!("{stem} ({n}){ext}")))
+        .find(|p| !p.exists())
+        .expect("some name is free")
+}
+
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::rename(from, to) {
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            let mut part = to.as_os_str().to_owned();
+            part.push(".moving");
+            let part = PathBuf::from(part);
+            std::fs::copy(from, &part)?;
+            std::fs::rename(&part, to)?;
+            std::fs::remove_file(from)
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +397,29 @@ mod tests {
         assert_eq!(s.downloads, ["aaa".to_owned(), "bbb".to_owned()].into());
         // Saved in the new format.
         assert_eq!(Library::load(path, &root).series, lib.series);
+    }
+
+    #[test]
+    fn moves_files_and_tidies_up_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloads = dir.path().join("Downloads");
+        let from = downloads.join("[Group] Show S01");
+        let to = dir.path().join("Anime").join("Show");
+        std::fs::create_dir_all(from.join("Extras")).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        for f in ["Show - 01.mkv", "Show - 02.mkv", "Extras/NCOP.mkv"] {
+            std::fs::write(from.join(f), f).unwrap();
+        }
+        std::fs::write(to.join("Show - 02.mkv"), "already here").unwrap();
+        let files: Vec<String> = ["Show - 01.mkv", "Show - 02.mkv", "Extras/NCOP.mkv", "gone.mkv"].map(String::from).to_vec();
+        let moved = move_files(&from, &to, &files, std::slice::from_ref(&downloads)).unwrap();
+        assert_eq!(moved.len(), 3);
+        assert_eq!(std::fs::read_to_string(to.join("Show - 01.mkv")).unwrap(), "Show - 01.mkv");
+        assert_eq!(std::fs::read_to_string(to.join("Show - 02 (2).mkv")).unwrap(), "Show - 02.mkv", "the one there is kept");
+        assert_eq!(std::fs::read_to_string(to.join("Show - 02.mkv")).unwrap(), "already here");
+        assert!(to.join("Extras/NCOP.mkv").exists());
+        assert!(!from.exists(), "emptied folders go");
+        assert!(downloads.exists(), "Downloads stays, even empty");
     }
 
     #[test]
