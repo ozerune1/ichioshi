@@ -169,13 +169,14 @@ fn airing(d: &Details) -> Option<String> {
     })
 }
 
-fn image(url: Option<&str>, cache: &Path, name: String) -> Option<Image> {
+/// An image's URL, and its copy in `cache` (`<stem>.jpg`, `.png` or `.webp`).
+fn image(url: Option<&str>, cache: &Path, stem: String) -> Option<Image> {
     let url = url?.to_owned();
-    let path = cache.join(name);
-    Some(Image {
-        url,
-        path: path.exists().then_some(path),
-    })
+    let path = ["jpg", "png", "webp"]
+        .iter()
+        .map(|ext| cache.join(format!("{stem}.{ext}")))
+        .find(|p| p.exists());
+    Some(Image { url, path })
 }
 
 /// A series' episode files by number.
@@ -321,7 +322,7 @@ pub fn load(state_dir: &Path) -> Model {
         let cover = image(
             d.cover.as_deref().or(s.cover.as_deref()),
             &images,
-            format!("{}-cover.jpg", s.anilist_id),
+            format!("{}-cover", s.anilist_id),
         );
         let list = lists.get(&s.anilist_id).map(ListView::of);
         cards.push(Card {
@@ -352,7 +353,7 @@ pub fn load(state_dir: &Path) -> Model {
             banner: image(
                 d.banner.as_deref(),
                 &images,
-                format!("{}-banner.jpg", s.anilist_id),
+                format!("{}-banner", s.anilist_id),
             ),
             facts,
             genres: d.genres.clone(),
@@ -366,7 +367,7 @@ pub fn load(state_dir: &Path) -> Model {
             size: size_text(bytes),
         });
     }
-    cards.sort_by(|a, b| b.added.cmp(&a.added));
+    cards.sort_by_key(|c| std::cmp::Reverse(c.added));
     Model {
         cards,
         series: series_views,
@@ -383,8 +384,10 @@ pub mod demo {
     use super::*;
     use crate::library::{NewSeries, Watch};
 
-    /// (search, episodes on disk, episodes watched, list status, score, downloading)
-    const SHOWS: &[(&str, u32, u32, Status, f32, &[u32])] = &[
+    /// Search, episodes on disk, episodes watched, list status, score, downloading.
+    type Show = (&'static str, u32, u32, Status, f32, &'static [u32]);
+
+    const SHOWS: &[Show] = &[
         ("Sousou no Frieren", 28, 28, Status::Completed, 10.0, &[]),
         (
             "Kusuriya no Hitorigoto 2nd Season",
@@ -442,14 +445,26 @@ pub mod demo {
         ))
     }
 
-    async fn fetch_image(http: &reqwest::Client, url: &str, to: &Path) {
-        if to.exists() {
+    /// Save an image as `<stem>.<its real type>` (AniList serves some PNGs
+    /// under .jpg URLs).
+    async fn fetch_image(http: &reqwest::Client, url: &str, dir: &Path, stem: &str) {
+        if ["jpg", "png", "webp"]
+            .iter()
+            .any(|e| dir.join(format!("{stem}.{e}")).exists())
+        {
             return;
         }
         if let Ok(r) = http.get(url).send().await
             && let Ok(bytes) = r.bytes().await
         {
-            let _ = std::fs::write(to, bytes);
+            let ext = if bytes.starts_with(b"\x89PNG") {
+                "png"
+            } else if bytes.get(8..12) == Some(b"WEBP") {
+                "webp"
+            } else {
+                "jpg"
+            };
+            let _ = std::fs::write(dir.join(format!("{stem}.{ext}")), bytes);
         }
     }
 
@@ -473,10 +488,10 @@ pub mod demo {
                 crate::seadex::merge_episodes(&mut details.episode_list, more);
             }
             if let Some(url) = details.cover.clone().or(cover.clone()) {
-                fetch_image(&http, &url, &images.join(format!("{id}-cover.jpg"))).await;
+                fetch_image(&http, &url, &images, &format!("{id}-cover")).await;
             }
             if let Some(url) = &details.banner {
-                fetch_image(&http, url, &images.join(format!("{id}-banner.jpg"))).await;
+                fetch_image(&http, url, &images, &format!("{id}-banner")).await;
             }
             let new = NewSeries {
                 anilist_id: id,

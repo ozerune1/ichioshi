@@ -374,6 +374,25 @@ pub async fn anilist_details(client: &reqwest::Client, id: u64) -> Result<crate:
             });
         entry.title.get_or_insert_with(|| c[2].trim().to_owned());
     }
+    // Later seasons are often numbered from the show's start (a second
+    // season of 24 as 25–48): count them from 1 when they'd fit that way.
+    if let (Some(count), Some(first), Some(last)) = (
+        m["episodes"].as_u64().map(|c| c as u32),
+        episodes.keys().next().copied(),
+        episodes.keys().next_back().copied(),
+    ) && first > 1
+        && last > count
+        && last - first < count
+    {
+        let shift = first - 1;
+        episodes = std::mem::take(&mut episodes)
+            .into_values()
+            .map(|mut e| {
+                e.number -= shift;
+                (e.number, e)
+            })
+            .collect();
+    }
     for n in m["airingSchedule"]["nodes"]
         .as_array()
         .into_iter()
@@ -698,6 +717,39 @@ mod tests {
             ]
         );
         assert_eq!(d.aired(), Some(4), "next is episode 5");
+    }
+
+    /// A second season listed as 25–48 by the streaming sites is 1–24.
+    #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "the lock orders whole tests, each on its own runtime"
+    )]
+    async fn renumbers_later_seasons_from_one() {
+        let base = crate::mock_http::mock(|_| {
+            crate::mock_http::reply(200, serde_json::json!({"data": {"Media": {"episodes": 24, "status": "FINISHED",
+                "streamingEpisodes": [{"title": "Episode 26 - Two"}, {"title": "Episode 25 - One"}, {"title": "Episode 48 - Last"}],
+                "airingSchedule": {"nodes": [{"episode": 1, "airingAt": 1736500000}]}}}}))
+        })
+        .await;
+        let _net = crate::mock_http::mocked();
+        *ANILIST_BASE.lock().unwrap() = Some(base);
+        let d = anilist_details(&reqwest::Client::new(), 1).await;
+        *ANILIST_BASE.lock().unwrap() = None;
+        let d = d.unwrap();
+        let eps: Vec<(u32, Option<&str>, bool)> = d
+            .episode_list
+            .iter()
+            .map(|e| (e.number, e.title.as_deref(), e.airs.is_some()))
+            .collect();
+        assert_eq!(
+            eps,
+            [
+                (1, Some("One"), true),
+                (2, Some("Two"), false),
+                (24, Some("Last"), false)
+            ]
+        );
     }
 
     #[tokio::test]
