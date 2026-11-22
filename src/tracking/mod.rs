@@ -124,6 +124,9 @@ pub enum Change {
     Status(Status),
     Score(f32),
     Progress(u32),
+    /// Episode n was watched (in the player): progress up to it (never
+    /// back), and the status follows: watching, or completed at the end.
+    Watched(u32),
 }
 
 impl Change {
@@ -146,6 +149,19 @@ impl Change {
             }
             Change::Score(s) => e.score = s.clamp(0.0, 10.0),
             Change::Progress(p) => e.progress = episodes.filter(|n| *n > 0).map_or(p, |n| p.min(n)),
+            Change::Watched(n) => {
+                let n = episodes.filter(|t| *t > 0).map_or(n, |t| n.min(t));
+                if n <= e.progress && entry.is_some() {
+                    return e;
+                }
+                e.progress = n;
+                let last = episodes.is_some_and(|t| t > 0 && n >= t);
+                e.status = match e.status {
+                    _ if last && e.status != Status::Completed => Status::Completed,
+                    Status::Planning | Status::Paused | Status::Dropped => Status::Watching,
+                    other => other,
+                };
+            }
         }
         e
     }
@@ -194,13 +210,26 @@ pub fn redirect_url(service: Service) -> String {
 }
 
 /// The accounts, saved in `tracking.json` (only you can read it).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub anilist: AniListAccount,
     pub mal: MalAccount,
     /// MyAnimeList's IDs for AniList's, as AniList gives them.
     pub mal_ids: BTreeMap<u64, u64>,
+    /// Update the lists when an episode is finished in the player.
+    pub sync_watched: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            anilist: Default::default(),
+            mal: Default::default(),
+            mal_ids: BTreeMap::new(),
+            sync_watched: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -2436,3 +2436,184 @@ fn tracks_lists_on_anilist_and_mal() {
     assert!(h.query_by_label("⚠ Not the same on both").is_some());
     save(&mut h, &base, "tracking-5-mismatch.png");
 }
+
+/// Episodes finished in the player go on the lists (mock AniList and
+/// MyAnimeList): plan to watch becomes watching at episode 1 (the score
+/// kept), and the last episode completes it.
+#[test]
+#[ignore = "renders screenshots"]
+fn syncs_watched_episodes_to_the_lists() {
+    let _net = crate::mock_http::mocked();
+    use crate::library::NewSeries;
+    use crate::mock_http::{mock, reply};
+    use crate::tracking::{Config, Endpoints, Service, Status};
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    if crate::player::ffi::api().is_err() {
+        eprintln!("skipping: no libmpv");
+        return;
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            *crate::seadex::ANILIST_BASE.lock().unwrap() = None;
+            *crate::seadex::SEADEX_BASE.lock().unwrap() = None;
+            *crate::seadex::KITSU_BASE.lock().unwrap() = None;
+            *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = None;
+        }
+    }
+    #[derive(Default)]
+    struct Sites {
+        anilist: Vec<Value>,
+        mal: Vec<HashMap<String, String>>,
+    }
+    let sites: Arc<Mutex<Sites>> = Arc::default();
+    let log = sites.clone();
+    let base = screens_dir("sync-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(mock(move |req| {
+        let path = req.target.split('?').next().unwrap().to_owned();
+        match (req.method.as_str(), path.as_str()) {
+            (_, "/kitsu/mappings") => reply(200, json!({"data": [], "included": []})),
+            // The show's details: two episodes.
+            ("POST", "/anilist") => reply(200, json!({"data": {"Media": {"status": "FINISHED", "format": "TV", "episodes": 2,
+                "genres": [], "studios": {"nodes": []}, "startDate": {}, "endDate": {}}}})),
+            (_, p) if p.starts_with("/seadex") => reply(200, json!({"items": [{"alID": 9, "notes": "", "expand": {"trs": [{
+                "releaseGroup": "Group", "isBest": true, "dualAudio": false, "tracker": "Nyaa",
+                "url": "https://nyaa.si/view/777", "infoHash": "a".repeat(40), "files": [{"length": 1000}]}]}}]})),
+            ("POST", "/graphql") => {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let (q, vars) = (body["query"].as_str().unwrap().to_owned(), body["variables"].clone());
+                if q.contains("idMal") {
+                    reply(200, json!({"data": {"Page": {"media": [{"id": 9, "idMal": 909}]}}}))
+                } else if q.contains("MediaListCollection") {
+                    reply(200, json!({"data": {"MediaListCollection": {"hasNextChunk": false, "lists": [
+                        {"entries": [{"mediaId": 9, "status": "PLANNING", "progress": 0, "score": 8}]}]}}}))
+                } else {
+                    log.lock().unwrap().anilist.push(vars.clone());
+                    reply(200, json!({"data": {"SaveMediaListEntry": {"mediaId": 9, "status": vars["status"], "progress": vars["progress"],
+                        "score": vars["score"].as_f64().unwrap() / 10.0}}}))
+                }
+            }
+            ("GET", "/mal/api/users/@me/animelist") => reply(200, json!({"data": [{"node": {"id": 909},
+                "list_status": {"status": "plan_to_watch", "score": 8, "num_episodes_watched": 0, "is_rewatching": false}}], "paging": {}})),
+            ("PATCH", "/mal/api/anime/909/my_list_status") => {
+                let f = req.form();
+                log.lock().unwrap().mal.push(f.clone());
+                reply(200, json!({"status": f["status"], "score": f["score"].parse::<u32>().unwrap(),
+                    "num_episodes_watched": f["num_watched_episodes"].parse::<u32>().unwrap(), "is_rewatching": false}))
+            }
+            _ => reply(404, json!({})),
+        }
+    }));
+    *crate::seadex::ANILIST_BASE.lock().unwrap() = Some(format!("{server}/anilist"));
+    *crate::seadex::SEADEX_BASE.lock().unwrap() = Some(format!("{server}/seadex"));
+    *crate::seadex::KITSU_BASE.lock().unwrap() = Some(format!("{server}/kitsu"));
+    *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = Some(server.clone());
+    let _reset = Reset;
+
+    let mut h = harness(&base, rt.handle().clone());
+    // Signed in to both (the sign-in itself is tested elsewhere).
+    {
+        let a = h.state_mut();
+        a.tracking.endpoints = Endpoints {
+            anilist_auth: format!("{server}/x"),
+            anilist_api: format!("{server}/graphql"),
+            mal_auth: format!("{server}/x"),
+            mal_token: format!("{server}/mal/token"),
+            mal_api: format!("{server}/mal/api"),
+            port: 0,
+        };
+        let mut config = Config::default();
+        config.anilist.token = Some("al".into());
+        config.anilist.user = Some(crate::tracking::anilist::User {
+            id: 77,
+            name: "jake".into(),
+        });
+        config.mal.client_id = "abc".into();
+        config.mal.tokens = Some(crate::tracking::mal::Tokens {
+            access: "m".into(),
+            refresh: "r".into(),
+            expires_at: chrono::Utc::now().timestamp() + 999_999,
+        });
+        config.mal.user = Some("jake".into());
+        a.tracking.config = config;
+    }
+    let library = base.join("downloads");
+    let new = NewSeries {
+        anilist_id: 9,
+        english: Some("Show".into()),
+        format: Some("TV".into()),
+        ..Default::default()
+    };
+    let folder = h.state_mut().library.add(&new, &library).folder.clone();
+    let Some(first) = crate::player::tests::sample_episode(&folder, "Show - 01.mkv") else {
+        return;
+    };
+    std::fs::copy(&first, folder.join("Show - 02.mkv")).unwrap();
+    let entry = |a: &App, s: Service| a.tracking.entry(s, 9).cloned();
+
+    h.state_mut().open_series(9);
+    wait_until(&mut h, "both lists and the details", |a| {
+        a.details(9).is_some()
+            && entry(a, Service::AniList).is_some()
+            && entry(a, Service::Mal).is_some()
+    });
+    h.run_steps(3);
+    click(&mut h, "▶ Play episode 1");
+    wait_until(&mut h, "playing", |a| {
+        a.player.as_ref().is_some_and(|p| p.player.now.loaded)
+    });
+    let near_end =
+        |h: &mut Harness<'_, App>| h.state().player.as_ref().unwrap().player.seek_to(5.3);
+
+    // Episode 1 done: watching, 1 of 2, score kept; then episode 2 plays.
+    near_end(&mut h);
+    wait_until(&mut h, "episode 1 on both lists", |a| {
+        a.tracking.saving.is_empty()
+            && entry(a, Service::Mal).is_some_and(|e| e.progress == 1)
+            && entry(a, Service::AniList).is_some_and(|e| e.progress == 1)
+    });
+    {
+        let s = sites.lock().unwrap();
+        assert_eq!(
+            s.anilist.last().unwrap(),
+            &json!({"media": 9, "status": "CURRENT", "score": 80, "progress": 1})
+        );
+        let m = s.mal.last().unwrap();
+        assert_eq!(
+            (
+                m["status"].as_str(),
+                m["score"].as_str(),
+                m["num_watched_episodes"].as_str()
+            ),
+            ("watching", "8", "1")
+        );
+    }
+    assert!(
+        h.query_by_label_contains("Episode 1 watched: updated AniList and MyAnimeList")
+            .is_some()
+    );
+
+    // Episode 2, the last: completed.
+    wait_until(&mut h, "episode 2 playing", |a| {
+        a.player.as_ref().is_some_and(|p| {
+            p.player.now.loaded && p.playing.as_ref().is_some_and(|p| p.episode == 2)
+        })
+    });
+    near_end(&mut h);
+    wait_until(&mut h, "completed on both", |a| {
+        a.tracking.saving.is_empty()
+            && entry(a, Service::Mal).is_some_and(|e| e.status == Status::Completed)
+            && entry(a, Service::AniList).is_some_and(|e| e.status == Status::Completed)
+    });
+    let s = sites.lock().unwrap();
+    assert_eq!(s.anilist.len(), 2, "one save per episode");
+    assert_eq!(
+        s.anilist[1],
+        json!({"media": 9, "status": "COMPLETED", "score": 80, "progress": 2})
+    );
+    assert_eq!(s.mal[1]["status"], "completed");
+    assert_eq!(s.mal[1]["num_watched_episodes"], "2");
+}
