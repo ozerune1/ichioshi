@@ -213,7 +213,7 @@ impl App {
                     return;
                 }
                 job.url = Some(url.clone());
-                self.ctx.open_url(egui::OpenUrl::new_tab(url));
+                self.ctx.open_url(&url);
             }
             Msg::DriveSignedIn { seq, result } => {
                 // A sign-in that was cancelled (and maybe restarted) is over.

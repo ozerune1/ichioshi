@@ -313,8 +313,9 @@ impl App {
             ps.playing = None;
             ps.inhibit.set(false);
             if std::mem::take(&mut ps.made_fullscreen) {
-                self.ctx
-                    .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                if let Some(ctx) = &self.egui {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
             }
             return;
         }

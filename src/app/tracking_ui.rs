@@ -350,7 +350,7 @@ impl App {
                     && job.seq == seq
                 {
                     job.url = Some(url.clone());
-                    self.ctx.open_url(egui::OpenUrl::new_tab(url));
+                    self.ctx.open_url(&url);
                 }
             }
             TrackingMsg::SignedIn { seq, result } => {

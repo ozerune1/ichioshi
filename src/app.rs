@@ -83,6 +83,71 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// `settings.json` in the state folder; the first time, what the egui
+    /// app kept in eframe's `app.ron` there.
+    fn load(state_dir: &Path) -> Self {
+        let file = state_dir.join("settings.json");
+        if let Ok(bytes) = std::fs::read(&file) {
+            match serde_json::from_slice(&bytes) {
+                Ok(s) => return s,
+                Err(e) => tracing::warn!("couldn't read {}: {e}", file.display()),
+            }
+        }
+        let old = std::fs::read_to_string(state_dir.join("app.ron"))
+            .ok()
+            .and_then(|text| ron::from_str::<std::collections::HashMap<String, String>>(&text).ok())
+            .and_then(|stored| ron::from_str(stored.get("app")?).ok());
+        old.unwrap_or_default()
+    }
+
+    fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+}
+
+/// How background work wakes the GUI (to show its results), and opens links
+/// in the browser.
+#[derive(Clone)]
+pub struct Waker {
+    wake: Arc<dyn Fn() + Send + Sync>,
+    open: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+impl Waker {
+    pub fn new(
+        wake: impl Fn() + Send + Sync + 'static,
+        open: impl Fn(&str) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            wake: Arc::new(wake),
+            open: Arc::new(open),
+        }
+    }
+
+    /// Opens links with the system's browser.
+    pub fn with_browser(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::new(wake, |url| {
+            if let Err(e) = open_folder(Path::new(url)) {
+                tracing::warn!("couldn't open {url}: {e}");
+            }
+        })
+    }
+
+    pub fn request_repaint(&self) {
+        (self.wake)();
+    }
+
+    /// Wakes now (the GUIs look again on their own schedule).
+    pub fn request_repaint_after(&self, _after: Duration) {
+        (self.wake)();
+    }
+
+    pub fn open_url(&self, url: &str) {
+        (self.open)(url);
+    }
+}
+
 /// `~/Videos/Anime` (or the platform's videos folder). Tests never touch it.
 fn default_library_dir() -> PathBuf {
     if cfg!(test) {
@@ -601,7 +666,9 @@ struct Status {
 
 pub struct App {
     rt: tokio::runtime::Handle,
-    ctx: egui::Context,
+    ctx: Waker,
+    /// The egui GUI, while it's still here (the mpv player uses it).
+    egui: Option<egui::Context>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     http: reqwest::Client,
@@ -657,6 +724,8 @@ pub struct App {
     /// Engine starts and stops take turns.
     engine_lock: Arc<tokio::sync::Mutex<()>>,
     state_dir: PathBuf,
+    /// The settings as last saved.
+    saved_settings: String,
 }
 
 impl App {
@@ -667,19 +736,27 @@ impl App {
         rt: tokio::runtime::Handle,
         state_dir: PathBuf,
     ) -> Self {
-        let settings: Settings = cc
-            .storage
-            .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
-            .unwrap_or_default();
+        let egui = cc.egui_ctx.clone();
+        let ctx = Waker::with_browser(move || egui.request_repaint());
+        let mut app = Self::create(rt, state_dir, ctx);
+        app.egui = Some(cc.egui_ctx.clone());
+        app.gl = cc.gl.clone().zip(cc.get_proc_address.clone());
+        app
+    }
+
+    /// The app without a GUI: `ctx` wakes whichever GUI shows it.
+    pub fn create(rt: tokio::runtime::Handle, state_dir: PathBuf, ctx: Waker) -> Self {
+        let settings = Settings::load(&state_dir);
+        let saved_settings = settings.to_json();
         let http = reqwest::Client::builder()
             .user_agent(concat!("seadex-downloader/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
             .build()
             .expect("failed to build the HTTP client");
         let (tx, rx) = channel();
-        let debrid = DebridState::load(&state_dir, rt.clone(), cc.egui_ctx.clone());
-        let vpn = VpnState::load(&state_dir, &rt, cc.egui_ctx.clone());
-        let usenet = UsenetState::load(&state_dir, rt.clone(), cc.egui_ctx.clone(), http.clone());
+        let debrid = DebridState::load(&state_dir, rt.clone(), ctx.clone());
+        let vpn = VpnState::load(&state_dir, &rt, ctx.clone());
+        let usenet = UsenetState::load(&state_dir, rt.clone(), ctx.clone(), http.clone());
         let library = Library::load(
             state_dir.join("library.json"),
             &expand_home(&settings.library_dir),
@@ -687,9 +764,10 @@ impl App {
 
         let mut app = Self {
             player: None,
-            gl: cc.gl.clone().zip(cc.get_proc_address.clone()),
+            gl: None,
             rt,
-            ctx: cc.egui_ctx.clone(),
+            ctx,
+            egui: None,
             tx,
             rx,
             http,
@@ -726,6 +804,7 @@ impl App {
             engine_seq: Arc::default(),
             engine_lock: Arc::default(),
             state_dir,
+            saved_settings,
         };
 
         // With a debrid service, BitTorrent only starts to show torrents from before.
@@ -795,6 +874,19 @@ impl App {
             text: text.into(),
             error: false,
         });
+    }
+
+    /// Write the settings to `settings.json` if they changed.
+    fn save_settings(&mut self) {
+        let json = self.settings.to_json();
+        if json == self.saved_settings {
+            return;
+        }
+        let file = self.state_dir.join("settings.json");
+        match crate::fsutil::write_private(&file, json.as_bytes()) {
+            Ok(()) => self.saved_settings = json,
+            Err(e) => tracing::warn!("couldn't save {}: {e:#}", file.display()),
+        }
     }
 
     fn set_error(&mut self, text: impl Into<String>) {
@@ -2648,6 +2740,7 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, &self.settings);
+        self.save_settings();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -3027,6 +3120,41 @@ mod tests {
         });
         let fp = FilesPage::new(l, None, String::new());
         assert_eq!(fp.checked, vec![false, true, false]);
+    }
+
+    /// Settings come from `settings.json`, or the first time from what
+    /// eframe kept in `app.ron`; they're saved only when they change.
+    #[test]
+    fn settings_carry_over_from_eframe() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.ron"),
+            r#"{
+    "egui": "(options:())",
+    "app": "(download_dir:\"/dl\",library_dir:\"/lib/Anime\",prefer_dual_audio:true,prefs:(audio:\"jpn\",subtitles:Some(\"eng\"),sub_type:Auto),migrated:true,player:(deband:true,skip_openings:true,skip_endings:false,autoplay:false,volume:80.0))",
+}"#,
+        )
+        .unwrap();
+        let s = Settings::load(dir.path());
+        assert_eq!(s.library_dir, PathBuf::from("/lib/Anime"));
+        assert_eq!(s.download_dir, PathBuf::from("/dl"));
+        assert!(s.prefer_dual_audio && s.migrated);
+        assert!(s.player.skip_openings && !s.player.autoplay);
+        assert_eq!(s.prefs.subtitles.as_deref(), Some("eng"));
+
+        std::fs::write(dir.path().join("settings.json"), {
+            let mut changed = s;
+            changed.library_dir = PathBuf::from("/elsewhere");
+            changed.to_json()
+        })
+        .unwrap();
+        assert_eq!(
+            Settings::load(dir.path()).library_dir,
+            PathBuf::from("/elsewhere")
+        );
+        // Nothing there: the defaults.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(!Settings::load(empty.path()).migrated);
     }
 
     #[test]

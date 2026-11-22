@@ -45,7 +45,7 @@ impl UsenetState {
     pub(super) fn load(
         state_dir: &Path,
         rt: tokio::runtime::Handle,
-        ctx: egui::Context,
+        ctx: super::Waker,
         http: reqwest::Client,
     ) -> Self {
         let file = state_dir.join("usenet.json");

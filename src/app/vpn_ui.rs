@@ -27,7 +27,7 @@ pub(super) struct VpnState {
 }
 
 impl VpnState {
-    pub(super) fn load(state_dir: &Path, rt: &tokio::runtime::Handle, ctx: egui::Context) -> Self {
+    pub(super) fn load(state_dir: &Path, rt: &tokio::runtime::Handle, ctx: super::Waker) -> Self {
         let file = state_dir.join("vpn.json");
         let config = Config::load(&file);
         let monitor = Monitor::start(rt, config.clone(), Env::default(), move || {

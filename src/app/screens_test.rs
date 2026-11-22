@@ -565,7 +565,7 @@ fn render_drive_ui() {
     h.set_size(egui::vec2(1280.0, 560.0));
     h.run_steps(5);
     save(&mut h, &base, "drive-1b-short-window.png");
-    let bottom = h.state().ctx.content_rect().bottom();
+    let bottom = h.ctx.content_rect().bottom();
     let export = h.get_by_label("Export 4 episodes").rect();
     assert!(
         export.bottom() <= bottom,
@@ -591,7 +591,7 @@ fn render_drive_ui() {
         h.set_size(egui::vec2(w, hgt));
         h.run_steps(8);
         save(&mut h, &base, &format!("drive-1d-{w}x{hgt}.png"));
-        let right = h.state().ctx.content_rect().right();
+        let right = h.ctx.content_rect().right();
         for step in super::drive_ui::SETUP_STEPS {
             let node = h.get_by_label(step);
             node.scroll_to_me();
