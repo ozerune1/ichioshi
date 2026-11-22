@@ -981,7 +981,17 @@ impl App {
                     |ui| {
                         ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
                         for series in order {
-                            self.series_card(ui, series, actions);
+                            // The card, and your lists' status and score under it.
+                            let height = if self.tracking.any() { 352.0 } else { 320.0 };
+                            ui.allocate_ui_with_layout(
+                                vec2(164.0, height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.y = 4.0;
+                                    self.series_card(ui, series, actions);
+                                    self.list_chips(ui, series.anilist_id, actions);
+                                },
+                            );
                         }
                     },
                 );

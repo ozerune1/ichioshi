@@ -2196,3 +2196,243 @@ fn plays_episodes_from_the_library() {
     assert!(h.query_by_label("✔").is_some(), "episode 1 ticked");
     assert!(h.query_by_label("▶ Play episode 2").is_some());
 }
+
+/// AniList and MyAnimeList (mock sites): sign in to both, see your lists
+/// on the library's cards, change a score from a card and the status from
+/// the series page (both lists get it), and a failed save put back.
+#[test]
+#[ignore = "renders screenshots"]
+fn tracks_lists_on_anilist_and_mal() {
+    let _net = crate::mock_http::mocked();
+    use crate::library::NewSeries;
+    use crate::mock_http::{mock, reply};
+    use crate::tracking::{Endpoints, Service, Status};
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            *crate::seadex::SEADEX_BASE.lock().unwrap() = None;
+            *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = None;
+        }
+    }
+    #[derive(Default)]
+    struct Sites {
+        anilist_saves: Vec<Value>,
+        mal_patches: Vec<HashMap<String, String>>,
+        fail_mal: bool,
+    }
+    let sites: Arc<Mutex<Sites>> = Arc::default();
+    let log = sites.clone();
+    let base = screens_dir("tracking-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(mock(move |req| {
+        if let Some(r) = details_reply(req) {
+            return r;
+        }
+        let path = req.target.split('?').next().unwrap().to_owned();
+        let auth = req.headers.get("authorization").cloned().unwrap_or_default();
+        match (req.method.as_str(), path.as_str()) {
+            (_, p) if p.starts_with("/seadex") => reply(200, json!({"items": [{"alID": 1, "notes": "", "expand": {"trs": [{
+                "releaseGroup": "Group", "isBest": true, "dualAudio": false, "tracker": "Nyaa",
+                "url": "https://nyaa.si/view/777", "infoHash": "a".repeat(40), "files": [{"length": 1000}]}]}}]})),
+            ("POST", "/graphql") => {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let (q, vars) = (body["query"].as_str().unwrap().to_owned(), body["variables"].clone());
+                if q.contains("idMal") {
+                    return reply(200, json!({"data": {"Page": {"media": [{"id": 1, "idMal": 52991}]}}}));
+                }
+                assert_eq!(auth, "Bearer al-token");
+                if q.contains("Viewer") {
+                    reply(200, json!({"data": {"Viewer": {"id": 77, "name": "jake"}}}))
+                } else if q.contains("MediaListCollection") {
+                    reply(200, json!({"data": {"MediaListCollection": {"hasNextChunk": false, "lists": [
+                        {"entries": [{"mediaId": 1, "status": "CURRENT", "progress": 2, "score": 7.5}]}]}}}))
+                } else {
+                    log.lock().unwrap().anilist_saves.push(vars.clone());
+                    let score = vars["score"].as_f64().unwrap() / 10.0;
+                    reply(200, json!({"data": {"SaveMediaListEntry": {"mediaId": 1, "status": vars["status"], "progress": vars["progress"], "score": score}}}))
+                }
+            }
+            ("POST", "/mal/token") => reply(200, json!({"access_token": "mal-token", "refresh_token": "r", "expires_in": 2678400})),
+            ("GET", "/mal/api/users/@me") => reply(200, json!({"name": "jake_mal"})),
+            ("GET", "/mal/api/users/@me/animelist") => reply(200, json!({"data": [{"node": {"id": 52991},
+                "list_status": {"status": "watching", "score": 8, "num_episodes_watched": 2, "is_rewatching": false}}], "paging": {}})),
+            ("PATCH", "/mal/api/anime/52991/my_list_status") => {
+                let f = req.form();
+                let mut sites = log.lock().unwrap();
+                sites.mal_patches.push(f.clone());
+                if std::mem::take(&mut sites.fail_mal) {
+                    return reply(500, json!({"error": "oops"}));
+                }
+                reply(200, json!({"status": f["status"], "score": f["score"].parse::<u32>().unwrap(),
+                    "num_episodes_watched": f["num_watched_episodes"].parse::<u32>().unwrap(), "is_rewatching": f["is_rewatching"] == "true"}))
+            }
+            _ => reply(404, json!({})),
+        }
+    }));
+    let _details = DetailsMocked::at(&server);
+    *crate::seadex::SEADEX_BASE.lock().unwrap() = Some(format!("{server}/seadex"));
+    *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = Some(server.clone());
+    let _reset = Reset;
+
+    let mut h = harness(&base, rt.handle().clone());
+    h.state_mut().tracking.endpoints = Endpoints {
+        anilist_auth: format!("{server}/anilist/authorize"),
+        anilist_api: format!("{server}/graphql"),
+        mal_auth: format!("{server}/mal/authorize"),
+        mal_token: format!("{server}/mal/token"),
+        mal_api: format!("{server}/mal/api"),
+        port: 0,
+    };
+    let library = base.join("downloads");
+    let new = NewSeries {
+        anilist_id: 1,
+        english: Some("Frieren".into()),
+        format: Some("TV".into()),
+        episodes: Some(3),
+        ..Default::default()
+    };
+    h.state_mut().library.add(&new, &library);
+    h.run_steps(3);
+    assert!(
+        h.query_by_label("+ Add to list").is_none(),
+        "nothing to show before signing in"
+    );
+
+    // Sign in to both, the browser played here.
+    click(&mut h, "⚙ Settings");
+    click(&mut h, "AniList & MyAnimeList…");
+    h.run_steps(3);
+    save(&mut h, &base, "tracking-1-dialog.png");
+    let sign_in_url = |h: &mut Harness<'_, App>| {
+        wait_until(h, "the sign-in page", |a| {
+            a.tracking
+                .signing_in
+                .as_ref()
+                .is_some_and(|j| j.url.is_some())
+        });
+        let url = h
+            .state()
+            .tracking
+            .signing_in
+            .as_ref()
+            .unwrap()
+            .url
+            .clone()
+            .unwrap();
+        url::Url::parse(&url)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect::<HashMap<String, String>>()
+    };
+    h.state_mut().tracking.config.anilist.client_id = "1234".into();
+    click(&mut h, "Sign in with AniList");
+    let q = sign_in_url(&mut h);
+    let redirect = q["redirect_uri"].clone();
+    rt.spawn(async move {
+        reqwest::get(&redirect).await.unwrap();
+        reqwest::Client::new()
+            .post(format!("{redirect}/token"))
+            .body("access_token=al-token&expires_in=31536000")
+            .send()
+            .await
+            .unwrap();
+    });
+    wait_until(&mut h, "AniList", |a| {
+        a.tracking.signed_in(Service::AniList)
+    });
+    h.state_mut().tracking.config.mal.client_id = "abc".into();
+    click(&mut h, "Sign in with MyAnimeList");
+    let q = sign_in_url(&mut h);
+    let back = format!("{}?code=c1&state={}", q["redirect_uri"], q["state"]);
+    rt.spawn(async move {
+        reqwest::get(&back).await.unwrap();
+    });
+    wait_until(&mut h, "MyAnimeList", |a| {
+        a.tracking.signed_in(Service::Mal)
+    });
+    h.run_steps(3);
+    save(&mut h, &base, "tracking-2-signed-in.png");
+    assert!(
+        h.query_by_label("Signed in as jake").is_some()
+            && h.query_by_label("Signed in as jake_mal").is_some()
+    );
+    let saved = std::fs::read_to_string(base.join("state").join("tracking.json")).unwrap();
+    assert!(
+        saved.contains("al-token") && saved.contains("mal-token"),
+        "kept for next time"
+    );
+    click(&mut h, "Close");
+
+    // The library card: AniList's entry (watching, 7.5).
+    let entry = |a: &App, s: Service| a.tracking.entry(s, 1).cloned();
+    wait_until(&mut h, "both lists", |a| {
+        entry(a, Service::AniList).is_some() && entry(a, Service::Mal).is_some()
+    });
+    h.run_steps(3);
+    save(&mut h, &base, "tracking-3-library.png");
+    assert!(h.query_by_label("Watching").is_some());
+    click(&mut h, "★ 7.5");
+    click(&mut h, "9 · Great");
+    wait_until(&mut h, "saved", |a| {
+        a.tracking.saving.is_empty() && entry(a, Service::Mal).is_some_and(|e| e.score == 9.0)
+    });
+    assert_eq!(entry(h.state(), Service::AniList).unwrap().score, 9.0);
+    assert_eq!(
+        sites.lock().unwrap().anilist_saves.last().unwrap()["score"],
+        90
+    );
+    assert_eq!(
+        sites.lock().unwrap().mal_patches.last().unwrap()["score"],
+        "9"
+    );
+
+    // The series page: completed, on both (all 3 episodes watched).
+    h.state_mut().open_series(1);
+    wait_until(&mut h, "details", |a| a.details(1).is_some());
+    h.run_steps(3);
+    h.get_by_value("Watching").click();
+    h.run_steps(2);
+    click(&mut h, "Completed");
+    wait_until(&mut h, "completed", |a| {
+        a.tracking.saving.is_empty()
+            && entry(a, Service::Mal).is_some_and(|e| e.status == Status::Completed)
+    });
+    let a = entry(h.state(), Service::AniList).unwrap();
+    assert_eq!((a.status, a.progress), (Status::Completed, 3));
+    let mal_sent = sites.lock().unwrap().mal_patches.last().unwrap().clone();
+    assert_eq!(
+        (
+            mal_sent["status"].as_str(),
+            mal_sent["num_watched_episodes"].as_str()
+        ),
+        ("completed", "3")
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("AniList: Completed · ★ 9 · 3/3").is_some());
+    save(&mut h, &base, "tracking-4-series.png");
+
+    // MyAnimeList fails to save: its entry is put back, and it says so.
+    sites.lock().unwrap().fail_mal = true;
+    h.get_by_value("Completed").click();
+    h.run_steps(2);
+    click(&mut h, "Rewatching");
+    wait_until(&mut h, "saved and failed", |a| {
+        a.tracking.saving.is_empty() && a.tracking.errors.contains_key(&Service::Mal)
+    });
+    assert_eq!(
+        entry(h.state(), Service::AniList).unwrap().status,
+        Status::Rewatching
+    );
+    assert_eq!(
+        entry(h.state(), Service::Mal).unwrap().status,
+        Status::Completed,
+        "put back"
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("⚠ Not the same on both").is_some());
+    save(&mut h, &base, "tracking-5-mismatch.png");
+}

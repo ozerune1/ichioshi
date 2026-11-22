@@ -34,6 +34,7 @@ mod library_ui;
 mod player_ui;
 mod playlist_page;
 mod remux_page;
+mod tracking_ui;
 mod usenet_ui;
 mod vpn_ui;
 use debrid_ui::DebridState;
@@ -95,6 +96,7 @@ fn default_library_dir() -> PathBuf {
 
 /// Results of background work, sent back to the UI thread.
 enum Msg {
+    Tracking(tracking_ui::TrackingMsg),
     Engine {
         seq: u64,
         result: Result<Arc<Engine>, String>,
@@ -330,6 +332,7 @@ enum Action {
         files: Vec<PathBuf>,
     },
     Player(player_ui::PlayerAction),
+    Tracking(tracking_ui::TrackingAction),
     /// The player went fullscreen (or left it).
     PlayerFullscreen(bool),
 }
@@ -644,6 +647,8 @@ pub struct App {
     vpn: VpnState,
     /// Usenet providers, lookups and downloads.
     usenet: UsenetState,
+    /// AniList and MyAnimeList accounts, and your lists on them.
+    tracking: tracking_ui::TrackingState,
     /// The network the engine runs (or is starting) on.
     engine_net: Option<crate::vpn::Network>,
     /// Bumped by each engine start or stop; a start that finds it changed
@@ -716,6 +721,7 @@ impl App {
             debrid,
             vpn,
             usenet,
+            tracking: tracking_ui::TrackingState::load(&state_dir),
             engine_net: None,
             engine_seq: Arc::default(),
             engine_lock: Arc::default(),
@@ -943,6 +949,7 @@ impl App {
                 } => self.handle_defaults_applied(anilist_id, rel, applied),
                 Msg::DefaultsDone => self.defaults_done(),
                 Msg::HandedOver(result) => self.handled_over(result),
+                Msg::Tracking(msg) => self.handle_tracking_msg(msg),
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
@@ -1087,6 +1094,7 @@ impl App {
             Action::DownloadEpisodes(episodes) => self.download_episodes(episodes),
             Action::AddToPlaylist { id, files } => self.add_episodes_to_playlist(id, files),
             Action::Player(action) => self.player_action(action),
+            Action::Tracking(action) => self.tracking_action(action),
             Action::PlayerFullscreen(on) => {
                 if let Some(ps) = &mut self.player {
                     ps.set_made_fullscreen(on);
@@ -1680,6 +1688,8 @@ impl App {
             self.vpn_settings(ui, actions);
             ui.separator();
         }
+        self.tracking_settings(ui, actions);
+        ui.separator();
         ui.strong("Languages");
         ui.horizontal(|ui| {
             ui.label(self.settings.prefs.summary());
@@ -1983,6 +1993,8 @@ impl App {
                 });
                 ui.add_space(6.0);
                 self.description_section(ui, anime.anilist_id);
+                ui.add_space(6.0);
+                self.lists_section(ui, anime.anilist_id, actions);
                 ui.add_space(6.0);
                 self.series_library_section(ui, anime, actions);
                 ui.add_space(10.0);
@@ -2584,6 +2596,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.handle_messages();
         self.player_tick(frame);
+        self.tracking_tick();
         self.sync_engine();
         self.request_nzb_lookups();
         self.tidy_library();
@@ -2624,6 +2637,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.delete_modal(&ctx, &mut actions);
         self.usenet_dialog(&ctx, &mut actions);
+        self.tracking_dialog(&ctx, &mut actions);
         self.languages_dialog(&ctx);
         self.folder_browser_modal(&ctx, &mut actions);
 

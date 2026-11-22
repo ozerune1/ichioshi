@@ -19,6 +19,7 @@ mod seadex;
 mod storage;
 mod tiers;
 mod title;
+mod tracking;
 mod usenet;
 mod vpn;
 

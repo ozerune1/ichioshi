@@ -212,6 +212,7 @@ impl App {
         }
         if ui.button("Usenet providers…").clicked() {
             actions.push(Action::UsenetOpenProviders);
+            ui.close();
         }
     }
 
