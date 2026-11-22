@@ -2045,3 +2045,154 @@ fn failed_downloads_fall_back_to_torrents() {
     );
     assert_eq!(t.only_files(), Some(vec![0]), "same files");
 }
+
+/// Push the pointer around (the player shows its controls on movement).
+fn wiggle(h: &mut Harness<'_, App>) {
+    for at in [egui::pos2(600.0, 300.0), egui::pos2(610.0, 305.0)] {
+        h.input_mut().events.push(egui::Event::PointerMoved(at));
+        h.step();
+    }
+}
+
+/// The built-in player (libmpv; headless here, so no picture or sound):
+/// play from the series page, skip the opening, change the subtitles,
+/// pause, then on to the next episode by itself, with what's been watched
+/// kept in the library.
+#[test]
+#[ignore = "renders screenshots"]
+fn plays_episodes_from_the_library() {
+    let _net = crate::mock_http::mocked();
+    use crate::library::NewSeries;
+    use crate::mock_http::{mock, reply};
+    use crate::player::TrackKind;
+    use serde_json::json;
+    if crate::player::ffi::api().is_err() {
+        eprintln!("skipping: no libmpv");
+        return;
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            *crate::seadex::SEADEX_BASE.lock().unwrap() = None;
+            *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = None;
+        }
+    }
+    let base = screens_dir("player-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(mock(|req| {
+        if let Some(r) = details_reply(req) {
+            return r;
+        }
+        if req.target.starts_with("/seadex") {
+            return reply(200, json!({"items": [{"alID": 9, "notes": "", "expand": {"trs": [{
+                "releaseGroup": "Group", "isBest": true, "dualAudio": false, "tracker": "Nyaa",
+                "url": "https://nyaa.si/view/777", "infoHash": "a".repeat(40), "files": [{"length": 1000}]}]}}]}));
+        }
+        reply(404, json!({}))
+    }));
+    let _details = DetailsMocked::at(&server);
+    *crate::seadex::SEADEX_BASE.lock().unwrap() = Some(format!("{server}/seadex"));
+    *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = Some(server.clone());
+    let _reset = Reset;
+
+    let mut h = harness(&base, rt.handle().clone());
+    let library = base.join("downloads");
+    let new = NewSeries {
+        anilist_id: 9,
+        english: Some("Show".into()),
+        format: Some("TV".into()),
+        ..Default::default()
+    };
+    let folder = h.state_mut().library.add(&new, &library).folder.clone();
+    let Some(first) = crate::player::tests::sample_episode(&folder, "Show - 01.mkv") else {
+        return;
+    };
+    std::fs::copy(&first, folder.join("Show - 02.mkv")).unwrap();
+    let state = |a: &App| {
+        a.player
+            .as_ref()
+            .map(|p| (p.player.now.clone(), p.playing.clone()))
+    };
+
+    h.state_mut().open_series(9);
+    wait_until(&mut h, "the episode list", |a| a.details(9).is_some());
+    h.run_steps(3);
+    save(&mut h, &base, "player-1-series.png");
+    click(&mut h, "▶ Play episode 1");
+    wait_until(&mut h, "playing", |a| {
+        a.player
+            .as_ref()
+            .is_some_and(|p| p.player.now.loaded && p.player.tracks.len() == 5)
+    });
+    assert!(matches!(h.state().page, Page::Player(_)));
+    let (_, playing) = state(h.state()).unwrap();
+    let playing = playing.unwrap();
+    assert_eq!(
+        (playing.title.as_str(), playing.path.as_path()),
+        ("Show - 01", folder.join("Show - 01.mkv").as_path())
+    );
+
+    // Paused in the opening (the sample is 6 s): skip it.
+    h.state().player.as_ref().unwrap().player.set_paused(true);
+    h.state().player.as_ref().unwrap().player.seek_to(0.5);
+    wait_until(&mut h, "the opening", |a| {
+        a.player.as_ref().is_some_and(|p| {
+            p.player
+                .current_part()
+                .is_some_and(|(c, _)| c.part == crate::player::Part::Opening)
+        })
+    });
+    wiggle(&mut h);
+    save(&mut h, &base, "player-2-opening.png");
+    click(&mut h, "Skip opening ⏵");
+    wait_until(&mut h, "past the opening", |a| {
+        state(a).unwrap().0.pos >= 2.0
+    });
+
+    // Subtitles: signs & songs instead of full.
+    wiggle(&mut h);
+    h.get_by_value("English · Full Subtitles").click();
+    h.run_steps(3);
+    click(&mut h, "English · Signs & Songs");
+    let subs = |a: &App| {
+        a.player.as_ref().and_then(|p| {
+            p.player
+                .selected(TrackKind::Sub)
+                .and_then(|t| t.title.clone())
+        })
+    };
+    wait_until(&mut h, "signs", |a| {
+        subs(a).as_deref() == Some("Signs & Songs")
+    });
+
+    // Play and pause with the keyboard.
+    h.key_press(egui::Key::Space);
+    wait_until(&mut h, "playing", |a| !state(a).unwrap().0.paused);
+    h.key_press(egui::Key::Space);
+    wait_until(&mut h, "paused", |a| state(a).unwrap().0.paused);
+    wiggle(&mut h);
+    save(&mut h, &base, "player-3-paused.png");
+    assert!(h.query_by_label("⏮").is_some() && h.query_by_label("⏭").is_some());
+
+    // Near the end and playing: on to episode 2 by itself.
+    h.state().player.as_ref().unwrap().player.seek_to(5.2);
+    h.key_press(egui::Key::Space);
+    wait_until(&mut h, "episode 2", |a| {
+        state(a).is_some_and(|(now, p)| now.loaded && p.is_some_and(|p| p.episode == 2))
+    });
+    let watched = h.state().library.find(9).unwrap().watched.clone();
+    assert!(watched[&1].done, "episode 1 watched: {watched:?}");
+
+    // Back to the series: it stops; episode 1 is ticked, 2 is next.
+    h.key_press(egui::Key::Escape);
+    wait_until(&mut h, "the series page", |a| {
+        matches!(a.page, Page::Anime(_))
+            && a.player
+                .as_ref()
+                .is_some_and(|p| p.playing.is_none() && !p.player.now.loaded)
+    });
+    h.run_steps(3);
+    save(&mut h, &base, "player-4-watched.png");
+    assert!(h.query_by_label("✔").is_some(), "episode 1 ticked");
+    assert!(h.query_by_label("▶ Play episode 2").is_some());
+}

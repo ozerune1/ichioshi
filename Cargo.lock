@@ -1461,6 +1461,7 @@ dependencies = [
  "egui-winit",
  "egui_glow",
  "egui_system_font_provider",
+ "glow",
  "glutin",
  "glutin-winit",
  "image",
@@ -5427,7 +5428,9 @@ dependencies = [
  "fancy-regex",
  "flate2",
  "image",
+ "khronos-egl",
  "libc",
+ "libloading",
  "librqbit",
  "librqbit-core",
  "nzb-nntp",
@@ -5449,6 +5452,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "yenc-simd",
+ "zbus",
  "zip",
 ]
 

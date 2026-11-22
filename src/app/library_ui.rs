@@ -105,7 +105,7 @@ impl App {
     }
 
     /// Files a torrent is still writing.
-    fn busy_files(&self) -> HashSet<PathBuf> {
+    pub(super) fn busy_files(&self) -> HashSet<PathBuf> {
         let mut busy = HashSet::new();
         let Some(engine) = self.engine() else {
             return busy;
@@ -1429,6 +1429,31 @@ impl App {
         ui.horizontal(|ui| {
             ui.heading("Episodes");
             ui.weak(format!("{} of {last} in your library", on_disk.len()));
+            if let Some(s) = series
+                && let Some(ep) = super::player_ui::up_next(s, on_disk.keys().copied())
+            {
+                let resume = s
+                    .watched
+                    .get(&ep)
+                    .and_then(crate::library::Watch::resume_at);
+                let label = match resume {
+                    Some(_) => format!("▶ Resume episode {ep}"),
+                    None => format!("▶ Play episode {ep}"),
+                };
+                let button = ui.add(egui::Button::new(RichText::new(label).strong()));
+                let button = match resume {
+                    Some(at) => {
+                        button.on_hover_text(format!("From {}", super::player_ui::clock(at)))
+                    }
+                    None => button,
+                };
+                if button.clicked() {
+                    actions.push(Action::Player(super::player_ui::PlayerAction::Play {
+                        id,
+                        episode: ep,
+                    }));
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(s) = series {
                     let files: Vec<PathBuf> = on_disk
@@ -1488,6 +1513,7 @@ impl App {
             .vscroll(false)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(egui_extras::Column::exact(34.0))
+            .column(egui_extras::Column::exact(52.0))
             .column(egui_extras::Column::remainder().clip(true))
             .column(egui_extras::Column::exact(110.0))
             .column(egui_extras::Column::exact(300.0))
@@ -1499,6 +1525,48 @@ impl App {
                     let color = if have.is_some() { normal } else { gray };
                     row.col(|ui| {
                         ui.label(RichText::new(format!("{n:02}")).color(color).monospace());
+                    });
+                    // Play, and how much has been watched.
+                    row.col(|ui| {
+                        if have.is_none() {
+                            return;
+                        }
+                        let watch = series.and_then(|s| s.watched.get(&n));
+                        let hover = match watch.and_then(crate::library::Watch::resume_at) {
+                            Some(at) => format!("Resume from {}", super::player_ui::clock(at)),
+                            None => "Play".to_owned(),
+                        };
+                        if ui.small_button("▶").on_hover_text(hover).clicked() {
+                            actions.push(Action::Player(super::player_ui::PlayerAction::Play {
+                                id,
+                                episode: n,
+                            }));
+                        }
+                        match watch {
+                            Some(w) if w.done => {
+                                ui.label(RichText::new("✔").color(GREEN))
+                                    .on_hover_text("Watched");
+                            }
+                            Some(w) if w.duration > 0.0 && w.position > 0.0 => {
+                                let (rect, response) =
+                                    ui.allocate_exact_size(vec2(16.0, 4.0), Sense::hover());
+                                let part = (w.position / w.duration).clamp(0.0, 1.0) as f32;
+                                ui.painter().rect_filled(
+                                    rect,
+                                    1.0,
+                                    ui.visuals().widgets.inactive.bg_fill,
+                                );
+                                let mut done = rect;
+                                done.set_width(rect.width() * part);
+                                ui.painter()
+                                    .rect_filled(done, 1.0, ui.visuals().selection.bg_fill);
+                                response.on_hover_text(format!(
+                                    "Watched to {}",
+                                    super::player_ui::clock(w.position)
+                                ));
+                            }
+                            _ => {}
+                        }
                     });
                     row.col(|ui| {
                         let title = info

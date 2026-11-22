@@ -128,6 +128,32 @@ pub struct Series {
     /// Files whose default tracks are set, by path within the folder.
     #[serde(default)]
     pub applied: BTreeMap<String, Applied>,
+    /// How far each episode has been watched, by episode number.
+    #[serde(default)]
+    pub watched: BTreeMap<u32, Watch>,
+}
+
+/// How far an episode has been watched.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Watch {
+    /// Where it was left (seconds).
+    pub position: f64,
+    pub duration: f64,
+    /// Seen to the end (or into the ending).
+    pub done: bool,
+    /// When (Unix time).
+    pub at: i64,
+}
+
+impl Watch {
+    /// Where to start again: where it was left, unless that's the very
+    /// beginning or the end.
+    pub fn resume_at(&self) -> Option<f64> {
+        (!self.done
+            && self.position > 10.0
+            && (self.duration <= 0.0 || self.position < self.duration - 30.0))
+            .then_some(self.position)
+    }
 }
 
 impl Series {
@@ -318,6 +344,7 @@ impl Library {
             downloads: BTreeSet::new(),
             details: None,
             applied: BTreeMap::new(),
+            watched: BTreeMap::new(),
         });
         self.save_or_warn();
         self.series.last_mut().unwrap()

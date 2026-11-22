@@ -31,6 +31,7 @@ mod debrid_ui;
 mod drive_ui;
 mod handover;
 mod library_ui;
+mod player_ui;
 mod playlist_page;
 mod remux_page;
 mod usenet_ui;
@@ -63,6 +64,7 @@ struct Settings {
     prefs: crate::prefs::LangPrefs,
     /// Old downloads have been moved into the library.
     migrated: bool,
+    player: crate::player::Settings,
 }
 
 impl Default for Settings {
@@ -75,6 +77,7 @@ impl Default for Settings {
             prefer_dual_audio: false,
             prefs: Default::default(),
             migrated: false,
+            player: Default::default(),
         }
     }
 }
@@ -326,6 +329,9 @@ enum Action {
         id: u64,
         files: Vec<PathBuf>,
     },
+    Player(player_ui::PlayerAction),
+    /// The player went fullscreen (or left it).
+    PlayerFullscreen(bool),
 }
 
 /// What the delete confirmation is about.
@@ -361,6 +367,7 @@ enum Page {
     Files(FilesPage),
     Remux(RemuxPage),
     Playlist(PlaylistPage),
+    Player(player_ui::PlayerPage),
 }
 
 struct AnimePage {
@@ -615,6 +622,10 @@ pub struct App {
 
     /// Your series, their folders and preferences.
     library: Library,
+    /// The video player, once something has played.
+    player: Option<player_ui::PlayerState>,
+    /// eframe's OpenGL context (the player draws with it).
+    gl: Option<(Arc<eframe::glow::Context>, crate::player::video::GetProc)>,
     /// Moving downloads into the library, setting default tracks.
     lib: LibraryState,
     /// The library and series pages.
@@ -670,6 +681,8 @@ impl App {
         );
 
         let mut app = Self {
+            player: None,
+            gl: cc.gl.clone().zip(cc.get_proc_address.clone()),
             rt,
             ctx: cc.egui_ctx.clone(),
             tx,
@@ -956,6 +969,7 @@ impl App {
                         from_library: true, ..
                     }) => Page::Home,
                     Page::Remux(RemuxPage { back: Some(ap), .. }) => Page::Anime(ap),
+                    Page::Player(pp) => *pp.back,
                     Page::Files(_)
                     | Page::Anime(_)
                     | Page::Remux(_)
@@ -1072,6 +1086,12 @@ impl App {
             Action::RemuxLibrary { id, files } => self.remux_library(id, files),
             Action::DownloadEpisodes(episodes) => self.download_episodes(episodes),
             Action::AddToPlaylist { id, files } => self.add_episodes_to_playlist(id, files),
+            Action::Player(action) => self.player_action(action),
+            Action::PlayerFullscreen(on) => {
+                if let Some(ps) = &mut self.player {
+                    ps.set_made_fullscreen(on);
+                }
+            }
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),
@@ -2561,8 +2581,9 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.handle_messages();
+        self.player_tick(frame);
         self.sync_engine();
         self.request_nzb_lookups();
         self.tidy_library();
@@ -2572,12 +2593,24 @@ impl eframe::App for App {
         self.request_release_files();
         let mut actions = Vec::new();
 
-        egui::Panel::top("top_bar").show(ui, |ui| self.top_bar(ui, &mut actions));
-        egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
+        // A fullscreen video is all there is.
+        let playing = matches!(self.page, Page::Player(_));
+        let fullscreen = ui.ctx().input(|i| i.viewport().fullscreen).unwrap_or(false);
+        if !(playing && fullscreen) {
+            egui::Panel::top("top_bar").show(ui, |ui| self.top_bar(ui, &mut actions));
+            egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
+        }
 
         // Take the page out so the page functions can borrow it next to `self`.
         let mut page = std::mem::replace(&mut self.page, Page::Home);
-        egui::CentralPanel::default_margins().show(ui, |ui| match &mut page {
+        let panel = if playing {
+            egui::CentralPanel::default_margins()
+                .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+        } else {
+            egui::CentralPanel::default_margins()
+        };
+        panel.show(ui, |ui| match &mut page {
+            Page::Player(pp) => self.player_page(ui, pp, &mut actions),
             Page::Home => self.library_page(ui, &mut actions),
             Page::Results => self.results_page(ui, &mut actions),
             Page::Anime(ap) => self.anime_page(ui, ap, &mut actions),
@@ -2603,7 +2636,9 @@ impl eframe::App for App {
         eframe::set_value(storage, eframe::APP_KEY, &self.settings);
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // While the GL context is still there.
+        self.close_player();
         // Debrid and Usenet downloads resume from their partial files next time.
         self.debrid.manager.stop();
         self.usenet.manager.stop();

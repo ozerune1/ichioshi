@@ -11,6 +11,7 @@ mod mkv;
 #[cfg(test)]
 mod mock_http;
 mod nyaa;
+mod player;
 mod playlist;
 mod prefs;
 mod remux;
