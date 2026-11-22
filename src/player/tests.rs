@@ -551,3 +551,46 @@ fn plays_a_real_file() {
     }
     player.video = None;
 }
+
+/// `COMPARE_DIR=<folder>`: mpv's picture of the typeset sample at 1 s
+/// (`mpv.png`), to compare with GStreamer's (`gst_video` tests).
+#[test]
+#[ignore = "needs COMPARE_DIR"]
+fn renders_typeset_sample_for_comparison() {
+    let Some(out) = std::env::var_os("COMPARE_DIR").map(PathBuf::from) else {
+        return;
+    };
+    if !have_mpv() {
+        return;
+    }
+    let Some((gl, get_proc)) = headless_gl() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let Some(file) = crate::gst_video::tests::typeset_sample(dir.path()) else {
+        return;
+    };
+    let mut player = Player::new(Output::SilentWindow, &Settings::default(), || {}).unwrap();
+    player.video = Some(video::Video::new(player.mpv(), gl, get_proc, || {}).unwrap());
+    player.load(&file, Some(1.0)).unwrap();
+    wait(&mut player, "loaded", |p, h| {
+        h.contains(&Happened::Loaded) || p.now.loaded
+    });
+    player.set_paused(true);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut drawn = 0;
+    while drawn < 4 {
+        assert!(Instant::now() < deadline, "no frames");
+        player.poll();
+        if player.video.as_mut().unwrap().render([1920, 1080]) {
+            drawn += 1;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let px = player.video.as_ref().unwrap().pixels();
+    image::RgbaImage::from_raw(1920, 1080, px)
+        .unwrap()
+        .save(out.join("mpv.png"))
+        .unwrap();
+    player.video = None;
+}

@@ -4,6 +4,7 @@ mod engine;
 mod fallback;
 mod fsutil;
 mod gdrive;
+mod gst_video;
 mod library;
 #[cfg(test)]
 mod live_tests;

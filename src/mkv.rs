@@ -116,6 +116,8 @@ pub struct TrackInfo {
 pub struct MkvInfo {
     pub title: Option<String>,
     pub tracks: Vec<TrackInfo>,
+    /// Chapters of the default (else first) edition: start (seconds) and name.
+    pub chapters: Vec<(f64, String)>,
 }
 
 /// What a remux keeps.
@@ -189,6 +191,10 @@ pub fn probe(path: &Path) -> Result<MkvInfo> {
                     .filter(|e| e.id == TRACK_ENTRY)
                     .map(|e| parse_track(e.data))
                     .collect();
+            }
+            CHAPTERS => {
+                let data = src.read(top.data_start, top.end)?;
+                info.chapters = parse_chapters(&data);
             }
             _ => {}
         }
@@ -745,6 +751,55 @@ fn subtitle_text(codec_id: &str, payload: &[u8]) -> Option<String> {
         .collect();
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     (!text.is_empty()).then_some(text)
+}
+
+/// Chapters: the default edition's (else the first's), in time order.
+fn parse_chapters(data: &[u8]) -> Vec<(f64, String)> {
+    const EDITION_ENTRY: u32 = 0x45B9;
+    const EDITION_FLAG_DEFAULT: u32 = 0x45DB;
+    const CHAPTER_ATOM: u32 = 0xB6;
+    const CHAPTER_TIME_START: u32 = 0x91;
+    const CHAPTER_DISPLAY: u32 = 0x80;
+    const CHAP_STRING: u32 = 0x85;
+    let editions: Vec<Elem<'_>> = children(data)
+        .into_iter()
+        .filter(|e| e.id == EDITION_ENTRY)
+        .collect();
+    let edition = editions
+        .iter()
+        .find(|e| {
+            children(e.data)
+                .iter()
+                .any(|c| c.id == EDITION_FLAG_DEFAULT && uint(c.data) == 1)
+        })
+        .or(editions.first());
+    let Some(edition) = edition else {
+        return Vec::new();
+    };
+    let mut out: Vec<(f64, String)> = children(edition.data)
+        .iter()
+        .filter(|e| e.id == CHAPTER_ATOM)
+        .map(|atom| {
+            let parts = children(atom.data);
+            let start = parts
+                .iter()
+                .find(|c| c.id == CHAPTER_TIME_START)
+                .map_or(0, |c| uint(c.data));
+            let name = parts
+                .iter()
+                .filter(|c| c.id == CHAPTER_DISPLAY)
+                .find_map(|d| {
+                    children(d.data)
+                        .into_iter()
+                        .find(|c| c.id == CHAP_STRING)
+                        .map(|c| string(c.data))
+                })
+                .unwrap_or_default();
+            (start as f64 / 1e9, name)
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out
 }
 
 fn parse_track(data: &[u8]) -> TrackInfo {

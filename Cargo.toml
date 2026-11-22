@@ -42,6 +42,10 @@ zip = { version = "9.8", default-features = false, features = ["chrono"] }
 # Keeping the screen on during playback (org.freedesktop.ScreenSaver).
 zbus = "5"
 iced = { version = "0.14", features = ["image", "tokio", "advanced"] }
+iced_video_player = "0.6"
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+gstreamer-video = "0.23"
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["eframe", "snapshot", "wgpu"] }
