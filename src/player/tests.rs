@@ -232,6 +232,29 @@ fn labels_tracks() {
         t(TrackKind::Sub, None, None, "hdmv_pgs_subtitle", None).label(),
         "PGS"
     );
+    // Two-letter codes, as mpv often gives them.
+    assert_eq!(
+        t(
+            TrackKind::Audio,
+            Some("es"),
+            Some("Latin American"),
+            "eac3",
+            Some(6)
+        )
+        .label(),
+        "Spanish · Latin American · E-AC-3 5.1"
+    );
+    assert_eq!(
+        t(
+            TrackKind::Sub,
+            Some("pt"),
+            Some("Brazilian"),
+            "subrip",
+            None
+        )
+        .label(),
+        "Portuguese · Brazilian"
+    );
 }
 
 #[test]
@@ -349,7 +372,8 @@ fn reports_files_it_cant_play() {
     assert!(!seen.contains(&Happened::Loaded));
 }
 
-/// A headless OpenGL context (EGL, no window): Mesa's surfaceless platform.
+/// A headless OpenGL context (EGL, no window): Mesa's surfaceless platform,
+/// else the default display. Says why when there's none.
 fn headless_gl() -> Option<(std::sync::Arc<eframe::glow::Context>, video::GetProc)> {
     use khronos_egl as egl;
     // SAFETY: loading libEGL.
@@ -361,23 +385,6 @@ fn headless_gl() -> Option<(std::sync::Arc<eframe::glow::Context>, video::GetPro
         }
     };
     const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
-    // SAFETY: the default display of the surfaceless platform.
-    let display = unsafe {
-        lib.get_platform_display(
-            PLATFORM_SURFACELESS_MESA,
-            egl::DEFAULT_DISPLAY,
-            &[egl::ATTRIB_NONE],
-        )
-    };
-    let Ok(display) = display else {
-        eprintln!("skipping: no surfaceless EGL display");
-        return None;
-    };
-    lib.initialize(display).ok()?;
-    lib.bind_api(egl::OPENGL_API).ok()?;
-    let config = lib
-        .choose_first_config(display, &[egl::RENDERABLE_TYPE, egl::OPENGL_BIT, egl::NONE])
-        .ok()??;
     let attrs = [
         egl::CONTEXT_MAJOR_VERSION,
         3,
@@ -387,8 +394,49 @@ fn headless_gl() -> Option<(std::sync::Arc<eframe::glow::Context>, video::GetPro
         egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
         egl::NONE,
     ];
-    let context = lib.create_context(display, config, None, &attrs).ok()?;
-    lib.make_current(display, None, None, Some(context)).ok()?;
+    let mut why = Vec::new();
+    let mut made = None;
+    for platform in ["surfaceless", "default"] {
+        let attempt = (|| -> Result<(egl::Display, egl::Context), String> {
+            // SAFETY: EGL's own default displays.
+            let display = match platform {
+                "surfaceless" => unsafe {
+                    lib.get_platform_display(
+                        PLATFORM_SURFACELESS_MESA,
+                        egl::DEFAULT_DISPLAY,
+                        &[egl::ATTRIB_NONE],
+                    )
+                }
+                .map_err(|e| format!("display: {e}"))?,
+                _ => unsafe { lib.get_display(egl::DEFAULT_DISPLAY) }.ok_or("no display")?,
+            };
+            lib.initialize(display)
+                .map_err(|e| format!("initialize: {e}"))?;
+            lib.bind_api(egl::OPENGL_API)
+                .map_err(|e| format!("bind_api: {e}"))?;
+            let config = lib
+                .choose_first_config(display, &[egl::RENDERABLE_TYPE, egl::OPENGL_BIT, egl::NONE])
+                .map_err(|e| format!("config: {e}"))?
+                .ok_or("no config")?;
+            let context = lib
+                .create_context(display, config, None, &attrs)
+                .map_err(|e| format!("context: {e}"))?;
+            lib.make_current(display, None, None, Some(context))
+                .map_err(|e| format!("make_current: {e}"))?;
+            Ok((display, context))
+        })();
+        match attempt {
+            Ok(ok) => {
+                made = Some(ok);
+                break;
+            }
+            Err(e) => why.push(format!("{platform}: {e}")),
+        }
+    }
+    if made.is_none() {
+        eprintln!("skipping: no headless OpenGL ({})", why.join("; "));
+        return None;
+    }
     let get_proc: video::GetProc = std::sync::Arc::new(move |name: &std::ffi::CStr| {
         name.to_str()
             .ok()
@@ -398,6 +446,15 @@ fn headless_gl() -> Option<(std::sync::Arc<eframe::glow::Context>, video::GetPro
     let loader = get_proc.clone();
     // SAFETY: the context is current on this thread.
     let gl = unsafe { eframe::glow::Context::from_loader_function_cstr(|name| loader(name)) };
+    // SAFETY: plain queries.
+    unsafe {
+        use eframe::glow::HasContext;
+        eprintln!(
+            "headless OpenGL: {} · {}",
+            gl.get_parameter_string(eframe::glow::RENDERER),
+            gl.get_parameter_string(eframe::glow::VERSION)
+        );
+    }
     Some((std::sync::Arc::new(gl), get_proc))
 }
 
@@ -447,5 +504,50 @@ fn draws_frames_right_side_up() {
         bottom[2] > 200 && bottom[0] < 60,
         "bottom is blue: {bottom:?}"
     );
+    player.video = None;
+}
+
+/// `PLAYER_SAMPLE=<a real episode>` (and `PLAYER_LOG=<file>` for mpv's
+/// log): play it for a few seconds the way the app does, into a texture.
+#[test]
+#[ignore = "needs PLAYER_SAMPLE"]
+fn plays_a_real_file() {
+    let Some(file) = std::env::var_os("PLAYER_SAMPLE").map(PathBuf::from) else {
+        eprintln!("skipping: no PLAYER_SAMPLE");
+        return;
+    };
+    let Some((gl, get_proc)) = headless_gl() else {
+        eprintln!("skipping: no headless OpenGL");
+        return;
+    };
+    let mut player = Player::new(Output::SilentWindow, &Settings::default(), || {}).unwrap();
+    if let Some(log) = std::env::var_os("PLAYER_LOG") {
+        player
+            .mpv()
+            .set("log-file", &log.to_string_lossy())
+            .unwrap();
+    }
+    player.video = Some(video::Video::new(player.mpv(), gl, get_proc, || {}).unwrap());
+    player.load(&file, None).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut drawn = 0;
+    while Instant::now() < deadline {
+        for h in player.poll() {
+            eprintln!("happened: {h:?}");
+        }
+        if player.video.as_mut().unwrap().render([1280, 720]) {
+            drawn += 1;
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    eprintln!("frames drawn: {drawn}; {:?}", player.now);
+    for t in &player.tracks {
+        eprintln!(
+            "{:?} {} {}",
+            t.kind,
+            t.label(),
+            if t.selected { "(selected)" } else { "" }
+        );
+    }
     player.video = None;
 }

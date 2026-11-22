@@ -382,9 +382,10 @@ impl Track {
     pub fn label(&self) -> String {
         let mut parts = Vec::new();
         match self.lang.as_deref() {
-            Some(code) if !code.is_empty() && code != "und" => {
-                parts.push(crate::remux::language_name(code))
-            }
+            // mpv gives "es" as often as "spa".
+            Some(code) if !code.is_empty() && code != "und" => parts.push(
+                crate::remux::language_name(&crate::remux::normalize_language(code)),
+            ),
             _ => {}
         }
         if let Some(t) = self.title.as_deref().filter(|t| !t.trim().is_empty()) {
