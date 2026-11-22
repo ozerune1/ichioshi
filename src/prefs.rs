@@ -29,6 +29,18 @@ pub enum SubType {
 }
 
 impl SubType {
+    /// The kinds to look for, in order, when this one is wanted. Signs only
+    /// never fall back to full subtitles.
+    pub fn fallbacks(self) -> &'static [SubType] {
+        match self {
+            SubType::Full | SubType::Auto => &[SubType::Full, SubType::Sdh, SubType::Dubtitles],
+            SubType::Signs => &[SubType::Signs],
+            SubType::Dubtitles => &[SubType::Dubtitles, SubType::Full, SubType::Sdh],
+            SubType::Sdh => &[SubType::Sdh, SubType::Full],
+            SubType::Commentary => &[SubType::Commentary],
+        }
+    }
+
     pub const ALL: [SubType; 6] = [SubType::Auto, SubType::Full, SubType::Signs, SubType::Dubtitles, SubType::Sdh, SubType::Commentary];
 
     pub fn name(self) -> &'static str {
@@ -134,17 +146,22 @@ pub fn track_language(t: &TrackInfo) -> String {
 
 /// What kind of subtitles a track holds, from its flags and name.
 pub fn sub_type(t: &TrackInfo) -> SubType {
+    sub_type_of(&t.name, t.forced, t.hearing_impaired, t.commentary)
+}
+
+/// What kind of subtitles a track with this name and these flags holds.
+pub fn sub_type_of(name: &str, forced: bool, hearing_impaired: bool, commentary: bool) -> SubType {
     static COMMENTARY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bcommentary\b").unwrap());
     static SDH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(sdh|cc|hearing)\b").unwrap());
     static DUB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)dub").unwrap());
     static SIGNS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)sign|song|forced|karaoke|lyrics").unwrap());
-    if t.commentary || COMMENTARY.is_match(&t.name) {
+    if commentary || COMMENTARY.is_match(name) {
         SubType::Commentary
-    } else if t.hearing_impaired || SDH.is_match(&t.name) {
+    } else if hearing_impaired || SDH.is_match(name) {
         SubType::Sdh
-    } else if DUB.is_match(&t.name) {
+    } else if DUB.is_match(name) {
         SubType::Dubtitles
-    } else if t.forced || SIGNS.is_match(&t.name) {
+    } else if forced || SIGNS.is_match(name) {
         SubType::Signs
     } else {
         SubType::Full
@@ -181,13 +198,7 @@ pub fn pick_defaults(tracks: &[TrackInfo], prefs: &LangPrefs) -> HashSet<u64> {
         SubType::Auto => SubType::Full,
         t => t,
     };
-    let order: &[SubType] = match wanted {
-        SubType::Full | SubType::Auto => &[SubType::Full, SubType::Sdh, SubType::Dubtitles],
-        SubType::Signs => &[SubType::Signs],
-        SubType::Dubtitles => &[SubType::Dubtitles, SubType::Full, SubType::Sdh],
-        SubType::Sdh => &[SubType::Sdh, SubType::Full],
-        SubType::Commentary => &[SubType::Commentary],
-    };
+    let order = wanted.fallbacks();
     let subs: Vec<(&TrackInfo, SubType)> = tracks
         .iter()
         .filter(|t| t.kind == TrackKind::Subtitles && track_language(t) == *lang)

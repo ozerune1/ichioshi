@@ -471,6 +471,8 @@ pub fn probe(path: &Path) -> Result<MediaFile> {
         .tracks
         .into_iter()
         .map(|t| Track {
+            // "und" tracks named "English (Full)" are English.
+            language: crate::prefs::track_language(&t),
             id: t.number,
             kind: match t.kind {
                 mkv::TrackKind::Video => Kind::Video,
@@ -480,7 +482,6 @@ pub fn probe(path: &Path) -> Result<MediaFile> {
             },
             codec: mkv::codec_name(&t.codec_id),
             codec_id: t.codec_id,
-            language: normalize_language(&t.language),
             name: t.name,
             default: t.default,
             forced: t.forced,

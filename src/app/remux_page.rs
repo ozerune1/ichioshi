@@ -12,6 +12,7 @@ use eframe::egui::{self, RichText, Ui, vec2};
 use super::{Action, App, GREEN, Msg, Page};
 use crate::engine::{SeriesFiles, TorrentHandle};
 use crate::library::AnimeRef;
+use crate::prefs::{LangPrefs, SubType, sub_type_of};
 use crate::remux::{self, Analysis, Choice, Kind, PlannedFile, SubtitleSample, TrackSig, language_name};
 use crate::{seadex, title};
 
@@ -34,6 +35,10 @@ pub(super) struct RemuxPage {
     pub(super) sub_lang: Option<String>,
     pub(super) subs: Option<TrackSig>,
     pub(super) run: Option<RemuxRun>,
+    /// The series, when known: its language preferences pick the tracks.
+    anilist_id: Option<u64>,
+    /// The series page it was opened from, to go back to.
+    pub(super) back: Option<super::AnimePage>,
 }
 
 pub(super) struct RemuxRun {
@@ -77,12 +82,31 @@ impl RemuxPage {
     }
 
     /// Pick the suggested languages and tracks once the files are read.
-    fn apply_defaults(&mut self) {
+    /// Start from the language preferences, where the files have those
+    /// languages; otherwise from what the files suggest.
+    fn apply_defaults(&mut self, prefs: &LangPrefs) {
         let Some(a) = &self.analysis else { return };
-        self.audio_lang = a.default_audio_language();
+        let has = |kind, code: &str| a.languages(kind).iter().any(|l| l.code == code);
+        self.audio_lang = if has(Kind::Audio, &prefs.audio) { Some(prefs.audio.clone()) } else { a.default_audio_language() };
         self.audio = self.audio_lang.as_deref().and_then(|l| a.default_candidate(Kind::Audio, l, None));
-        self.sub_lang = a.default_subtitle_language();
-        self.refresh_subtitle_track();
+        self.sub_lang = match &prefs.subtitles {
+            None => None,
+            Some(l) if has(Kind::Subtitles, l) => Some(l.clone()),
+            Some(_) => a.default_subtitle_language(),
+        };
+        let audio_lang = self.audio_lang.clone();
+        self.subs = self.sub_lang.as_deref().and_then(|l| match prefs.sub_type {
+            SubType::Auto => a.default_candidate(Kind::Subtitles, l, audio_lang.as_deref()),
+            wanted => {
+                let candidates = a.candidates(Kind::Subtitles, l);
+                wanted.fallbacks().iter().find_map(|kind| {
+                    candidates
+                        .iter()
+                        .find(|c| sub_type_of(&c.sig.name, c.forced, c.hearing_impaired, c.commentary) == *kind)
+                        .map(|c| c.sig.clone())
+                })
+            }
+        });
     }
 
     fn refresh_audio_track(&mut self) {
@@ -152,6 +176,8 @@ impl App {
             sub_lang: None,
             subs: None,
             run: None,
+            anilist_id: known.as_ref().map(|a| a.anilist_id),
+            back: None,
         });
         if !files.is_empty() {
             self.spawn(async move {
@@ -176,6 +202,10 @@ impl App {
 
     pub(super) fn handle_remux_msg(&mut self, msg: Msg) {
         let download_dir = self.library_dir();
+        let prefs = match &self.page {
+            Page::Remux(rp) => rp.anilist_id.and_then(|id| self.library.find(id)).map_or_else(|| self.settings.prefs.clone(), |s| self.prefs_for(s)),
+            _ => return,
+        };
         let Page::Remux(rp) = &mut self.page else { return };
         let mut sample = None;
         match msg {
@@ -183,7 +213,7 @@ impl App {
                 Ok(analysis) => {
                     sample = Some((seq, analysis.clone()));
                     rp.analysis = Some(analysis);
-                    rp.apply_defaults();
+                    rp.apply_defaults(&prefs);
                 }
                 Err(e) => rp.error = Some(e),
             },

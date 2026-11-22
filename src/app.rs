@@ -33,7 +33,7 @@ mod remux_page;
 mod usenet_ui;
 mod vpn_ui;
 use debrid_ui::DebridState;
-use library_ui::LibraryState;
+use library_ui::{LibraryState, PagesState};
 use drive_ui::DriveState;
 use playlist_page::PlaylistPage;
 use remux_page::RemuxPage;
@@ -117,6 +117,8 @@ enum Msg {
     Moved { key: String, name: String, result: Result<Vec<(PathBuf, PathBuf)>, String> },
     DefaultsApplied { anilist_id: u64, rel: String, applied: crate::library::Applied },
     DefaultsDone,
+    Details { id: u64, result: Result<crate::library::Details, String> },
+    SeriesEntry { id: u64, result: Result<Option<seadex::Entry>, String> },
     UsenetChecked { id: u64, seq: u64, result: Result<(), String> },
     Info(String),
     Error(String),
@@ -181,6 +183,14 @@ enum Action {
     UsenetOpenRemux(u64),
     UsenetOpenProviders,
     UsenetCheck(u64),
+    GoLibrary,
+    OpenSeries(u64),
+    AddToLibrary,
+    RemoveSeries { id: u64, delete_files: bool },
+    AskRemoveSeries(u64),
+    OpenLanguages,
+    SetSeriesPrefs { id: u64, prefs: Option<crate::prefs::LangPrefs> },
+    RemuxLibrary { id: u64, files: Vec<PathBuf> },
 }
 
 /// What the delete confirmation is about.
@@ -189,6 +199,8 @@ enum DeleteTarget {
     Torrent(TorrentId),
     Debrid(u64),
     Usenet(u64),
+    /// A series' whole folder.
+    Series(u64),
 }
 
 enum EngineState {
@@ -220,6 +232,10 @@ struct AnimePage {
     chosen: Option<usize>,
     /// Set when SeaDex has no Nyaa release for this anime.
     nyaa: Option<NyaaSearch>,
+    /// Opened from the library (so Back goes there).
+    from_library: bool,
+    /// Its SeaDex entry is being looked up.
+    entry_loading: bool,
 }
 
 /// The Nyaa fallback: search results ranked by release-group tier.
@@ -424,6 +440,8 @@ pub struct App {
     library: Library,
     /// Moving downloads into the library, setting default tracks.
     lib: LibraryState,
+    /// The library and series pages.
+    pages: PagesState,
     remux_seq: u64,
     /// Remuxed episodes to export together.
     playlist: Playlist,
@@ -487,6 +505,7 @@ impl App {
             status: None,
             library,
             lib: LibraryState::default(),
+            pages: PagesState::default(),
             remux_seq: 0,
             playlist: Playlist::load(state_dir.join("playlist.json")),
             playlist_seq: 0,
@@ -688,6 +707,8 @@ impl App {
                 Msg::Moved { key, name, result } => self.handle_moved(key, name, result),
                 Msg::DefaultsApplied { anilist_id, rel, applied } => self.handle_defaults_applied(anilist_id, rel, applied),
                 Msg::DefaultsDone => self.defaults_done(),
+                Msg::Details { id, result } => self.handle_details(id, result),
+                Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
             }
         }
     }
@@ -699,18 +720,7 @@ impl App {
             Action::Search => self.start_search(),
             Action::OpenAnime(i) => {
                 if let Some(anime) = self.results.get(i).cloned() {
-                    let chosen = anime
-                        .entry
-                        .as_ref()
-                        .and_then(|e| e.best_nyaa(self.settings.prefer_dual_audio));
-                    // Nothing on SeaDex to download: find the best release on Nyaa instead.
-                    let nyaa = chosen.is_none().then(|| NyaaSearch::new(SearchPlan::for_anime(&anime)));
-                    let search_now = nyaa.is_some();
-                    self.cancel_listing();
-                    self.page = Page::Anime(AnimePage { anime, chosen, nyaa });
-                    if search_now {
-                        self.search_nyaa();
-                    }
+                    self.show_anime(anime, false);
                 }
             }
             Action::SearchNyaa => self.search_nyaa(),
@@ -718,6 +728,8 @@ impl App {
                 self.cancel_listing();
                 self.page = match std::mem::replace(&mut self.page, Page::Home) {
                     Page::Files(FilesPage { back: Some(ap), .. }) => Page::Anime(ap),
+                    Page::Anime(AnimePage { from_library: true, .. }) => Page::Home,
+                    Page::Remux(RemuxPage { back: Some(ap), .. }) => Page::Anime(ap),
                     Page::Files(_) | Page::Anime(_) | Page::Remux(_) | Page::Playlist(_) => self.home_or_results(),
                     other => other,
                 };
@@ -805,6 +817,21 @@ impl App {
             Action::UsenetOpenRemux(id) => self.usenet_open_remux(id),
             Action::UsenetOpenProviders => self.usenet.dialog = Some(Default::default()),
             Action::UsenetCheck(id) => self.usenet_check(id),
+            Action::GoLibrary => {
+                self.cancel_listing();
+                self.page = Page::Home;
+            }
+            Action::OpenSeries(id) => self.open_series(id),
+            Action::AddToLibrary => self.add_to_library(),
+            Action::RemoveSeries { id, delete_files } => self.remove_series(id, delete_files),
+            Action::AskRemoveSeries(id) => {
+                if let Some(s) = self.library.find(id) {
+                    self.confirm_delete = Some((DeleteTarget::Series(id), s.title().to_owned()));
+                }
+            }
+            Action::OpenLanguages => self.pages.languages = Some(self.settings.prefs.clone()),
+            Action::SetSeriesPrefs { id, prefs } => self.set_series_prefs(id, prefs),
+            Action::RemuxLibrary { id, files } => self.remux_library(id, files),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),
@@ -838,6 +865,27 @@ impl App {
         }
     }
 
+    /// Show an anime's page, with its best release picked.
+    fn show_anime(&mut self, anime: Anime, from_library: bool) {
+        let dual = self.prefer_dual_audio(anime.anilist_id);
+        let chosen = anime.entry.as_ref().and_then(|e| e.best_nyaa(dual));
+        // Nothing on SeaDex to download: find the best release on Nyaa instead.
+        let nyaa = chosen.is_none().then(|| NyaaSearch::new(SearchPlan::for_anime(&anime)));
+        let search_now = nyaa.is_some();
+        self.cancel_listing();
+        self.page = Page::Anime(AnimePage { anime, chosen, nyaa, from_library, entry_loading: false });
+        if search_now {
+            self.search_nyaa();
+        }
+    }
+
+    /// Whether to pick dual-audio releases for an anime: the setting, or
+    /// languages that want a dub.
+    fn prefer_dual_audio(&self, anilist_id: u64) -> bool {
+        let prefs = self.library.find(anilist_id).and_then(|s| s.prefs.as_ref()).unwrap_or(&self.settings.prefs);
+        self.settings.prefer_dual_audio || prefs.wants_dub()
+    }
+
     fn start_search(&mut self) {
         let query = self.query.trim().to_owned();
         if query.is_empty() {
@@ -858,6 +906,8 @@ impl App {
 
     /// Search Nyaa for the anime on the current page and rank what it finds.
     fn search_nyaa(&mut self) {
+        let Page::Anime(ap) = &self.page else { return };
+        let prefer_dual_audio = self.prefer_dual_audio(ap.anime.anilist_id);
         let Page::Anime(AnimePage { nyaa: Some(search), .. }) = &mut self.page else { return };
         if search.query.trim().is_empty() {
             return;
@@ -869,7 +919,6 @@ impl App {
         search.loading = true;
         search.error = None;
         let client = self.http.clone();
-        let prefer_dual_audio = self.settings.prefer_dual_audio;
         self.spawn(async move {
             let result = fallback::find_releases(&client, &plan, prefer_dual_audio)
                 .await
@@ -1152,7 +1201,11 @@ impl App {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.heading("SeaDex Downloader");
-            ui.add_space(16.0);
+            ui.add_space(8.0);
+            if ui.selectable_label(matches!(self.page, Page::Home), "Library").clicked() {
+                actions.push(Action::GoLibrary);
+            }
+            ui.add_space(8.0);
             let search = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
                     .hint_text("Search anime, e.g. Frieren")
@@ -1202,6 +1255,15 @@ impl App {
             self.vpn_settings(ui, actions);
             ui.separator();
         }
+        ui.strong("Languages");
+        ui.horizontal(|ui| {
+            ui.label(self.settings.prefs.summary());
+            if ui.small_button("Change…").clicked() {
+                actions.push(Action::OpenLanguages);
+            }
+        });
+        ui.weak("Which tracks play by default; series can have their own. Every track is kept.");
+        ui.separator();
         ui.strong("Library folder");
         ui.horizontal(|ui| {
             let mut text = self.settings.library_dir.display().to_string();
@@ -1356,17 +1418,6 @@ impl App {
         });
     }
 
-    fn home_page(&self, ui: &mut Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.3);
-            ui.heading("Find the best release of any anime");
-            ui.add_space(8.0);
-            ui.label("Search above. Results come from AniList, matched with SeaDex (releases.moe).");
-            ui.label("Downloads come from the release SeaDex rates best on Nyaa, or, for anime");
-            ui.label("SeaDex doesn't cover, from the best-ranked release group on Nyaa.");
-        });
-    }
-
     fn results_page(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
         if self.results.is_empty() {
             ui.add_space(20.0);
@@ -1397,7 +1448,7 @@ impl App {
                                     ui.weak(alt);
                                 }
                                 ui.label(anime.summary());
-                                ui.label(result_badge(anime, self.settings.prefer_dual_audio));
+                                ui.label(result_badge(anime, self.settings.prefer_dual_audio || self.settings.prefs.wants_dub()));
                             });
                         });
                     });
@@ -1422,18 +1473,21 @@ impl App {
     }
 
     fn anime_page(&self, ui: &mut Ui, ap: &mut AnimePage, actions: &mut Vec<Action>) {
-        if ui.button("⏴ Results").clicked() {
+        let back = if ap.from_library { "⏴ Library" } else { "⏴ Results" };
+        if ui.button(back).clicked() {
             actions.push(Action::Back);
         }
         ui.add_space(6.0);
-        let AnimePage { anime, chosen, nyaa } = ap;
+        let dual = self.prefer_dual_audio(ap.anime.anilist_id);
+        let AnimePage { anime, chosen, nyaa, entry_loading, .. } = ap;
         let entry = anime.entry.as_ref();
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    cover(ui, anime.cover_large.as_deref(), vec2(130.0, 185.0));
+                    let details_cover = self.details(anime.anilist_id).and_then(|d| d.cover.as_deref());
+                    cover(ui, anime.cover_large.as_deref().or(details_cover), vec2(130.0, 185.0));
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
                         ui.heading(&anime.title);
@@ -1441,6 +1495,7 @@ impl App {
                             ui.weak(alt);
                         }
                         ui.label(anime.summary());
+                        self.details_section(ui, anime.anilist_id);
                         ui.horizontal(|ui| {
                             ui.hyperlink_to("AniList ↗", anime.anilist_url());
                             if entry.is_some() {
@@ -1460,11 +1515,21 @@ impl App {
                         }
                     });
                 });
+                ui.add_space(6.0);
+                self.description_section(ui, anime.anilist_id);
+                ui.add_space(6.0);
+                self.series_library_section(ui, anime, actions);
                 ui.add_space(10.0);
+                if *entry_loading {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Looking up its releases on SeaDex…");
+                    });
+                }
 
                 match (nyaa, entry) {
                     (Some(search), _) => self.nyaa_section(ui, entry.is_some(), search, actions),
-                    (None, Some(entry)) => self.seadex_section(ui, entry, chosen, actions),
+                    (None, Some(entry)) => self.seadex_section(ui, entry, chosen, dual, actions),
                     (None, None) => {}
                 }
 
@@ -1502,7 +1567,7 @@ impl App {
         }
     }
 
-    fn seadex_section(&self, ui: &mut Ui, entry: &seadex::Entry, chosen: &mut Option<usize>, actions: &mut Vec<Action>) {
+    fn seadex_section(&self, ui: &mut Ui, entry: &seadex::Entry, chosen: &mut Option<usize>, dual: bool, actions: &mut Vec<Action>) {
         ui.heading("Releases");
         ui.add_space(4.0);
         let usenet = self.usenet.active();
@@ -1518,7 +1583,7 @@ impl App {
                     ui.strong("Usenet");
                 }
                 ui.end_row();
-                for i in entry.ranked(self.settings.prefer_dual_audio) {
+                for i in entry.ranked(dual) {
                     let r = &entry.releases[i];
                     let nyaa_id = r.nyaa_id();
                     ui.add_enabled_ui(nyaa_id.is_some(), |ui| {
@@ -1914,7 +1979,15 @@ impl App {
             ui.set_width(440.0);
             ui.heading("Delete downloaded files?");
             ui.add_space(6.0);
-            ui.label(format!("This removes “{name}” and deletes its files from disk. It can't be undone."));
+            match target {
+                DeleteTarget::Series(id) => {
+                    let folder = self.library.find(id).map(|s| s.folder.display().to_string()).unwrap_or_default();
+                    ui.label(format!("This removes “{name}” from your library and deletes its folder, {folder}, with everything in it. It can't be undone."));
+                }
+                _ => {
+                    ui.label(format!("This removes “{name}” and deletes its files from disk. It can't be undone."));
+                }
+            }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let delete = egui::Button::new(
@@ -1925,6 +1998,7 @@ impl App {
                         DeleteTarget::Torrent(id) => Action::Remove { id, delete_files: true },
                         DeleteTarget::Debrid(id) => Action::DebridRemove { id, delete_files: true },
                         DeleteTarget::Usenet(id) => Action::UsenetRemove { id, delete_files: true },
+                        DeleteTarget::Series(id) => Action::RemoveSeries { id, delete_files: true },
                     });
                     close = true;
                 }
@@ -1946,6 +2020,8 @@ impl eframe::App for App {
         self.request_nzb_lookups();
         self.tidy_library();
         self.apply_defaults();
+        self.refresh_library_stats();
+        self.request_details();
         let mut actions = Vec::new();
 
         egui::Panel::top("top_bar").show(ui, |ui| self.top_bar(ui, &mut actions));
@@ -1958,7 +2034,7 @@ impl eframe::App for App {
         // Take the page out so the page functions can borrow it next to `self`.
         let mut page = std::mem::replace(&mut self.page, Page::Home);
         egui::CentralPanel::default_margins().show(ui, |ui| match &mut page {
-            Page::Home => self.home_page(ui),
+            Page::Home => self.library_page(ui, &mut actions),
             Page::Results => self.results_page(ui, &mut actions),
             Page::Anime(ap) => self.anime_page(ui, ap, &mut actions),
             Page::Files(fp) => self.files_page(ui, fp, &mut actions),
@@ -1970,6 +2046,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.delete_modal(&ctx, &mut actions);
         self.usenet_dialog(&ctx, &mut actions);
+        self.languages_dialog(&ctx);
         self.folder_browser_modal(&ctx, &mut actions);
 
         for action in actions {

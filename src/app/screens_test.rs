@@ -890,7 +890,7 @@ fn downloads_from_usenet() {
         cover_large: None,
         entry: Some(seadex::Entry { notes: String::new(), incomplete: false, theoretical_best: String::new(), releases: vec![release] }),
     };
-    h.state_mut().page = Page::Anime(AnimePage { anime, chosen: Some(0), nyaa: None });
+    h.state_mut().page = Page::Anime(AnimePage { anime, chosen: Some(0), nyaa: None, from_library: false, entry_loading: false });
     wait_until(&mut h, "NZB lookup", |a| a.usenet.links(&hash).is_some_and(|l| l.len() == 2));
     save(&mut h, &base, "usenet-1-release.png");
     assert!(h.query_by_label("NZB").is_some(), "the release list says it's on Usenet");
@@ -914,14 +914,13 @@ fn downloads_from_usenet() {
     h.run_steps(2);
     save(&mut h, &base, "usenet-3-downloading.png");
     assert!(h.query_by_label_contains("Downloading from Usenet (AnimeTosho)").is_some());
-    wait_until(&mut h, "done", |a| a.usenet.manager.views().first().is_some_and(|v| v.live.phase == Phase::Done));
-    h.state_mut().page = Page::Home;
-    h.run_steps(2);
-    click(&mut h, "Files");
-    h.run_steps(5);
-    save(&mut h, &base, "usenet-4-done.png");
-    // Into the series' folder in the library, which now lists it.
+    // Done, it's imported: off the downloads list, in the series' folder.
     let out = base.join("downloads").join("Show");
+    wait_until(&mut h, "imported", |a| a.usenet.manager.views().is_empty() && out.join("Show - 03.mkv").exists());
+    h.state_mut().page = Page::Home;
+    h.run_steps(5);
+    save(&mut h, &base, "usenet-4-imported.png");
+    assert!(h.query_by_label("Show is in your library").is_some() || h.query_by_label_contains("in your library").is_some());
     assert!(std::fs::read(out.join("Show - 01.mkv")).unwrap() == data[0]);
     assert!(std::fs::read(out.join("Show - 03.mkv")).unwrap() == data[2]);
     assert!(!out.join("Show - 02.mkv").exists());
@@ -1169,4 +1168,109 @@ fn library_episodes_get_default_tracks() {
     wait_until(&mut h, "defaults changed", done);
     assert_eq!(defaults("Show - 01.mkv"), [1, 3, 5]);
     assert_eq!(defaults("Show - 02.mkv"), [1, 3, 5]);
+}
+
+/// The library as the front page, a series' page with its AniList details
+/// (AniList and SeaDex are mocks), its own languages, the library's
+/// languages dialog, and taking a series out of the library.
+#[test]
+#[ignore = "renders screenshots"]
+fn library_and_series_pages() {
+    use crate::library::NewSeries;
+    use crate::mock_http::{mock, reply};
+    use serde_json::json;
+
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            *crate::seadex::ANILIST_BASE.lock().unwrap() = None;
+            *crate::seadex::SEADEX_BASE.lock().unwrap() = None;
+        }
+    }
+    let base = screens_dir("library-pages-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(mock(|req| {
+        if req.target.starts_with("/seadex") {
+            return reply(200, json!({"items": [{"alID": 1, "notes": "", "expand": {"trs": [{
+                "releaseGroup": "Group", "isBest": true, "dualAudio": false, "tracker": "Nyaa",
+                "url": "https://nyaa.si/view/777", "infoHash": "a".repeat(40), "files": [{"length": 1000}]}]}}]}));
+        }
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        let airing = body["variables"]["id"] == 1;
+        reply(200, json!({"data": {"Media": {
+            "title": {"native": if airing { "葬送のフリーレン" } else { "時光代理人" }},
+            "description": "An elf mage outlives her party.<br><br>\n(Source: Crunchyroll)",
+            "genres": ["Adventure", "Drama", "Fantasy"], "averageScore": 90,
+            "status": if airing { "RELEASING" } else { "FINISHED" }, "format": "TV", "episodes": if airing { 28 } else { 11 },
+            "duration": 24, "season": "FALL", "seasonYear": 2023, "source": "MANGA", "studios": {"nodes": [{"name": "Madhouse"}]},
+            "startDate": {"year": 2023, "month": 9, "day": 29},
+            "nextAiringEpisode": if airing { json!({"episode": 5, "airingAt": 1_800_000_000}) } else { json!(null) }}}}))
+    }));
+    *crate::seadex::ANILIST_BASE.lock().unwrap() = Some(format!("{server}/anilist"));
+    *crate::seadex::SEADEX_BASE.lock().unwrap() = Some(format!("{server}/seadex"));
+    let _reset = Reset;
+
+    let mut h = harness(&base, rt.handle().clone());
+    let library = base.join("downloads");
+    let tracks = [(1, 1, "und", "Video", None), (2, 2, "jpn", "Japanese", None), (3, 17, "eng", "English", None)];
+    for (id, title, eps) in [(1u64, "Frieren", 2), (2, "Link Click", 1)] {
+        let new = NewSeries { anilist_id: id, english: Some(title.into()), format: Some("TV".into()), year: Some(2023), ..Default::default() };
+        let folder = h.state_mut().library.add(&new, &library).folder.clone();
+        std::fs::create_dir_all(&folder).unwrap();
+        for ep in 1..=eps {
+            std::fs::write(folder.join(format!("{title} - 0{ep}.mkv")), crate::mkv::tests::with_tracks(&tracks)).unwrap();
+        }
+    }
+    wait_until(&mut h, "details", |a| a.library.series.iter().all(|s| s.details.is_some()) && a.pages.stats.len() == 2);
+    save(&mut h, &base, "library-1-home.png");
+    assert!(h.query_by_label("2 series").is_some());
+    assert!(h.query_by_label_contains("2 of 28 episodes").is_some());
+    assert!(h.query_by_label("Finished airing").is_some());
+
+    // The library's languages.
+    click(&mut h, "Change…");
+    h.run_steps(3);
+    save(&mut h, &base, "library-2-languages.png");
+    assert!(h.query_by_label("Signs & songs only, for watching a dub").is_none(), "only the chosen kind's help shows");
+    click(&mut h, "Cancel");
+    h.run_steps(3);
+    assert!(h.state().pages.languages.is_none());
+
+    // A series' page: its card is the button.
+    h.get_all_by_label("Frieren").next().unwrap().click();
+    h.step();
+    wait_until(&mut h, "series page", |a| matches!(&a.page, Page::Anime(ap) if ap.from_library && ap.anime.entry.is_some()));
+    save(&mut h, &base, "library-3-series.png");
+    assert!(h.query_by_label("In your library").is_some());
+    assert!(h.query_by_label_contains("Airing: episode 5").is_some());
+    assert!(h.query_by_label("Adventure · Drama · Fantasy").is_some());
+    assert!(h.query_by_label_contains("An elf mage outlives her party.").is_some());
+    assert!(h.query_by_label("⏴ Library").is_some());
+
+    // Its own languages.
+    click(&mut h, "Use different languages for this series");
+    h.run_steps(3);
+    assert!(h.state().library.find(1).unwrap().prefs.is_some());
+    save(&mut h, &base, "library-4-own-languages.png");
+
+    // Remux one episode from the library, and come back.
+    click(&mut h, "In the folder: 2 episodes · 868 B");
+    h.run_steps(3);
+    h.get_all_by_label("Remux…").next().unwrap().click();
+    h.step();
+    wait_until(&mut h, "remux page", |a| matches!(&a.page, Page::Remux(rp) if rp.analysis.is_some()));
+    let Page::Remux(rp) = &h.state().page else { panic!("remux page") };
+    assert_eq!(rp.series.files, [library.join("Frieren").join("Frieren - 01.mkv")]);
+    save(&mut h, &base, "library-5-remux-episode.png");
+    click(&mut h, "⏴ Back");
+    h.run_steps(3);
+    assert!(matches!(&h.state().page, Page::Anime(ap) if ap.anime.anilist_id == 1), "back to the series");
+
+    // Out of the library, files kept.
+    click(&mut h, "Remove");
+    click(&mut h, "Remove from library (keep files)");
+    h.run_steps(3);
+    assert!(h.state().library.find(1).is_none());
+    assert!(library.join("Frieren").join("Frieren - 01.mkv").exists(), "files kept");
+    assert!(matches!(h.state().page, Page::Home));
 }

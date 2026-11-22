@@ -266,6 +266,127 @@ pub async fn anilist_search(client: &reqwest::Client, query: &str) -> Result<Vec
         .collect())
 }
 
+const DETAILS_QUERY: &str = r#"
+query ($id: Int) {
+  Media(id: $id, type: ANIME) {
+    title { romaji english native }
+    synonyms
+    description(asHtml: false)
+    genres
+    averageScore
+    status
+    format
+    episodes
+    duration
+    season
+    seasonYear
+    source
+    studios(isMain: true) { nodes { name } }
+    startDate { year month day }
+    endDate { year month day }
+    nextAiringEpisode { episode airingAt }
+    coverImage { large extraLarge }
+    bannerImage
+  }
+}
+"#;
+
+/// Where SeaDex requests go instead (tests).
+#[cfg(test)]
+pub static SEADEX_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Where AniList requests go instead (tests).
+#[cfg(test)]
+pub static ANILIST_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn anilist_url() -> String {
+    #[cfg(test)]
+    if let Some(base) = ANILIST_BASE.lock().unwrap().as_ref() {
+        return base.clone();
+    }
+    ANILIST_URL.to_owned()
+}
+
+/// AniList's details about an anime: description, genres, score, studios,
+/// airing, and so on.
+pub async fn anilist_details(client: &reqwest::Client, id: u64) -> Result<crate::library::Details> {
+    let resp = client
+        .post(anilist_url())
+        .json(&json!({ "query": DETAILS_QUERY, "variables": { "id": id } }))
+        .send()
+        .await
+        .context("could not reach AniList")?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        bail!("AniList is busy; try again in a minute");
+    }
+    let body: serde_json::Value = resp.json().await.with_context(|| format!("unexpected response from AniList (HTTP {status})"))?;
+    if let Some(e) = body["errors"].get(0) {
+        bail!("AniList error: {}", e["message"].as_str().unwrap_or("unknown"));
+    }
+    let m = &body["data"]["Media"];
+    if !m.is_object() {
+        bail!("AniList has no anime {id}");
+    }
+    let text = |v: &serde_json::Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+    let list = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(text).collect()).unwrap_or_default();
+    let date = |d: &serde_json::Value| {
+        let year = d["year"].as_i64()?;
+        Some(match (d["month"].as_i64(), d["day"].as_i64()) {
+            (Some(m), Some(day)) => format!("{year}-{m:02}-{day:02}"),
+            (Some(m), None) => format!("{year}-{m:02}"),
+            _ => year.to_string(),
+        })
+    };
+    Ok(crate::library::Details {
+        native: text(&m["title"]["native"]),
+        synonyms: list(&m["synonyms"]),
+        description: text(&m["description"]).map(|d| plain_text(&d)),
+        genres: list(&m["genres"]),
+        score: m["averageScore"].as_u64().map(|v| v as u32),
+        status: text(&m["status"]),
+        format: text(&m["format"]),
+        episodes: m["episodes"].as_u64().map(|v| v as u32),
+        duration: m["duration"].as_u64().map(|v| v as u32),
+        season: text(&m["season"]),
+        year: m["seasonYear"].as_i64().map(|v| v as i32),
+        source: text(&m["source"]),
+        studios: m["studios"]["nodes"].as_array().map(|a| a.iter().filter_map(|n| text(&n["name"])).collect()).unwrap_or_default(),
+        start_date: date(&m["startDate"]),
+        end_date: date(&m["endDate"]),
+        next_episode: m["nextAiringEpisode"]["episode"].as_u64().zip(m["nextAiringEpisode"]["airingAt"].as_i64()).map(|(e, t)| (e as u32, t)),
+        cover: text(&m["coverImage"]["extraLarge"]).or_else(|| text(&m["coverImage"]["large"])),
+        banner: text(&m["bannerImage"]),
+        fetched: chrono::Utc::now().timestamp(),
+    })
+}
+
+/// AniList descriptions are light HTML: line breaks, italics, entities.
+fn plain_text(html: &str) -> String {
+    static TAG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)<br\s*/?>\r?\n?|<[^>]+>").unwrap());
+    let text = TAG.replace_all(html, |c: &regex::Captures| if c[0].to_lowercase().starts_with("<br") { "\n" } else { "" });
+    let text = text
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#039;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+        .replace("&nbsp;", " ");
+    let mut out = String::new();
+    let mut blank = 0;
+    for line in text.lines().map(str::trim) {
+        blank = if line.is_empty() { blank + 1 } else { 0 };
+        if blank <= 1 && !(out.is_empty() && line.is_empty()) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.trim_end().to_owned()
+}
+
 /// Fetch SeaDex entries (with their torrents) for the given AniList IDs.
 pub async fn fetch_entries(client: &reqwest::Client, ids: &[u64]) -> Result<HashMap<u64, Entry>> {
     #[derive(Deserialize)]
@@ -301,8 +422,12 @@ pub async fn fetch_entries(client: &reqwest::Client, ids: &[u64]) -> Result<Hash
         .join("||");
     let per_page = ids.len().to_string();
 
+    #[cfg(test)]
+    let url = SEADEX_BASE.lock().unwrap().clone().unwrap_or_else(|| SEADEX_ENTRIES_URL.to_owned());
+    #[cfg(not(test))]
+    let url = SEADEX_ENTRIES_URL;
     let resp = client
-        .get(SEADEX_ENTRIES_URL)
+        .get(url)
         .query(&[
             ("filter", format!("({filter})").as_str()),
             ("expand", "trs"),
@@ -339,6 +464,41 @@ pub async fn fetch_entries(client: &reqwest::Client, ids: &[u64]) -> Result<Hash
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptions_become_plain_text() {
+        let html = "Frieren &amp; co. go <i>north</i>.<br><br>\n<br>\nIt&#039;s &quot;slow&quot;.<br>\n(Source: Crunchyroll)";
+        assert_eq!(plain_text(html), "Frieren & co. go north.\n\nIt's \"slow\".\n(Source: Crunchyroll)");
+    }
+
+    #[tokio::test]
+    async fn reads_anilist_details() {
+        use crate::mock_http::{mock, reply};
+        let base = mock(|req| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            assert_eq!(body["variables"]["id"], 154587);
+            reply(200, serde_json::json!({"data": {"Media": {
+                "title": {"romaji": "Sousou no Frieren", "english": "Frieren", "native": "葬送のフリーレン"},
+                "synonyms": ["Frieren at the Funeral"], "description": "An elf <i>mage</i>.", "genres": ["Adventure", "Drama"],
+                "averageScore": 90, "status": "RELEASING", "format": "TV", "episodes": 28, "duration": 24, "season": "FALL",
+                "seasonYear": 2023, "source": "MANGA", "studios": {"nodes": [{"name": "Madhouse"}]},
+                "startDate": {"year": 2023, "month": 9, "day": 29}, "endDate": {"year": null, "month": null, "day": null},
+                "nextAiringEpisode": {"episode": 5, "airingAt": 1800000000},
+                "coverImage": {"large": "l.png", "extraLarge": "xl.png"}, "bannerImage": "b.png"}}}))
+        })
+        .await;
+        *ANILIST_BASE.lock().unwrap() = Some(base);
+        let d = anilist_details(&reqwest::Client::new(), 154587).await;
+        *ANILIST_BASE.lock().unwrap() = None;
+        let d = d.unwrap();
+        assert_eq!(d.description.as_deref(), Some("An elf mage."));
+        assert_eq!((d.score, d.episodes, d.year), (Some(90), Some(28), Some(2023)));
+        assert_eq!(d.studios, ["Madhouse"]);
+        assert_eq!(d.start_date.as_deref(), Some("2023-09-29"));
+        assert_eq!(d.end_date, None);
+        assert_eq!(d.next_episode, Some((5, 1_800_000_000)));
+        assert_eq!(d.cover.as_deref(), Some("xl.png"));
+    }
 
     fn release(group: &str, tracker: &str, url: &str, best: bool, dual: bool) -> Release {
         Release {
