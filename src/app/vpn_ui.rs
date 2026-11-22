@@ -303,6 +303,7 @@ impl App {
     }
 
     /// The engine is running without any network (the VPN is down).
+    #[cfg(test)]
     pub(super) fn engine_offline(&self) -> bool {
         self.engine_net.as_ref().is_some_and(|n| n.offline)
     }

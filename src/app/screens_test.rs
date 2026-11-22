@@ -783,6 +783,8 @@ fn torrents_wait_for_the_vpn() {
     }
     pia::tests::set(&pia_dir, "connectionstate", "Disconnected");
     wait_until(&mut h, "offline again", |a| offline(a) && a.vpn.waiting.is_some());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
     save(&mut h, &base, "vpn-4-debrid-mode.png");
     assert!(h.query_by_label("⏸ Torrents are waiting for the VPN").is_none(), "no banner without local torrenting");
     assert!(h.query_by_label("Torrents waiting for the VPN").is_none());
@@ -999,10 +1001,10 @@ fn per_episode_releases_prefer_usenet() {
     *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = Some(server.clone());
     let _reset = ResetNyaa;
 
-    // TorBox is the download method, and a Usenet provider is set up.
+    // TorBox is the download method (no key, so the real TorBox is never
+    // asked), and a Usenet provider is set up.
     let state = base.join("state");
-    let mut debrid = crate::debrid::Config { enabled: true, provider: crate::debrid::Provider::TorBox, ..Default::default() };
-    debrid.keys.insert(crate::debrid::Provider::TorBox, "key".into());
+    let debrid = crate::debrid::Config { enabled: true, provider: crate::debrid::Provider::TorBox, ..Default::default() };
     debrid.save(&state.join("debrid.json")).unwrap();
     let mut usenet = crate::usenet::Config::default();
     usenet.add(fake.provider("Fake News"));
