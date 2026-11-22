@@ -57,6 +57,14 @@ pub fn pipeline(path: &Path, frames: Frames) -> Result<(gst::Pipeline, gst_app::
         .build()
         .context("GStreamer's playbin isn't available")?;
     playbin.set_property_from_str("flags", FLAGS_TEXT);
+    // Tests make no sound.
+    #[cfg(test)]
+    playbin.set_property(
+        "audio-sink",
+        gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()?,
+    );
     let pipeline = playbin
         .downcast::<gst::Pipeline>()
         .map_err(|_| anyhow!("playbin isn't a pipeline"))?;

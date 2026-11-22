@@ -180,7 +180,7 @@ fn image(url: Option<&str>, cache: &Path, stem: String) -> Option<Image> {
 }
 
 /// A series' episode files by number.
-fn episode_files(series: &Series) -> BTreeMap<u32, PathBuf> {
+pub(crate) fn episode_files(series: &Series) -> BTreeMap<u32, PathBuf> {
     let mut out = BTreeMap::new();
     for path in series.video_files() {
         let name = path
@@ -196,9 +196,10 @@ fn episode_files(series: &Series) -> BTreeMap<u32, PathBuf> {
 }
 
 /// Build the model from the app's state folder.
+/// The demo library's model: list entries and downloads from the files the
+/// demo writes (`lists-cache.json`, `downloads-cache.json`).
 pub fn load(state_dir: &Path) -> Model {
     let library = Library::load(state_dir.join("library.json"), state_dir);
-    let images = state_dir.join("images");
     let lists: HashMap<u64, Entry> = std::fs::read_to_string(state_dir.join("lists-cache.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -209,6 +210,17 @@ pub fn load(state_dir: &Path) -> Model {
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
     let tracking = crate::tracking::Config::load(&state_dir.join("tracking.json"));
+    build(
+        &library,
+        &state_dir.join("images"),
+        &lists,
+        downloads,
+        accounts(&tracking),
+    )
+}
+
+/// "AniList · jake", for the accounts signed in to.
+pub fn accounts(tracking: &crate::tracking::Config) -> Vec<String> {
     let mut accounts = Vec::new();
     if let Some(u) = &tracking.anilist.user {
         accounts.push(format!("AniList · {}", u.name));
@@ -216,6 +228,19 @@ pub fn load(state_dir: &Path) -> Model {
     if let Some(u) = &tracking.mal.user {
         accounts.push(format!("MyAnimeList · {u}"));
     }
+    accounts
+}
+
+/// The model of `library`: `lists` are list entries by AniList ID; images
+/// are looked for in `images` (else drawn from their URLs).
+pub fn build(
+    library: &Library,
+    images: &Path,
+    lists: &HashMap<u64, Entry>,
+    downloads: Vec<DownloadView>,
+    accounts: Vec<String>,
+) -> Model {
+    let images = images.to_owned();
     let now = chrono::Utc::now().timestamp();
 
     let mut cards = Vec::new();

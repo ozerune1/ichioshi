@@ -1,8 +1,7 @@
-//! A new GUI in iced (design prototype, "Studio"): a sidebar, a cover-art
-//! library with a "continue watching" shelf, series pages with a banner
-//! and every episode, and downloads. It draws the app's view model.
+//! The "Studio" pages: sidebar, library, series, downloads; and the look
+//! (colors, fonts, styles) the player shares.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use iced::widget::{
     Column, button, column, container, image, mouse_area, pick_list, progress_bar, row, scrollable,
@@ -13,35 +12,36 @@ use iced::{
     Vector, font, gradient,
 };
 
+use super::{App, Filter, Message, Page, ScoreChoice, StatusChoice};
 use crate::tracking::Status;
-use crate::view::{self, Card, EpisodeState, EpisodeView, Model, SeriesView};
+use crate::view::{Card, EpisodeState, EpisodeView, SeriesView};
 
-const BG: Color = Color::from_rgb8(0x0d, 0x0f, 0x14);
-const SIDEBAR: Color = Color::from_rgb8(0x11, 0x14, 0x1b);
-const SURFACE: Color = Color::from_rgb8(0x17, 0x1b, 0x24);
-const SURFACE2: Color = Color::from_rgb8(0x1f, 0x24, 0x30);
-const LINE: Color = Color::from_rgb8(0x27, 0x2d, 0x3b);
-const TEXT: Color = Color::from_rgb8(0xe9, 0xec, 0xf3);
-const MUTED: Color = Color::from_rgb8(0x8b, 0x94, 0xa8);
-const FAINT: Color = Color::from_rgb8(0x5a, 0x62, 0x74);
-const ACCENT: Color = Color::from_rgb8(0x8b, 0x7c, 0xff);
-const GREEN: Color = Color::from_rgb8(0x34, 0xd3, 0x99);
+pub(super) const BG: Color = Color::from_rgb8(0x0d, 0x0f, 0x14);
+pub(super) const SIDEBAR: Color = Color::from_rgb8(0x11, 0x14, 0x1b);
+pub(super) const SURFACE: Color = Color::from_rgb8(0x17, 0x1b, 0x24);
+pub(super) const SURFACE2: Color = Color::from_rgb8(0x1f, 0x24, 0x30);
+pub(super) const LINE: Color = Color::from_rgb8(0x27, 0x2d, 0x3b);
+pub(super) const TEXT: Color = Color::from_rgb8(0xe9, 0xec, 0xf3);
+pub(super) const MUTED: Color = Color::from_rgb8(0x8b, 0x94, 0xa8);
+pub(super) const FAINT: Color = Color::from_rgb8(0x5a, 0x62, 0x74);
+pub(super) const ACCENT: Color = Color::from_rgb8(0x8b, 0x7c, 0xff);
+pub(super) const GREEN: Color = Color::from_rgb8(0x34, 0xd3, 0x99);
 
-const INTER: Font = Font::with_name("Inter");
-const MEDIUM: Font = Font {
+pub(super) const INTER: Font = Font::with_name("Inter");
+pub(super) const MEDIUM: Font = Font {
     weight: font::Weight::Medium,
     ..INTER
 };
-const SEMI: Font = Font {
+pub(super) const SEMI: Font = Font {
     weight: font::Weight::Semibold,
     ..INTER
 };
-const BOLD: Font = Font {
+pub(super) const BOLD: Font = Font {
     weight: font::Weight::Bold,
     ..INTER
 };
 
-fn status_color(s: Status) -> Color {
+pub(super) fn status_color(s: Status) -> Color {
     match s {
         Status::Watching => Color::from_rgb8(0x60, 0xa5, 0xfa),
         Status::Completed => GREEN,
@@ -52,121 +52,10 @@ fn status_color(s: Status) -> Color {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    Go(Page),
-    Search(String),
-    Filter(Filter),
-    Status(u64, Status),
-    Score(u64, ScoreChoice),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Page {
-    Library,
-    Series(u64),
-    Downloads,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Filter {
-    All,
-    Only(Status),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScoreChoice(pub u8);
-
-impl std::fmt::Display for ScoreChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0 == 0 {
-            f.write_str("No score")
-        } else {
-            write!(f, "★ {}", self.0)
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StatusChoice(pub Status);
-
-impl std::fmt::Display for StatusChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0.name())
-    }
-}
-
-pub struct App {
-    pub model: Model,
-    pub page: Page,
-    pub search: String,
-    pub filter: Filter,
-}
-
-pub fn run(state_dir: PathBuf) -> iced::Result {
-    iced::application(move || App::new(&state_dir), App::update, App::view)
-        .title("SeaDex")
-        .theme(|_: &App| Theme::Dark)
-        .default_font(INTER)
-        .window_size((1440.0, 900.0))
-        .run()
-}
-
 impl App {
-    pub fn new(state_dir: &Path) -> Self {
-        Self {
-            model: view::load(state_dir),
-            page: Page::Library,
-            search: String::new(),
-            filter: Filter::All,
-        }
-    }
-
-    pub fn update(&mut self, message: Message) {
-        match message {
-            Message::Go(page) => self.page = page,
-            Message::Search(s) => self.search = s,
-            Message::Filter(f) => self.filter = f,
-            // The prototype shows the change; the app would save it to the lists.
-            Message::Status(id, status) => self.edit(id, |l| {
-                l.status = status;
-                l.status_name = status.name().into();
-            }),
-            Message::Score(id, score) => self.edit(id, |l| {
-                l.score = crate::tracking::score_text(f32::from(score.0))
-            }),
-        }
-    }
-
-    fn edit(&mut self, id: u64, f: impl Fn(&mut view::ListView)) {
-        for card in self.model.cards.iter_mut().filter(|c| c.id == id) {
-            if let Some(l) = &mut card.list {
-                f(l);
-            }
-        }
-        for s in self.model.series.iter_mut().filter(|s| s.id == id) {
-            if let Some(l) = &mut s.list {
-                f(l);
-            }
-        }
-    }
-
-    pub fn view(&self) -> Element<'_, Message> {
-        let page = match self.page {
-            Page::Library => self.library(),
-            Page::Series(id) => self.series(id),
-            Page::Downloads => self.downloads(),
-        };
-        row![
-            self.sidebar(),
-            container(page).width(Fill).height(Fill).style(|_| fill(BG))
-        ]
-        .into()
-    }
-
     // ── Sidebar ───────────────────────────────────────────────────────
 
-    fn sidebar(&self) -> Element<'_, Message> {
+    pub(super) fn sidebar(&self) -> Element<'_, Message> {
         let on_library = matches!(self.page, Page::Library | Page::Series(_));
         let nav = |icon: &'static str,
                    label: &'static str,
@@ -304,7 +193,7 @@ impl App {
 
     // ── Library ───────────────────────────────────────────────────────
 
-    fn library(&self) -> Element<'_, Message> {
+    pub(super) fn library(&self) -> Element<'_, Message> {
         let total_bytes: u64 = 0;
         let _ = total_bytes;
         let header = row![
@@ -431,7 +320,7 @@ impl App {
 
     // ── Series ────────────────────────────────────────────────────────
 
-    fn series(&self, id: u64) -> Element<'_, Message> {
+    pub(super) fn series(&self, id: u64) -> Element<'_, Message> {
         let Some(s) = self.model.series(id) else {
             return text("Not in the library").into();
         };
@@ -522,8 +411,8 @@ impl App {
             }
         });
         let mut actions = row![].spacing(10).align_y(Alignment::Center);
-        if let Some(label) = resume {
-            actions = actions.push(primary_button(label));
+        if let (Some(label), Some((n, _))) = (resume, s.up_next) {
+            actions = actions.push(primary_button(label, Message::Play(s.id, n)));
         }
         if s.missing > 0 {
             actions = actions.push(secondary_button(format!(
@@ -581,7 +470,7 @@ impl App {
 
         let mut list_rows = Column::new().spacing(6);
         for e in &s.episodes {
-            list_rows = list_rows.push(episode_row(e));
+            list_rows = list_rows.push(episode_row(s.id, e));
         }
         let downloading = s
             .episodes
@@ -623,7 +512,7 @@ impl App {
 
     // ── Downloads ─────────────────────────────────────────────────────
 
-    fn downloads(&self) -> Element<'_, Message> {
+    pub(super) fn downloads(&self) -> Element<'_, Message> {
         let mut list = Column::new().spacing(12);
         for d in &self.model.downloads {
             let color = match d.source.as_str() {
@@ -696,25 +585,25 @@ impl App {
 
 // ── Pieces ────────────────────────────────────────────────────────────
 
-fn fill_color(c: Color) -> Background {
+pub(super) fn fill_color(c: Color) -> Background {
     Background::Color(c)
 }
 
-fn fill(c: Color) -> container::Style {
+pub(super) fn fill(c: Color) -> container::Style {
     container::Style {
         background: Some(fill_color(c)),
         ..Default::default()
     }
 }
 
-fn rounded(r: f32) -> Border {
+pub(super) fn rounded(r: f32) -> Border {
     Border {
         radius: r.into(),
         ..Border::default()
     }
 }
 
-fn pill(bg: Color) -> container::Style {
+pub(super) fn pill(bg: Color) -> container::Style {
     container::Style {
         background: Some(fill_color(bg)),
         border: rounded(999.0),
@@ -722,7 +611,7 @@ fn pill(bg: Color) -> container::Style {
     }
 }
 
-fn card_style(bg: Color) -> container::Style {
+pub(super) fn card_style(bg: Color) -> container::Style {
     container::Style {
         background: Some(fill_color(bg)),
         border: Border {
@@ -734,7 +623,7 @@ fn card_style(bg: Color) -> container::Style {
     }
 }
 
-fn accent_gradient() -> Background {
+pub(super) fn accent_gradient() -> Background {
     Background::Gradient(
         gradient::Linear::new(std::f32::consts::FRAC_PI_2 * 1.5)
             .add_stop(0.0, ACCENT)
@@ -743,7 +632,7 @@ fn accent_gradient() -> Background {
     )
 }
 
-fn dot<'a>(color: Color) -> Element<'a, Message> {
+pub(super) fn dot<'a>(color: Color) -> Element<'a, Message> {
     container(space())
         .width(8)
         .height(8)
@@ -751,7 +640,7 @@ fn dot<'a>(color: Color) -> Element<'a, Message> {
         .into()
 }
 
-fn section<'a>(title: &'a str, note: Option<String>) -> Element<'a, Message> {
+pub(super) fn section<'a>(title: &'a str, note: Option<String>) -> Element<'a, Message> {
     let mut r = row![text(title).size(18).font(SEMI).color(TEXT)]
         .spacing(12)
         .align_y(Alignment::End);
@@ -766,10 +655,10 @@ fn section<'a>(title: &'a str, note: Option<String>) -> Element<'a, Message> {
         .into()
 }
 
-fn primary_button<'a>(label: String) -> Element<'a, Message> {
+pub(super) fn primary_button<'a>(label: String, on_press: Message) -> Element<'a, Message> {
     button(text(label).size(14).font(SEMI).color(Color::WHITE))
         .padding([10, 18])
-        .on_press(Message::Go(Page::Library))
+        .on_press(on_press)
         .style(|_, _| button::Style {
             background: Some(accent_gradient()),
             text_color: Color::WHITE,
@@ -784,7 +673,7 @@ fn primary_button<'a>(label: String) -> Element<'a, Message> {
         .into()
 }
 
-fn secondary_button<'a>(label: String) -> Element<'a, Message> {
+pub(super) fn secondary_button<'a>(label: String) -> Element<'a, Message> {
     button(text(label).size(14).font(MEDIUM).color(TEXT))
         .padding([10, 16])
         .on_press(Message::Go(Page::Library))
@@ -805,7 +694,7 @@ fn secondary_button<'a>(label: String) -> Element<'a, Message> {
         .into()
 }
 
-fn pick_style(_: &Theme, _: pick_list::Status) -> pick_list::Style {
+pub(super) fn pick_style(_: &Theme, _: pick_list::Status) -> pick_list::Style {
     pick_list::Style {
         text_color: TEXT,
         placeholder_color: FAINT,
@@ -819,7 +708,7 @@ fn pick_style(_: &Theme, _: pick_list::Status) -> pick_list::Style {
     }
 }
 
-fn scroll_style(_: &Theme, _: scrollable::Status) -> scrollable::Style {
+pub(super) fn scroll_style(_: &Theme, _: scrollable::Status) -> scrollable::Style {
     let rail = scrollable::Rail {
         background: None,
         border: Border::default(),
@@ -842,7 +731,12 @@ fn scroll_style(_: &Theme, _: scrollable::Status) -> scrollable::Style {
     }
 }
 
-fn cover_image<'a>(path: Option<PathBuf>, w: f32, h: f32, radius: f32) -> Element<'a, Message> {
+pub(super) fn cover_image<'a>(
+    path: Option<PathBuf>,
+    w: f32,
+    h: f32,
+    radius: f32,
+) -> Element<'a, Message> {
     match path {
         Some(p) => container(
             image(image::Handle::from_path(p))
@@ -873,7 +767,7 @@ fn cover_image<'a>(path: Option<PathBuf>, w: f32, h: f32, radius: f32) -> Elemen
     }
 }
 
-fn clip(s: &str, n: usize) -> String {
+pub(super) fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_owned()
     } else {
@@ -882,7 +776,7 @@ fn clip(s: &str, n: usize) -> String {
 }
 
 /// A poster in the library grid: status badge, episodes watched.
-fn cover_card(c: &Card) -> Element<'_, Message> {
+pub(super) fn cover_card(c: &Card) -> Element<'_, Message> {
     let poster = cover_image(
         c.cover.as_ref().and_then(|i| i.path.clone()),
         184.0,
@@ -970,7 +864,7 @@ fn cover_card(c: &Card) -> Element<'_, Message> {
 }
 
 /// A wide banner card on the "continue watching" shelf.
-fn continue_card(s: &SeriesView) -> Element<'_, Message> {
+pub(super) fn continue_card(s: &SeriesView) -> Element<'_, Message> {
     let art = s
         .banner
         .as_ref()
@@ -1040,10 +934,13 @@ fn continue_card(s: &SeriesView) -> Element<'_, Message> {
     .padding(16)
     .width(360)
     .height(170);
+    let next_up = s.up_next.map_or(1, |(n, _)| n);
     let play = container(
-        container(text("▶").size(16).color(Color::WHITE))
-            .center(44)
-            .style(|_| container::Style {
+        button(container(text("▶").size(16).color(Color::WHITE)).center(44))
+            .padding(0)
+            .on_press(Message::Play(s.id, next_up))
+            .style(|_, _| button::Style {
+                text_color: Color::WHITE,
                 background: Some(accent_gradient()),
                 border: rounded(999.0),
                 shadow: Shadow {
@@ -1065,7 +962,7 @@ fn continue_card(s: &SeriesView) -> Element<'_, Message> {
         .into()
 }
 
-fn episode_row(e: &EpisodeView) -> Element<'_, Message> {
+pub(super) fn episode_row(id: u64, e: &EpisodeView) -> Element<'_, Message> {
     let present = matches!(e.state, EpisodeState::OnDisk { .. });
     let title_color = if present || matches!(e.state, EpisodeState::Downloading { .. }) {
         TEXT
@@ -1163,7 +1060,7 @@ fn episode_row(e: &EpisodeView) -> Element<'_, Message> {
         .size(12)
         .color(FAINT)
         .width(110);
-    container(
+    let row = container(
         row![number, middle, airs, right]
             .spacing(16)
             .align_y(Alignment::Center),
@@ -1178,49 +1075,14 @@ fn episode_row(e: &EpisodeView) -> Element<'_, Message> {
         })),
         border: rounded(10.0),
         ..Default::default()
-    })
-    .into()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `DEMO_DIR=<demo library>`: screenshots of each page, in
-    /// `$DEMO_DIR/screens-iced/`.
-    #[test]
-    #[ignore = "needs DEMO_DIR"]
-    fn screenshots() {
-        let Some(dir) = std::env::var_os("DEMO_DIR").map(PathBuf::from) else {
-            return;
-        };
-        let mut app = App::new(&dir.join("state"));
-        let out = dir.join("screens-iced");
-        let _ = std::fs::remove_dir_all(&out);
-        let frieren = app
-            .model
-            .cards
-            .iter()
-            .find(|c| c.title.contains("Apothecary"))
-            .map_or(app.model.cards[0].id, |c| c.id);
-        for (name, page) in [
-            ("1-library", Page::Library),
-            ("2-series", Page::Series(frieren)),
-            ("3-downloads", Page::Downloads),
-        ] {
-            app.page = page;
-            let settings = iced::Settings {
-                default_font: INTER,
-                ..Default::default()
-            };
-            let mut ui = iced_test::Simulator::with_size(settings, (1440.0, 900.0), app.view());
-            // Images are decoded in the background: draw until they're in.
-            for _ in 0..8 {
-                let _ = ui.snapshot(&Theme::Dark).unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            }
-            let snapshot = ui.snapshot(&Theme::Dark).unwrap();
-            assert!(snapshot.matches_image(out.join(name)).unwrap());
-        }
+    });
+    // An episode on disk plays when clicked.
+    if present {
+        mouse_area(row)
+            .on_press(Message::Play(id, e.number))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+    } else {
+        row.into()
     }
 }
