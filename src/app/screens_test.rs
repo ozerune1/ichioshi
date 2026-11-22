@@ -1,0 +1,1055 @@
+//! Drives the real app offscreen against the live services and saves a PNG
+//! of each screen, for checking the layout by eye:
+//!
+//!     LIVE_TEST_DIR=/some/scratch/dir cargo test render_screens -- --ignored --nocapture
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use egui::accesskit::Role;
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+
+use super::*;
+
+const FRIEREN: u64 = 154587;
+
+/// Step the UI until `done` holds, then a little longer so images and
+/// layout settle.
+fn wait_until(h: &mut Harness<'_, App>, what: &str, done: impl Fn(&App) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !done(h.state()) {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        h.step();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for _ in 0..30 {
+        h.step();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Click the widget labelled `label`, stepping until it appears (popups and
+/// new pages show up a frame after the click that opens them).
+fn click(h: &mut Harness<'_, App>, label: &str) {
+    for _ in 0..100 {
+        if let Some(node) = h.query_by_label(label) {
+            node.click();
+            h.step();
+            return;
+        }
+        h.step();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("no widget labelled {label:?}");
+}
+
+fn save(h: &mut Harness<'_, App>, dir: &Path, name: &str) {
+    let path = dir.join(name);
+    h.render().expect("render").save(&path).expect("save png");
+    println!("saved {}", path.display());
+}
+
+fn screens_dir(name: &str) -> PathBuf {
+    let base = std::env::var_os("LIVE_TEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(name);
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    base
+}
+
+/// The real app, offscreen, with its state and downloads under `base`.
+fn harness(base: &Path, handle: tokio::runtime::Handle) -> Harness<'static, App> {
+    let state_dir = base.join("state");
+    let downloads = base.join("downloads");
+    Harness::builder()
+        .with_size([1280.0, 800.0])
+        .wgpu()
+        // Like eframe's default `system_fonts`: titles can contain symbols
+        // and scripts that egui's bundled fonts lack.
+        .with_context_setup(|ctx| {
+            ctx.add_font_provider(std::sync::Arc::new(
+                egui_system_font_provider::SystemFontProvider::new(),
+            ))
+        })
+        .build_eframe(move |cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            let mut app = App::new(cc, handle, state_dir);
+            app.settings.download_dir = downloads;
+            app
+        })
+}
+
+#[test]
+#[ignore = "network; renders screenshots"]
+fn render_screens() {
+    let base = screens_dir("screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+
+    wait_until(&mut h, "engine", |a| matches!(a.engine, EngineState::Ready(_)));
+    save(&mut h, &base, "1-home.png");
+
+    // Search by typing and pressing the button.
+    h.get_by_role(Role::TextInput).click();
+    h.step();
+    h.get_by_role(Role::TextInput).type_text("Sousou no Frieren");
+    h.step();
+    h.get_by_label("Search").click();
+    wait_until(&mut h, "search results", |a| !a.searching && !a.results.is_empty());
+    save(&mut h, &base, "2-results.png");
+
+    // Open Frieren by clicking its card.
+    let title = h
+        .state()
+        .results
+        .iter()
+        .find(|a| a.anilist_id == FRIEREN)
+        .expect("Frieren in results")
+        .title
+        .clone();
+    h.get_by_label(&title).click();
+    wait_until(&mut h, "anime page", |a| matches!(a.page, Page::Anime(_)));
+    save(&mut h, &base, "3-anime.png");
+
+    // Fetch the torrent and list its files.
+    h.get_by_label("Choose episodes ⏵").click();
+    wait_until(&mut h, "file list", |a| matches!(a.page, Page::Files(_)));
+    save(&mut h, &base, "4-files.png");
+
+    // Narrow down to a few episodes with the filter.
+    h.get_by_label("None").click();
+    h.step();
+    let Page::Files(fp) = &mut h.state_mut().page else { unreachable!() };
+    fp.filter = "S01E0".into();
+    h.step();
+    let Page::Files(fp) = &h.state().page else { unreachable!() };
+    let shown = fp.visible().len();
+    h.get_by_label(&format!("Select {shown} shown")).click();
+    wait_until(&mut h, "selection", |a| {
+        matches!(&a.page, Page::Files(fp) if fp.checked.iter().filter(|c| **c).count() == shown)
+    });
+    save(&mut h, &base, "5-files-filtered.png");
+
+    // An anime SeaDex doesn't cover: the third season of The Apothecary Diaries.
+    click(&mut h, "⏴ Back");
+    click(&mut h, "⏴ Results");
+    wait_until(&mut h, "results page", |a| matches!(a.page, Page::Results));
+    h.state_mut().query = "Kusuriya no Hitorigoto".into();
+    click(&mut h, "Search");
+    wait_until(&mut h, "search results", |a| !a.searching && a.last_query == "Kusuriya no Hitorigoto");
+    save(&mut h, &base, "6-results-mixed.png");
+    let title = h
+        .state()
+        .results
+        .iter()
+        .find(|a| a.entry.as_ref().and_then(|e| e.best_nyaa(false)).is_none())
+        .expect("a result without a SeaDex Nyaa release")
+        .title
+        .clone();
+    click(&mut h, &title);
+    wait_until(&mut h, "Nyaa results", |a| {
+        matches!(&a.page, Page::Anime(AnimePage { nyaa: Some(s), .. }) if s.searched && !s.loading)
+    });
+    save(&mut h, &base, "7-nyaa-fallback.png");
+    click(&mut h, "Choose episodes ⏵");
+    wait_until(&mut h, "episode picker", |a| matches!(a.page, Page::Files(_)));
+    save(&mut h, &base, "8-nyaa-episodes.png");
+    click(&mut h, "⏴ Back");
+    wait_until(&mut h, "anime page", |a| matches!(a.page, Page::Anime(_)));
+
+    // Put something in the downloads panel without downloading anime: one
+    // small file from the Sintel open movie torrent.
+    let engine = h.state().engine().unwrap();
+    let downloads = base.join("downloads");
+    rt.block_on(async {
+        let bytes = reqwest::get("https://webtorrent.io/torrents/sintel.torrent")
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .to_vec();
+        let listing = engine.inspect(Source::TorrentFile(bytes)).await.unwrap();
+        let poster = listing.files.iter().find(|f| f.path == "poster.jpg").unwrap().index;
+        let out = listing.output_folder(&downloads);
+        engine.download(listing.torrent_bytes, Some(vec![poster]), out).await.unwrap();
+    });
+    click(&mut h, "⏴ Results");
+    wait_until(&mut h, "results page", |a| matches!(a.page, Page::Results));
+    // Finished, then stopped by the engine: nothing seeds.
+    wait_until(&mut h, "download to finish and stop", |a| {
+        a.engine().is_some_and(|e| {
+            e.torrents()
+                .iter()
+                .all(|(_, t)| t.stats().finished && t.is_paused())
+        })
+    });
+    h.get_by_label("Files").click();
+    wait_until(&mut h, "expanded", |_| true);
+    save(&mut h, &base, "9-downloads.png");
+
+    // The delete confirmation.
+    click(&mut h, "Remove");
+    click(&mut h, "Remove and delete files…");
+    wait_until(&mut h, "modal", |a| a.confirm_delete.is_some());
+    save(&mut h, &base, "10-delete-modal.png");
+    click(&mut h, "Cancel");
+    wait_until(&mut h, "modal closed", |a| a.confirm_delete.is_none());
+
+    rt.block_on(engine.stop());
+}
+
+#[test]
+#[ignore = "needs ffmpeg and mkvmerge; renders screenshots"]
+fn render_remux_page() {
+    use crate::engine::SeriesFiles;
+    use crate::library::AnimeRef;
+    use crate::remux::Kind;
+
+    let base = screens_dir("remux-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+    wait_until(&mut h, "engine", |a| matches!(a.engine, EngineState::Ready(_)));
+
+    let files = crate::remux::make_test_series(&base.join("series"), 3);
+    let series = SeriesFiles { name: "[Group] Show (1080p)".into(), files, not_ready: 1, info_hashes: vec![] };
+    let anime = AnimeRef {
+        anilist_id: 154587,
+        english: Some("Frieren: Beyond Journey’s End".into()),
+        romaji: Some("Sousou no Frieren".into()),
+    };
+    h.state_mut().open_remux_series(series, Some(anime));
+    let remux_page = |a: &App| match &a.page {
+        Page::Remux(rp) => Some((rp.analysis.is_some(), rp.audio_lang.clone(), rp.subs.clone())),
+        _ => None,
+    };
+    wait_until(&mut h, "tracks", |a| remux_page(a).is_some_and(|(loaded, _, _)| loaded));
+    wait_until(&mut h, "subtitle samples", |a| matches!(&a.page, Page::Remux(rp) if !rp.samples.is_empty()));
+    let (_, audio, subs) = remux_page(h.state()).unwrap();
+    assert_eq!(audio.as_deref(), Some("jpn"));
+    assert_eq!(subs.unwrap().name, "English (Full)");
+    save(&mut h, &base, "1-remux-defaults.png");
+
+    // Switching to the English dub suggests signs-only subtitles.
+    h.get_all_by_role(Role::ComboBox).next().unwrap().click();
+    h.run_steps(3);
+    let english = h.query_all_by_label("English").last().unwrap().rect().center();
+    h.event(egui::Event::PointerButton {
+        pos: english,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    });
+    h.event(egui::Event::PointerButton {
+        pos: english,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    });
+    wait_until(&mut h, "dub defaults", |a| remux_page(a).is_some_and(|(_, l, _)| l.as_deref() == Some("eng")));
+    let (_, _, subs) = remux_page(h.state()).unwrap();
+    assert_eq!(subs.unwrap().name, "English (Signs)");
+    save(&mut h, &base, "2-remux-dub.png");
+
+    // Back to Japanese with full subtitles, and remux.
+    if let Page::Remux(rp) = &mut h.state_mut().page {
+        let analysis = rp.analysis.clone().unwrap();
+        rp.audio_lang = Some("jpn".into());
+        rp.audio = analysis.default_candidate(Kind::Audio, "jpn", None);
+        rp.subs = analysis.default_candidate(Kind::Subtitles, "eng", Some("jpn"));
+    }
+    click(&mut h, "Remux 3 episodes");
+    wait_until(&mut h, "remux", |a| matches!(&a.page, Page::Remux(rp) if rp.run.as_ref().is_some_and(|r| r.finished)));
+    save(&mut h, &base, "3-remux-done.png");
+    let out = base.join("downloads").join("Frieren: Beyond Journey’s End");
+    let mut made: Vec<String> =
+        std::fs::read_dir(&out).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    made.sort();
+    assert_eq!(
+        made,
+        vec![
+            "Frieren: Beyond Journey’s End - 01.mkv",
+            "Frieren: Beyond Journey’s End - 02.mkv",
+            "Frieren: Beyond Journey’s End - 03.mkv",
+        ]
+    );
+
+    // Into the playlist, reorder, export.
+    click(&mut h, "Add 3 to playlist");
+    assert_eq!(h.state().playlist.items.len(), 3);
+    click(&mut h, "Playlist (3)");
+    wait_until(&mut h, "playlist page", |a| matches!(a.page, Page::Playlist(_)));
+    // Move episode 3 to the top with its "Move up" button (row 3, then row 2).
+    for row in [2, 1] {
+        h.query_all_by_label("⏶").nth(row).unwrap().click();
+        h.run_steps(3);
+    }
+    let order: Vec<String> = h.state().playlist.items.iter().map(|i| i.title.clone()).collect();
+    assert_eq!(order, vec![
+        "Frieren: Beyond Journey’s End - 03",
+        "Frieren: Beyond Journey’s End - 01",
+        "Frieren: Beyond Journey’s End - 02",
+    ]);
+    save(&mut h, &base, "4-playlist.png");
+    click(&mut h, "Export 3 episodes");
+    wait_until(&mut h, "export", |a| {
+        matches!(&a.page, Page::Playlist(_)) && a.status.as_ref().is_some_and(|s| s.text.starts_with("Exported"))
+    });
+    save(&mut h, &base, "5-playlist-exported.png");
+
+    let zips: Vec<PathBuf> = std::fs::read_dir(base.join("downloads"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "zip"))
+        .collect();
+    assert_eq!(zips.len(), 1);
+    let stem = zips[0].file_stem().unwrap().to_string_lossy().into_owned();
+    assert!(
+        chrono::NaiveDateTime::parse_from_str(&stem, "%Y-%m-%d %H-%M-%S").is_ok(),
+        "zip named after the date and time: {stem}"
+    );
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&zips[0]).unwrap()).unwrap();
+    let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned()).collect();
+    assert_eq!(names, vec![
+        format!("{stem}/"),
+        format!("{stem}/1) Frieren: Beyond Journey’s End - 03.mkv"),
+        format!("{stem}/2) Frieren: Beyond Journey’s End - 01.mkv"),
+        format!("{stem}/3) Frieren: Beyond Journey’s End - 02.mkv"),
+    ]);
+    let mut first = Vec::new();
+    std::io::Read::read_to_end(&mut archive.by_index(1).unwrap(), &mut first).unwrap();
+    assert_eq!(first, std::fs::read(out.join("Frieren: Beyond Journey’s End - 03.mkv")).unwrap());
+}
+
+/// `REMUX_SAMPLE_DIR=<folder of real episodes>`: the remux page for them.
+#[test]
+#[ignore = "needs REMUX_SAMPLE_DIR; renders a screenshot"]
+fn render_remux_page_for_real_files() {
+    use crate::engine::SeriesFiles;
+    use crate::library::AnimeRef;
+
+    let Some(sample) = std::env::var_os("REMUX_SAMPLE_DIR").map(PathBuf::from) else { return };
+    let base = screens_dir("remux-real-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+    wait_until(&mut h, "engine", |a| matches!(a.engine, EngineState::Ready(_)));
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&sample).unwrap().flatten().map(|e| e.path()).collect();
+    files.sort();
+    let name = sample.file_name().unwrap().to_string_lossy().into_owned();
+    let anime = AnimeRef { anilist_id: 0, english: Some("Sample".into()), romaji: None };
+    h.state_mut().open_remux_series(SeriesFiles { name, files, not_ready: 0, info_hashes: vec![] }, Some(anime));
+    wait_until(&mut h, "subtitle samples", |a| matches!(&a.page, Page::Remux(rp) if !rp.samples.is_empty()));
+    save(&mut h, &base, "remux-real.png");
+    // Switch to the English dub: the signs-only track should be suggested.
+    if let Page::Remux(rp) = &mut h.state_mut().page {
+        rp.audio_lang = Some("eng".into());
+        let analysis = rp.analysis.clone().unwrap();
+        rp.audio = analysis.default_candidate(crate::remux::Kind::Audio, "eng", None);
+        rp.subs = analysis.default_candidate(crate::remux::Kind::Subtitles, "eng", Some("eng"));
+        println!("suggested for the English dub: {:?}", rp.subs);
+    }
+    h.run_steps(5);
+    save(&mut h, &base, "remux-real-dub.png");
+}
+
+/// The Google Drive section and folder chooser in their states (no network:
+/// the states are set directly; the Drive logic has its own mock tests).
+#[test]
+#[ignore = "renders screenshots"]
+fn render_drive_ui() {
+    use crate::gdrive::{Entry, Place};
+    use crate::playlist::Item;
+    use super::drive_ui::{browser_for_test, signed_in_for_test};
+
+    let base = screens_dir("drive-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+    wait_until(&mut h, "engine", |a| matches!(a.engine, EngineState::Ready(_)));
+
+    // Not set up yet: how to get a client file.
+    click(&mut h, "Playlist (0)");
+    h.run_steps(5); // the bottom panel settles to its content's height
+    click(&mut h, "How to get the client file");
+    h.run_steps(5);
+    save(&mut h, &base, "drive-1-setup.png");
+
+    // A short window with episodes listed: the steps scroll instead of
+    // running off the bottom, and Export stays on screen.
+    let short = base.join("short");
+    std::fs::create_dir_all(&short).unwrap();
+    let episodes: Vec<Item> = (1..=4)
+        .map(|n| {
+            let path = short.join(format!("Show - 0{n}.mkv"));
+            std::fs::write(&path, [0u8; 1024]).unwrap();
+            Item { path, title: format!("Show - 0{n}") }
+        })
+        .collect();
+    h.state_mut().playlist.add(episodes);
+    h.set_size(egui::vec2(1280.0, 560.0));
+    h.run_steps(5);
+    save(&mut h, &base, "drive-1b-short-window.png");
+    let bottom = h.state().ctx.content_rect().bottom();
+    let export = h.get_by_label("Export 4 episodes").rect();
+    assert!(export.bottom() <= bottom, "Export button cut off: {export:?} vs window bottom {bottom}");
+    let last = super::drive_ui::SETUP_STEPS[6];
+    h.get_by_label(last).scroll_to_me();
+    h.run_steps(5);
+    save(&mut h, &base, "drive-1c-short-window-scrolled.png");
+    let rect = h.get_by_label(last).rect();
+    assert!(rect.bottom() <= bottom, "last setup step unreachable: {rect:?} vs window bottom {bottom}");
+
+    // Wider windows: every step fits left of the Downloads panel.
+    for (w, hgt) in [(1920.0, 1080.0), (1920.0, 560.0), (1600.0, 900.0), (2560.0, 1440.0)] {
+        h.set_size(egui::vec2(w, hgt));
+        h.run_steps(8);
+        save(&mut h, &base, &format!("drive-1d-{w}x{hgt}.png"));
+        let downloads = h.get_by_label("Downloads").rect().left();
+        for step in super::drive_ui::SETUP_STEPS {
+            let node = h.get_by_label(step);
+            node.scroll_to_me();
+            let rect = node.rect();
+            assert!(rect.right() <= downloads, "{w}x{hgt}: “{step}” runs under the Downloads panel: {rect:?}");
+        }
+    }
+    h.state_mut().playlist.clear();
+    h.set_size(egui::vec2(1280.0, 800.0));
+
+    // Signed in, choosing a folder.
+    signed_in_for_test(&mut h.state_mut().drive, "me@example.com", None);
+    browser_for_test(
+        &mut h.state_mut().drive,
+        &[("Google Drive", Place::Top), ("My Drive", Place::Folder("root".into())), ("Anime", Place::Folder("anime".into()))],
+        vec![
+            Entry { name: "Playlists".into(), place: Place::Folder("p".into()) },
+            Entry { name: "Seasonal".into(), place: Place::Folder("s".into()) },
+        ],
+    );
+    h.run_steps(5);
+    save(&mut h, &base, "drive-2-choose-folder.png");
+    click(&mut h, "Upload to “Anime”");
+    let folder = h.state().drive.account.folder.clone().unwrap();
+    assert_eq!((folder.id.as_str(), folder.path.as_str()), ("anime", "My Drive / Anime"));
+    assert!(h.state().drive.browser.is_none());
+
+    // Ready to upload an export.
+    let files = base.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    let mut items = Vec::new();
+    for n in 1..=2 {
+        let path = files.join(format!("Show - 0{n}.mkv"));
+        std::fs::write(&path, vec![0u8; 1 << 20]).unwrap();
+        items.push(Item { path, title: format!("Show - 0{n}") });
+    }
+    h.state_mut().playlist.add(items);
+    if let Page::Playlist(pp) = &mut h.state_mut().page {
+        pp.exported_for_test(base.join("downloads/2026-11-21 16-48-35.zip"));
+    }
+    h.run_steps(5);
+    save(&mut h, &base, "drive-3-ready.png");
+    assert!(h.query_by_label("⬆ Upload 2026-11-21 16-48-35.zip").is_some());
+}
+
+/// Uploading from the playlist page against a mock Google server; the upload
+/// keeps going after leaving the page, and what arrives is the file.
+#[test]
+#[ignore = "renders screenshots"]
+fn uploads_in_the_background() {
+    use crate::gdrive::Folder;
+    use crate::gdrive::tests::endpoints;
+    use crate::mock_http::{Resp, mock, reply};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use super::drive_ui::signed_in_for_test;
+
+    let base = screens_dir("drive-upload-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let zip = base.join("2026-11-21 16-48-35.zip");
+    let content: Vec<u8> = (0..3_000_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(&zip, &content).unwrap();
+
+    // The mock holds the upload until `release` is set (also when the test
+    // fails, so the runtime can shut down).
+    let release = Arc::new(AtomicBool::new(false));
+    struct ReleaseOnDrop(Arc<AtomicBool>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+    let _release = ReleaseOnDrop(release.clone());
+    let stored = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let session = Arc::new(Mutex::new(String::new()));
+    let server = {
+        let (release, stored, session) = (release.clone(), stored.clone(), session.clone());
+        rt.block_on(mock(move |req| match (req.method.as_str(), req.target.split('?').next().unwrap()) {
+            ("POST", "/token") => reply(200, json!({"access_token": "at", "expires_in": 3600})),
+            ("POST", "/upload/drive/v3/files") => {
+                let meta: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(meta["parents"], json!(["anime"]));
+                Resp { status: 200, headers: vec![("Location".into(), session.lock().unwrap().clone())], body: Vec::new() }
+            }
+            ("PUT", "/session") => {
+                // The first chunk goes up quickly; the rest wait for `release`.
+                let first = stored.lock().unwrap().is_empty();
+                if first {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                } else {
+                    while !release.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+                let mut stored = stored.lock().unwrap();
+                stored.extend_from_slice(&req.body);
+                if stored.len() < 3_000_000 {
+                    let range = format!("bytes=0-{}", stored.len() - 1);
+                    return Resp { status: 308, headers: vec![("Range".into(), range)], body: Vec::new() };
+                }
+                reply(200, json!({"id": "f", "name": "2026-11-21 16-48-35.zip", "webViewLink": "https://drive.google.com/file/d/f/view"}))
+            }
+            other => panic!("unexpected {other:?}"),
+        }))
+    };
+    *session.lock().unwrap() = format!("{server}/session");
+
+    let mut h = harness(&base, rt.handle().clone());
+    wait_until(&mut h, "engine", |a| matches!(a.engine, EngineState::Ready(_)));
+    let folder = Folder { id: "anime".into(), path: "My Drive / Anime".into() };
+    signed_in_for_test(&mut h.state_mut().drive, "me@example.com", Some(folder));
+    h.state_mut().drive.use_endpoints_for_test(endpoints(&server));
+    h.state_mut().drive.use_chunk_for_test(1 << 20);
+    let episode = base.join("Show - 01.mkv");
+    std::fs::write(&episode, [0u8; 1024]).unwrap();
+    h.state_mut().playlist.add(vec![crate::playlist::Item { path: episode, title: "Show - 01".into() }]);
+    click(&mut h, "Playlist (1)");
+    if let Page::Playlist(pp) = &mut h.state_mut().page {
+        pp.exported_for_test(zip.clone());
+    }
+    click(&mut h, "⬆ Upload 2026-11-21 16-48-35.zip");
+    wait_until(&mut h, "first chunk up", |a| a.drive.upload_progress().is_some_and(|p| p > 0.3));
+    // After a chunk, the time left shows on the page and in the top bar.
+    assert_eq!(h.query_all_by_label_contains(" left · ").count(), 2, "time estimate shown");
+    save(&mut h, &base, "upload-0-time-left.png");
+
+    // Leave the page: the upload carries on, shown in the top bar.
+    click(&mut h, "⏴ Back");
+    assert!(matches!(h.state().page, Page::Home));
+    h.run_steps(5);
+    save(&mut h, &base, "upload-1-in-background.png");
+    assert!(h.state().drive.upload_progress().is_some(), "leaving the page must not stop the upload");
+
+    release.store(true, Ordering::Relaxed);
+    wait_until(&mut h, "upload done", |a| a.drive.upload_result_for_test().is_some());
+    let result = h.state().drive.upload_result_for_test().unwrap().clone();
+    assert_eq!(result.map(|u| u.id), Ok("f".to_owned()));
+    assert!(*stored.lock().unwrap() == content, "Drive must get exactly the zip");
+
+    click(&mut h, "Playlist (1)");
+    h.run_steps(5);
+    save(&mut h, &base, "upload-2-done.png");
+    assert!(h.query_by_label("Open in Drive ↗").is_some());
+    assert!(h.query_by_label("⬆ Upload 2026-11-21 16-48-35.zip").is_none(), "already uploaded");
+}
+
+/// Downloading through a debrid service (a mock TorBox): the setting, the
+/// file picker, the download card through its stages, and Remux from it.
+/// BitTorrent never starts.
+#[test]
+#[ignore = "renders screenshots"]
+fn downloads_through_a_debrid_service() {
+    use crate::debrid::jobs::tests::{content, make_torrent, serve};
+    use crate::debrid::jobs::Phase;
+    use crate::debrid::{Config, Provider};
+    use crate::mock_http::{mock, reply};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let base = screens_dir("debrid-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let files = [("Show - 01.mkv", 400_000u64), ("Show - 02.mkv", 300_000), ("Show - 03.mkv", 200_000)];
+    let torrent = make_torrent("[Group] Show S01", &files);
+    let bodies: Vec<String> = files.iter().enumerate().map(|(i, f)| content(i as u8, f.1)).collect();
+
+    // TorBox holds the torrent "downloading" until released.
+    let release = Arc::new(AtomicBool::new(false));
+    let base_cell = Arc::new(Mutex::new(String::new()));
+    let server = {
+        let (release, base_cell, bodies) = (release.clone(), base_cell.clone(), bodies.clone());
+        rt.block_on(mock(move |req| {
+            let ok = |data: serde_json::Value| reply(200, json!({"success": true, "data": data}));
+            let path = req.target.split('?').next().unwrap();
+            match path {
+                "/user/me" => ok(json!({"email": "me@example.com", "plan": 2, "premium_expires_at": "2027-03-01T00:00:00Z"})),
+                "/torrents/createtorrent" => ok(json!({"torrent_id": 8, "hash": "h"})),
+                "/torrents/mylist" => {
+                    let ready = release.load(Ordering::SeqCst);
+                    let fs: Vec<serde_json::Value> = files
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (p, len))| json!({"id": i, "name": format!("[Group] Show S01/{p}"), "size": len}))
+                        .collect();
+                    ok(json!({"id": 8, "download_state": if ready { "cached" } else { "downloading" }, "progress": 0.62,
+                        "download_speed": 48_000_000, "seeds": 31, "download_finished": ready, "download_present": ready, "files": fs}))
+                }
+                "/torrents/requestdl" => {
+                    let file = req.query()["file_id"].clone();
+                    ok(json!(format!("{}/cdn/{file}", base_cell.lock().unwrap())))
+                }
+                p if p.starts_with("/cdn/") => serve(req, &bodies[p[5..].parse::<usize>().unwrap()]),
+                other => panic!("unexpected {other}"),
+            }
+        }))
+    };
+    *base_cell.lock().unwrap() = server.clone();
+
+    // Debrid is on from the start, with no service set up yet.
+    let config_file = base.join("state").join("debrid.json");
+    Config { enabled: true, ..Default::default() }.save(&config_file).unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+    h.run_steps(5);
+    assert!(matches!(h.state().engine, EngineState::Off), "no BitTorrent in debrid mode");
+    h.state().debrid.manager.use_base_for_test(Provider::TorBox, &server);
+
+    // Set it up in Settings, which stays open through every click.
+    click(&mut h, "⚙ Settings");
+    click(&mut h, "A debrid service");
+    click(&mut h, "TorBox");
+    h.run_steps(3);
+    h.get_by_role(Role::PasswordInput).click();
+    h.run_steps(2);
+    h.get_by_role(Role::PasswordInput).type_text("tb-key");
+    h.run_steps(2);
+    click(&mut h, "Check");
+    wait_until(&mut h, "account check", |a| a.debrid.account.is_some());
+    save(&mut h, &base, "debrid-1-settings.png");
+    assert!(h.query_by_label("✔ me@example.com · premium until 2027-03-01").is_some(), "settings still open");
+    let saved = Config::load(&config_file);
+    assert_eq!((saved.provider, saved.key(Provider::TorBox)), (Provider::TorBox, Some("tb-key")));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_label("A debrid service").is_none(), "Esc closes settings");
+    assert!(h.query_by_label("TorBox · me@example.com").is_some(), "status bar shows the account");
+
+    // Pick episodes 1 and 3.
+    let listing = crate::engine::listing_from_bytes(torrent.clone()).unwrap();
+    let mut fp = FilesPage::new(listing, None, "test".into());
+    fp.checked = vec![true, false, true];
+    h.state_mut().page = Page::Files(fp);
+    h.run_steps(5);
+    save(&mut h, &base, "debrid-2-files.png");
+    click(&mut h, "⬇ Download via TorBox");
+    wait_until(&mut h, "TorBox fetching", |a| {
+        a.debrid.manager.views().first().is_some_and(|v| matches!(v.live.phase, Phase::Remote { .. }))
+    });
+    save(&mut h, &base, "debrid-3-service-fetching.png");
+    assert!(h.query_by_label("TorBox: 62%").is_some());
+
+    release.store(true, Ordering::SeqCst);
+    wait_until(&mut h, "done", |a| a.debrid.manager.views().first().is_some_and(|v| v.live.phase == Phase::Done));
+    click(&mut h, "Files");
+    h.run_steps(5);
+    save(&mut h, &base, "debrid-4-done.png");
+    let out = base.join("downloads").join("[Group] Show S01");
+    assert_eq!(std::fs::read_to_string(out.join("Show - 01.mkv")).unwrap(), bodies[0]);
+    assert_eq!(std::fs::read_to_string(out.join("Show - 03.mkv")).unwrap(), bodies[2]);
+    assert!(!out.join("Show - 02.mkv").exists());
+    assert!(matches!(h.state().engine, EngineState::Off), "still no BitTorrent");
+
+    // Episodes… reopens the picker with the job's selection.
+    click(&mut h, "Episodes…");
+    h.run_steps(3);
+    let Page::Files(fp) = &h.state().page else { panic!("files page") };
+    assert_eq!(fp.checked, vec![true, false, true]);
+    assert!(h.query_by_label("Update download").is_some());
+
+    // Remux… opens the remux page with the downloaded episodes.
+    click(&mut h, "Remux…");
+    h.run_steps(3);
+    let Page::Remux(rp) = &h.state().page else { panic!("remux page") };
+    assert_eq!(rp.series.files.len(), 2);
+}
+
+/// Torrents over a VPN (PIA, through a stand-in `piactl`), with loopback
+/// standing in for the VPN's interface: the engine waits while PIA is
+/// disconnected, starts bound to the interface and listening on the
+/// forwarded port once connected, stops when the VPN drops and restarts
+/// when it's back. Turning the VPN off puts torrents back on the normal
+/// connection.
+#[test]
+#[ignore = "renders screenshots"]
+fn torrents_wait_for_the_vpn() {
+    use crate::vpn::tests::{FakeProbe, iface};
+    use crate::vpn::{Config, Env, Network, Service, pia};
+
+    let base = screens_dir("vpn-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let pia_dir = base.join("pia");
+    let piactl = pia::tests::fake_piactl(&pia_dir, "Disconnected", "Inactive", true);
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let listening = || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+
+    let config = Config { enabled: true, service: Service::Pia, interface: Some("lo".into()), ..Default::default() };
+    config.save(&base.join("state").join("vpn.json")).unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+    let probe = std::sync::Arc::new(FakeProbe::default());
+    let tunnel = |index| crate::vpn::Interface { tunnel: true, loopback: false, ..iface("lo", index, [127, 0, 0, 1], true) };
+    *probe.interfaces.lock().unwrap() = vec![tunnel(1)];
+    h.state_mut().use_vpn_env_for_test(Env {
+        probe: probe.clone(),
+        piactl: Some(piactl),
+        natpmp: None,
+        poll: Duration::from_millis(100),
+        port_wait: Duration::from_secs(2),
+    });
+
+    // PIA is disconnected: torrents wait, and the app offers to connect.
+    // PIA is disconnected: torrents wait, offline (no DHT, no trackers), and
+    // the app offers to connect.
+    let offline = |a: &App| matches!(a.engine, EngineState::Ready(_)) && a.engine_offline();
+    wait_until(&mut h, "waiting", |a| offline(a) && a.vpn.waiting.as_deref() == Some("PIA is disconnected"));
+    assert!(h.state().engine().unwrap().session().get_dht().is_none(), "no DHT while offline");
+    save(&mut h, &base, "vpn-1-waiting.png");
+    assert!(h.query_by_label("⏸ Torrents are waiting for the VPN").is_some());
+    assert!(h.state().download_ready().unwrap_err().contains("waiting for the VPN"));
+    click(&mut h, "Connect PIA");
+    wait_until(&mut h, "connect ran", |_| std::fs::read_to_string(pia_dir.join("calls")).is_ok_and(|c| c == "connect\n"));
+
+    // Connected, with a forwarded port.
+    pia::tests::set(&pia_dir, "connectionstate", "Connected");
+    pia::tests::set(&pia_dir, "portforward", &port.to_string());
+    wait_until(&mut h, "engine on the VPN", |a| matches!(a.engine, EngineState::Ready(_)));
+    let on_vpn = Network { interface: Some("lo".into()), index: 1, port: Some(port), offline: false };
+    assert_eq!(h.state().engine_net, Some(on_vpn));
+    assert!(listening(), "listens on the forwarded port");
+    // The listening socket is bound to the interface (ss shows it as addr%device).
+    if let Ok(out) = std::process::Command::new("ss").args(["-Htln"]).output() {
+        let ss = String::from_utf8_lossy(&out.stdout);
+        assert!(ss.contains(&format!("%lo:{port}")), "not bound to the interface:\n{ss}");
+    }
+    assert!(h.query_by_label(&format!("VPN: lo · port {port}")).is_some());
+    click(&mut h, "⚙ Settings");
+    h.run_steps(5);
+    save(&mut h, &base, "vpn-2-settings.png");
+    assert!(h.query_by_label(&format!("✔ Port {port} forwarded")).is_some());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+
+    // The VPN drops: the engine stops, so nothing goes out.
+    pia::tests::set(&pia_dir, "connectionstate", "Reconnecting");
+    probe.interfaces.lock().unwrap().clear();
+    wait_until(&mut h, "offline", |a| offline(a) && a.vpn.waiting.as_deref() == Some("PIA is reconnecting"));
+    assert!(h.query_by_label("Connect PIA").is_none(), "already reconnecting");
+    save(&mut h, &base, "vpn-3-dropped.png");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while listening() {
+        assert!(Instant::now() < deadline, "still listening after the VPN dropped");
+        h.step();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // Back, as a new interface: the engine restarts on it.
+    *probe.interfaces.lock().unwrap() = vec![tunnel(7)];
+    pia::tests::set(&pia_dir, "connectionstate", "Connected");
+    wait_until(&mut h, "restarted", |a| matches!(a.engine, EngineState::Ready(_)) && a.engine_net.as_ref().is_some_and(|n| n.index == 7));
+    assert!(listening());
+
+    // VPN off: torrents go back to the normal connection.
+    click(&mut h, "⚙ Settings");
+    click(&mut h, "Only download torrents over a VPN");
+    wait_until(&mut h, "off the VPN", |a| matches!(a.engine, EngineState::Ready(_)) && a.engine_net == Some(Network::default()));
+    assert!(!h.state().vpn.config.enabled);
+    assert!(!Config::load(&base.join("state").join("vpn.json")).enabled, "saved");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while listening() {
+        assert!(Instant::now() < deadline, "the forwarded port stays open without the VPN");
+        h.step();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // Downloading through a debrid service instead: torrents from before wait
+    // offline, quietly, and nothing about the VPN is in the way.
+    {
+        let a = h.state_mut();
+        a.debrid.config.enabled = true;
+        a.debrid.config.provider = crate::debrid::Provider::TorBox;
+        a.debrid.config.keys.insert(crate::debrid::Provider::TorBox, "key".into());
+        a.vpn.config.enabled = true;
+        a.vpn.monitor.set_config(a.vpn.config.clone());
+    }
+    pia::tests::set(&pia_dir, "connectionstate", "Disconnected");
+    wait_until(&mut h, "offline again", |a| offline(a) && a.vpn.waiting.is_some());
+    save(&mut h, &base, "vpn-4-debrid-mode.png");
+    assert!(h.query_by_label("⏸ Torrents are waiting for the VPN").is_none(), "no banner without local torrenting");
+    assert!(h.query_by_label("Torrents waiting for the VPN").is_none());
+    assert!(h.query_by_label_contains("VPN:").is_none(), "no VPN status either");
+    assert!(h.state().download_ready().is_ok(), "the debrid service doesn't need the VPN");
+}
+
+/// Downloading from Usenet: a release on SeaDex that both indexers (mocks)
+/// have, a fake provider (TLS, with a login) serving its articles, Nyaa (a
+/// mock) for its .torrent. The release list shows it's on Usenet, the
+/// picker offers Usenet, and the picked episodes arrive intact; the
+/// providers dialog checks the login.
+#[test]
+#[ignore = "renders screenshots"]
+fn downloads_from_usenet() {
+    use crate::debrid::jobs::tests::make_torrent;
+    use crate::mock_http::{Resp, mock, reply};
+    use crate::usenet::fake::{FakeProvider, Options, upload};
+    use crate::usenet::indexers::Indexers;
+    use crate::usenet::jobs::Phase;
+    use serde_json::json;
+
+    struct ResetNyaa;
+    impl Drop for ResetNyaa {
+        fn drop(&mut self) {
+            *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = None;
+        }
+    }
+
+    let base = screens_dir("usenet-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let episodes = [("Show - 01.mkv", 400_000usize), ("Show - 02.mkv", 300_000), ("Show - 03.mkv", 200_000)];
+    let data: Vec<Vec<u8>> = (0..3).map(|i| (0..episodes[i].1).map(|n| ((n * (i + 5)) % 251) as u8).collect()).collect();
+    let sizes: Vec<(&str, u64)> = episodes.iter().map(|(n, l)| (*n, *l as u64)).collect();
+    let torrent = make_torrent("[Group] Show S01", &sizes);
+    let hash = info_hash_of(&torrent).unwrap();
+    let posted: Vec<(&str, &[u8])> = episodes.iter().zip(&data).map(|((n, _), d)| (*n, d.as_slice())).collect();
+    let up = upload("ui", &posted, 48_000, 16_384, 12);
+    let login = Some(("me".to_owned(), "pw".to_owned()));
+    let fake = rt.block_on(FakeProvider::start(
+        up.articles.clone(),
+        Options { login, tls: true, delay: Duration::from_millis(150) },
+    ));
+
+    // Nyaa and both indexers.
+    let nzb = up.nzb().into_bytes();
+    let base_url = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let server = {
+        let (hash, base_url) = (hash.clone(), base_url.clone());
+        rt.block_on(mock(move |req| {
+            let path = req.target.split('?').next().unwrap().to_owned();
+            let url = base_url.lock().unwrap().clone();
+            match path.as_str() {
+                "/download/777.torrent" => Resp::binary(200, torrent.clone()),
+                "/at/json" => reply(200, json!({"id": 1, "info_hash": hash, "status": "complete", "nzb_url": format!("{url}/at/nzb/1")})),
+                "/at/nzb/1" => Resp::binary(200, nzb.clone()),
+                p if p == format!("/tk/v1/torrents/btih/{hash}") => {
+                    reply(200, json!({"id": 5, "btih": hash, "state": "completed", "has_nzb": 1}))
+                }
+                p if p.starts_with("/tks/nzbs/5/") => Resp::binary(200, nzb.clone()),
+                other => panic!("unexpected {other}"),
+            }
+        }))
+    };
+    *base_url.lock().unwrap() = server.clone();
+    *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = Some(server.clone());
+    let _reset = ResetNyaa;
+
+    let mut usenet = crate::usenet::Config::default();
+    usenet.add(fake.provider("Fake News"));
+    usenet.save(&base.join("state").join("usenet.json")).unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+    h.state_mut().usenet.use_indexers_for_test(Indexers::with_bases(
+        reqwest::Client::new(),
+        &format!("{server}/at"),
+        &format!("{server}/tk"),
+        &format!("{server}/tks"),
+    ));
+
+    // An anime whose SeaDex pick is this release.
+    let release = Release {
+        group: "Group".into(),
+        is_best: true,
+        dual_audio: false,
+        tracker: "Nyaa".into(),
+        url: "https://nyaa.si/view/777".into(),
+        info_hash: hash.clone(),
+        tags: vec![],
+        files: vec![],
+    };
+    let anime = Anime {
+        anilist_id: 1,
+        title: "Show".into(),
+        alt_title: None,
+        romaji: None,
+        english: Some("Show".into()),
+        format: Some("TV".into()),
+        year: Some(2026),
+        episodes: Some(3),
+        cover_small: None,
+        cover_large: None,
+        entry: Some(seadex::Entry { notes: String::new(), incomplete: false, theoretical_best: String::new(), releases: vec![release] }),
+    };
+    h.state_mut().page = Page::Anime(AnimePage { anime, chosen: Some(0), nyaa: None });
+    wait_until(&mut h, "NZB lookup", |a| a.usenet.links(&hash).is_some_and(|l| l.len() == 2));
+    save(&mut h, &base, "usenet-1-release.png");
+    assert!(h.query_by_label("NZB").is_some(), "the release list says it's on Usenet");
+
+    click(&mut h, "Choose episodes ⏵");
+    wait_until(&mut h, "files page", |a| matches!(a.page, Page::Files(_)));
+    assert!(h.query_by_label("On Usenet (AnimeTosho, TsukiHime): downloads from your Usenet providers").is_some());
+    if let Page::Files(fp) = &mut h.state_mut().page {
+        fp.checked = vec![true, false, true];
+    }
+    h.run_steps(3);
+    save(&mut h, &base, "usenet-2-files.png");
+    click(&mut h, "⬇ Download from Usenet");
+    // Caught part way (no settling: it's quick).
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !h.state().usenet.manager.views().first().is_some_and(|v| v.live.phase == Phase::Downloading && v.have_bytes() > 100_000) {
+        assert!(Instant::now() < deadline, "timed out waiting for the download");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    h.run_steps(2);
+    save(&mut h, &base, "usenet-3-downloading.png");
+    assert!(h.query_by_label_contains("Downloading from Usenet (AnimeTosho)").is_some());
+    wait_until(&mut h, "done", |a| a.usenet.manager.views().first().is_some_and(|v| v.live.phase == Phase::Done));
+    h.state_mut().page = Page::Home;
+    h.run_steps(2);
+    click(&mut h, "Files");
+    h.run_steps(5);
+    save(&mut h, &base, "usenet-4-done.png");
+    let out = base.join("downloads").join("[Group] Show S01");
+    assert!(std::fs::read(out.join("Show - 01.mkv")).unwrap() == data[0]);
+    assert!(std::fs::read(out.join("Show - 03.mkv")).unwrap() == data[2]);
+    assert!(!out.join("Show - 02.mkv").exists());
+    assert!(h.state().engine().is_none_or(|e| e.torrents().is_empty()), "nothing went to BitTorrent");
+
+    // The providers dialog: check the login.
+    click(&mut h, "⚙ Settings");
+    h.run_steps(3);
+    assert!(h.query_by_label("Fake News · 4 connections").is_some());
+    click(&mut h, "Usenet providers…");
+    click(&mut h, "Check");
+    for _ in 0..200 {
+        if h.query_by_label("✔ Connected and logged in").is_some() {
+            break;
+        }
+        h.step();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    save(&mut h, &base, "usenet-5-providers.png");
+    assert!(h.query_by_label("✔ Connected and logged in").is_some());
+    click(&mut h, "Close");
+    h.run_steps(3);
+    assert!(h.state().usenet.dialog.is_none());
+}
+
+/// A release with one torrent per episode, downloading through a debrid
+/// service, with a Usenet provider set up: episodes on Usenet come from
+/// there, and the picker says so (it used to say "via TorBox").
+#[test]
+#[ignore = "renders screenshots"]
+fn per_episode_releases_prefer_usenet() {
+    use crate::debrid::jobs::tests::make_torrent;
+    use crate::mock_http::{Resp, mock, reply};
+    use crate::usenet::fake::{FakeProvider, Options, upload};
+    use crate::usenet::indexers::Indexers;
+    use crate::usenet::jobs::Phase;
+    use serde_json::json;
+
+    struct ResetNyaa;
+    impl Drop for ResetNyaa {
+        fn drop(&mut self) {
+            *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = None;
+        }
+    }
+
+    let base = screens_dir("usenet-episodes-screens");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    // Episodes 1 and 2 are on Usenet; 3 isn't.
+    let names = ["Show - 01.mkv", "Show - 02.mkv", "Show - 03.mkv"];
+    let data: Vec<Vec<u8>> = (0..3).map(|i| (0..150_000usize).map(|n| ((n * (i + 7)) % 249) as u8).collect()).collect();
+    let torrents: Vec<Vec<u8>> = names.iter().map(|n| make_torrent(&n.replace(".mkv", ""), &[(n, 150_000)])).collect();
+    let hashes: Vec<String> = torrents.iter().map(|t| info_hash_of(t).unwrap()).collect();
+    let uploads: Vec<_> = (0..2).map(|i| upload(&format!("ep{i}"), &[(names[i], &data[i])], 40_000, 8192, 6)).collect();
+    let mut articles = uploads[0].articles.clone();
+    articles.extend(uploads[1].articles.clone());
+    let fake = rt.block_on(FakeProvider::start(articles, Options::default()));
+
+    let nzbs: Vec<Vec<u8>> = uploads.iter().map(|u| u.nzb().into_bytes()).collect();
+    let url_cell = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let server = {
+        let (hashes, url_cell) = (hashes.clone(), url_cell.clone());
+        rt.block_on(mock(move |req| {
+            let path = req.target.split('?').next().unwrap().to_owned();
+            let url = url_cell.lock().unwrap().clone();
+            if let Some(id) = path.strip_prefix("/download/").and_then(|p| p.strip_suffix(".torrent")) {
+                return Resp::binary(200, torrents[id.parse::<usize>().unwrap() - 901].clone());
+            }
+            match path.as_str() {
+                "/at/json" => match hashes.iter().position(|h| *h == req.query()["btih"]) {
+                    Some(i) if i < 2 => reply(200, json!({"info_hash": hashes[i], "status": "complete", "nzb_url": format!("{url}/at/nzb/{i}")})),
+                    _ => reply(200, json!({})),
+                },
+                p if p.starts_with("/at/nzb/") => Resp::binary(200, nzbs[p[8..].parse::<usize>().unwrap()].clone()),
+                p if p.starts_with("/tk/") => reply(404, json!({"detail": "not found"})),
+                other => panic!("unexpected {other}"),
+            }
+        }))
+    };
+    *url_cell.lock().unwrap() = server.clone();
+    *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = Some(server.clone());
+    let _reset = ResetNyaa;
+
+    // TorBox is the download method, and a Usenet provider is set up.
+    let state = base.join("state");
+    let mut debrid = crate::debrid::Config { enabled: true, provider: crate::debrid::Provider::TorBox, ..Default::default() };
+    debrid.keys.insert(crate::debrid::Provider::TorBox, "key".into());
+    debrid.save(&state.join("debrid.json")).unwrap();
+    let mut usenet = crate::usenet::Config::default();
+    usenet.add(fake.provider("Fake News"));
+    usenet.save(&state.join("usenet.json")).unwrap();
+    let mut h = harness(&base, rt.handle().clone());
+    h.state_mut().usenet.use_indexers_for_test(Indexers::with_bases(
+        reqwest::Client::new(),
+        &format!("{server}/at"),
+        &format!("{server}/tk"),
+        &format!("{server}/tks"),
+    ));
+
+    let items: Vec<(u32, NyaaItem)> = (0..3)
+        .map(|i| {
+            let item = NyaaItem {
+                id: 901 + i as u64,
+                title: format!("[Group] Show - 0{} [1080p]", i + 1),
+                seeders: 50,
+                size: 150_000,
+                info_hash: hashes[i].clone(),
+                trusted: true,
+                remake: false,
+            };
+            (i as u32 + 1, item)
+        })
+        .collect();
+    let page = FilesPage::episodes(items, "Show · Group".into(), "Show [Group]".into(), None, "Group · per episode".into());
+    h.state_mut().page = Page::Files(page);
+    wait_until(&mut h, "lookups", |a| hashes.iter().all(|h| a.usenet.links(h).is_some()));
+    save(&mut h, &base, "episodes-1-mixed.png");
+    assert!(h.query_by_label("On Usenet (AnimeTosho): 2 of 3 episodes download from your Usenet providers").is_some());
+    assert!(h.query_by_label("⬇ Download: 2 from Usenet, 1 via TorBox").is_some());
+
+    // Just the two on Usenet: all from there.
+    if let Page::Files(fp) = &mut h.state_mut().page {
+        fp.checked = vec![true, true, false];
+    }
+    h.run_steps(3);
+    save(&mut h, &base, "episodes-2-usenet.png");
+    click(&mut h, "⬇ Download from Usenet");
+    wait_until(&mut h, "both done", |a| {
+        let v = a.usenet.manager.views();
+        v.len() == 2 && v.iter().all(|v| v.live.phase == Phase::Done)
+    });
+    let folder = base.join("downloads").join("Show [Group]");
+    for i in 0..2 {
+        assert!(std::fs::read(folder.join(names[i])).unwrap() == data[i], "episode {}", i + 1);
+    }
+    assert!(h.state().debrid.manager.views().is_empty(), "nothing went to TorBox");
+}
