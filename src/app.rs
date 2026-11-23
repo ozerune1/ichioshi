@@ -25,10 +25,12 @@ use crate::remux::Analysis;
 use crate::seadex::{self, Anime, Release};
 use crate::usenet::indexers::NzbLink;
 
+pub(crate) mod bridge;
 mod debrid_ui;
 mod discover_ui;
 mod discuss_ui;
 mod drive_ui;
+#[cfg(feature = "gui")]
 pub(crate) mod gui;
 mod handover;
 mod import_ui;
@@ -997,6 +999,26 @@ impl App {
     }
 
     /// Stop downloads cleanly, as the app closes.
+    /// What's due after anything happens (a message, an action, a tick):
+    /// background work's results, and starting what the pages need.
+    pub(crate) fn duties(&mut self) {
+        self.handle_messages();
+        self.tracking_tick();
+        self.sync_engine();
+        self.request_nzb_lookups();
+        self.tidy_library();
+        self.apply_defaults();
+        self.describe_episodes();
+        self.refresh_library_stats();
+        self.request_details();
+        self.request_release_files();
+        self.request_browse();
+        self.request_episode_scores();
+        self.servers_tick();
+        self.manage_tick();
+        self.save_settings();
+    }
+
     fn shut_down(&mut self) {
         // Debrid and Usenet downloads resume from their partial files next time.
         self.debrid.manager.stop();
@@ -2056,13 +2078,19 @@ fn fmt_speed(mib_per_sec: f64) -> String {
 
 /// Open a folder in the system file manager (its nearest existing parent if
 /// it hasn't been created yet).
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "gui", target_os = "android"))]
 fn open_folder(path: &Path) -> std::io::Result<()> {
     let link = path.to_string_lossy();
     if !link.contains("://") {
         return Err(std::io::Error::other("Android has no folders to open"));
     }
     crate::android::view(&link, None).map_err(std::io::Error::other)
+}
+
+/// The phone app opens links itself (its `Waker`).
+#[cfg(all(not(feature = "gui"), target_os = "android"))]
+fn open_folder(_: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::other("nothing opens it here"))
 }
 
 #[cfg(not(target_os = "android"))]

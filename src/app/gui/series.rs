@@ -9,7 +9,7 @@ use iced::{Alignment, Background, Color, Element, Fill, Length, gradient};
 
 use super::library::{change, rule};
 use super::{Gui, Message, act, edit};
-use crate::app::library_ui::Coverage;
+use crate::app::library_ui::{Coverage, EpisodeRow as Episode};
 use crate::app::watching::{PlayerAction, clock, up_next};
 use crate::app::{
     Action, AnimePage, MAX_NYAA_ROWS, NyaaSearch, Page, chosen_release, fmt_bytes,
@@ -31,17 +31,6 @@ fn on_page(f: impl Fn(&mut AnimePage) + Send + Sync + 'static) -> Message {
             f(ap);
         }
     })
-}
-
-/// Episode `n`, as the page shows it.
-struct Episode {
-    n: u32,
-    title: String,
-    airs: Option<i64>,
-    out: bool,
-    /// Its file (within the folder) and size.
-    file: Option<(String, u64)>,
-    downloading: Option<f32>,
 }
 
 impl Gui {
@@ -215,7 +204,7 @@ impl Gui {
     fn series_actions<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
         let id = ap.anime.anilist_id;
         let series = self.app.library.find(id);
-        let (episodes, _) = self.episode_rows(ap);
+        let (episodes, _) = self.app.episode_rows(ap);
         let coverage = self.app.coverage(ap);
         let missing = missing(&episodes, &coverage);
         let mut buttons = Row::new().spacing(10).align_y(Alignment::Center);
@@ -439,70 +428,10 @@ impl Gui {
 
     // ── Episodes ──────────────────────────────────────────────────────
 
-    /// Every episode (in the library, downloading, out or not), and the
-    /// files in the folder that aren't episodes.
-    fn episode_rows(&self, ap: &AnimePage) -> (Vec<Episode>, Vec<(String, u64)>) {
-        let id = ap.anime.anilist_id;
-        let details = self.app.details(id);
-        let stats = self.app.pages.stats.get(&id).cloned().unwrap_or_default();
-        let coverage = self.app.coverage(ap);
-        let now = chrono::Utc::now().timestamp();
-        let on_disk = stats.episodes.clone();
-        let extras: Vec<(String, u64)> = stats
-            .files
-            .iter()
-            .filter(|f| !on_disk.values().any(|e| e == *f))
-            .cloned()
-            .collect();
-        let last = [
-            details
-                .and_then(|d| d.episodes)
-                .or(ap.anime.episodes)
-                .unwrap_or(0),
-            details
-                .and_then(|d| d.episode_list.iter().map(|e| e.number).max())
-                .unwrap_or(0),
-            on_disk.keys().max().copied().unwrap_or(0),
-            stats.progress.keys().max().copied().unwrap_or(0),
-            coverage.last(),
-        ]
-        .into_iter()
-        .max()
-        .unwrap_or(0);
-        let episodes = (1..=last)
-            .map(|n| {
-                let airs = details.and_then(|d| {
-                    d.episode(n).and_then(|e| e.airs).or(d
-                        .next_episode
-                        .filter(|(next, _)| *next == n)
-                        .map(|(_, t)| t))
-                });
-                let out = match airs {
-                    Some(t) => t <= now,
-                    None => details
-                        .and_then(Details::aired)
-                        .is_none_or(|aired| n <= aired),
-                };
-                Episode {
-                    n,
-                    title: details
-                        .and_then(|d| d.episode(n))
-                        .and_then(|e| e.title.clone())
-                        .unwrap_or_else(|| format!("Episode {n}")),
-                    airs,
-                    out,
-                    file: on_disk.get(&n).cloned(),
-                    downloading: stats.progress.get(&n).copied(),
-                }
-            })
-            .collect();
-        (episodes, extras)
-    }
-
     fn episodes<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
         let id = ap.anime.anilist_id;
         let series = self.app.library.find(id);
-        let (episodes, extras) = self.episode_rows(ap);
+        let (episodes, extras) = self.app.episode_rows(ap);
         let coverage = self.app.coverage(ap);
         let have = episodes.iter().filter(|e| e.file.is_some()).count();
         let bytes: u64 = episodes

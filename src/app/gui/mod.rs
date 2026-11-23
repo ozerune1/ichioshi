@@ -351,22 +351,7 @@ impl Gui {
     /// After every message: take in background results, and keep the
     /// library, downloads and lists going.
     fn duties(&mut self) {
-        let a = &mut self.app;
-        a.handle_messages();
-        a.tracking_tick();
-        a.sync_engine();
-        a.request_nzb_lookups();
-        a.tidy_library();
-        a.apply_defaults();
-        a.describe_episodes();
-        a.refresh_library_stats();
-        a.request_details();
-        a.request_release_files();
-        a.request_browse();
-        a.request_episode_scores();
-        a.servers_tick();
-        a.manage_tick();
-        a.save_settings();
+        self.app.duties();
     }
 
     /// Stop what's running before the window goes.

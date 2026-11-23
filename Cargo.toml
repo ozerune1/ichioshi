@@ -1,3 +1,7 @@
+[workspace]
+# The phone app (Tauri): the core, with a web UI.
+members = [".", "mobile/src-tauri"]
+
 [package]
 name = "seadex-downloader"
 version = "0.1.0"
@@ -35,24 +39,46 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 yenc-simd = "=0.1.1"
 zip = { version = "9.8", default-features = false, features = ["chrono"] }
-iced = { version = "0.14", features = ["image", "svg", "tokio", "advanced"] }
+iced = { version = "0.14", features = ["image", "svg", "tokio", "advanced"], optional = true }
 
 # The player (GStreamer) and file dialogs: not on Android, where videos open
 # in a player app and paths are typed in.
 [target.'cfg(not(target_os = "android"))'.dependencies]
-rfd = "0.18"
-iced_video_player = "0.6"
-gstreamer = "0.23"
-gstreamer-app = "0.23"
-gstreamer-video = "0.23"
+rfd = { version = "0.18", optional = true }
+iced_video_player = { version = "0.6", optional = true }
+gstreamer = { version = "0.23", optional = true }
+gstreamer-app = { version = "0.23", optional = true }
+gstreamer-video = { version = "0.23", optional = true }
 
 # Android: started by the system (NativeActivity), through iced's patched
 # runner; videos and links open in other apps (JNI).
 [target.'cfg(target_os = "android")'.dependencies]
-iced_winit = "0.14"
-winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
-jni = "0.21"
-ndk-context = "0.1"
+iced_winit = { version = "0.14", optional = true }
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"], optional = true }
+jni = { version = "0.21", optional = true }
+ndk-context = { version = "0.1", optional = true }
+
+[features]
+default = ["gui"]
+# The desktop app (iced) and its player, and iced's Android port. The phone
+# app (mobile/, Tauri) builds the core without it.
+gui = [
+    "dep:iced",
+    "dep:rfd",
+    "dep:iced_video_player",
+    "dep:gstreamer",
+    "dep:gstreamer-app",
+    "dep:gstreamer-video",
+    "dep:iced_winit",
+    "dep:winit",
+    "dep:jni",
+    "dep:ndk-context",
+]
+
+[[bin]]
+name = "seadex-downloader"
+path = "src/main.rs"
+required-features = ["gui"]
 
 [dev-dependencies]
 iced_test = "0.14"

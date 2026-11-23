@@ -1,0 +1,9 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Dark, like the app; the system bars' areas show the window's
+         background, the app's bar colour. -->
+    <style name="Theme.seadex_mobile" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">@color/bars</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

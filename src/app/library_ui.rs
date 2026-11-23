@@ -46,7 +46,80 @@ struct Move {
     files: Vec<String>,
 }
 
+/// Episode `n`, as the page shows it.
+pub(super) struct EpisodeRow {
+    pub(super) n: u32,
+    pub(super) title: String,
+    pub(super) airs: Option<i64>,
+    pub(super) out: bool,
+    /// Its file (within the folder) and size.
+    pub(super) file: Option<(String, u64)>,
+    pub(super) downloading: Option<f32>,
+}
+
 impl App {
+    /// Every episode (in the library, downloading, out or not), and the
+    /// files in the folder that aren't episodes.
+    /// Every episode of the series (in the library, downloading, out or
+    /// not), and the files in its folder that aren't episodes.
+    pub(super) fn episode_rows(&self, ap: &AnimePage) -> (Vec<EpisodeRow>, Vec<(String, u64)>) {
+        let id = ap.anime.anilist_id;
+        let details = self.details(id);
+        let stats = self.pages.stats.get(&id).cloned().unwrap_or_default();
+        let coverage = self.coverage(ap);
+        let now = chrono::Utc::now().timestamp();
+        let on_disk = stats.episodes.clone();
+        let extras: Vec<(String, u64)> = stats
+            .files
+            .iter()
+            .filter(|f| !on_disk.values().any(|e| e == *f))
+            .cloned()
+            .collect();
+        let last = [
+            details
+                .and_then(|d| d.episodes)
+                .or(ap.anime.episodes)
+                .unwrap_or(0),
+            details
+                .and_then(|d| d.episode_list.iter().map(|e| e.number).max())
+                .unwrap_or(0),
+            on_disk.keys().max().copied().unwrap_or(0),
+            stats.progress.keys().max().copied().unwrap_or(0),
+            coverage.last(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+        let episodes = (1..=last)
+            .map(|n| {
+                let airs = details.and_then(|d| {
+                    d.episode(n).and_then(|e| e.airs).or(d
+                        .next_episode
+                        .filter(|(next, _)| *next == n)
+                        .map(|(_, t)| t))
+                });
+                let out = match airs {
+                    Some(t) => t <= now,
+                    None => details
+                        .and_then(crate::library::Details::aired)
+                        .is_none_or(|aired| n <= aired),
+                };
+                EpisodeRow {
+                    n,
+                    title: details
+                        .and_then(|d| d.episode(n))
+                        .and_then(|e| e.title.clone())
+                        .unwrap_or_else(|| format!("Episode {n}")),
+                    airs,
+                    out,
+                    file: on_disk.get(&n).cloned(),
+                    downloading: stats.progress.get(&n).copied(),
+                }
+            })
+            .collect();
+        (episodes, extras)
+    }
+
     /// Every few seconds: move finished downloads that belong to a series,
     /// but aren't in its folder, into it.
     pub(super) fn tidy_library(&mut self) {

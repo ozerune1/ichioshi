@@ -2,14 +2,21 @@
 //! (BitTorrent, debrid services, Usenet) into a library on this computer or
 //! on your own servers (Sonarr, Radarr, Jellyfin), and watch them.
 //!
-//! The desktop app runs `desktop_main`; on Android the system starts
-//! `android_main` (in a shared library, built by scripts/android/build.sh).
+//! The desktop app (the `gui` feature, iced) runs `desktop_main`. The phone
+//! app (mobile/, Tauri) builds this without the GUI and runs the core
+//! through [`Bridge`].
 
 // Android has no player of its own (videos open in a player app): the
-// player's messages and settings go unused there.
-#![cfg_attr(target_os = "android", allow(dead_code, unused_imports))]
+// player's messages and settings go unused there; and without the GUI
+// (the phone app, mobile/, has its own), parts of the core it alone uses.
+#![cfg_attr(
+    any(target_os = "android", not(feature = "gui")),
+    allow(dead_code, unused_imports)
+)]
 
 mod app;
+
+pub use app::bridge::{Bridge, Command};
 mod browse;
 mod debrid;
 mod discuss;
@@ -17,7 +24,7 @@ mod engine;
 mod fallback;
 mod fsutil;
 mod gdrive;
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "gui", not(target_os = "android")))]
 mod gst_video;
 mod library;
 #[cfg(test)]
@@ -41,17 +48,19 @@ mod tracking;
 mod usenet;
 mod vpn;
 
+#[cfg(feature = "gui")]
 use std::time::Duration;
 
+#[cfg(feature = "gui")]
 use tracing_subscriber::EnvFilter;
 
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "gui", target_os = "android"))]
 mod android;
 
 /// Where GStreamer's plugins are when the app is bundled with them
 /// (Windows): `lib/gstreamer-1.0` and its plugin scanner next to the
 /// executable; its plugin cache goes in the app's own folder.
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "gui", not(target_os = "android")))]
 fn use_bundled_gstreamer(state_dir: &std::path::Path) {
     let Some(dir) = std::env::current_exe()
         .ok()
@@ -88,7 +97,7 @@ fn use_bundled_gstreamer(state_dir: &std::path::Path) {
 }
 
 /// Play a video to its end through playbin, showing and sounding nothing.
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "gui", not(target_os = "android")))]
 fn play_through(video: &std::path::Path) -> Result<(), String> {
     use gstreamer::prelude::*;
     let uri = gst_video::file_uri(video).map_err(|e| e.to_string())?;
@@ -127,7 +136,7 @@ fn play_through(video: &std::path::Path) -> Result<(), String> {
 /// `--self-test <file> [video]`: whether what playing needs is there (GStreamer,
 /// its plugins, libass), written to the file; for checking a build where
 /// no window can open (Windows builds, under Wine).
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "gui", not(target_os = "android")))]
 fn self_test(out: &std::path::Path, video: Option<&std::path::Path>) -> bool {
     let mut lines = Vec::new();
     let mut ok = true;
@@ -214,7 +223,7 @@ fn self_test(out: &std::path::Path, video: Option<&std::path::Path>) -> bool {
 }
 
 /// The desktop app (Linux, Windows); `--self-test` checks a build.
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "gui", not(target_os = "android")))]
 pub fn desktop_main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(i) = args.iter().position(|a| a == "--self-test") {
@@ -254,7 +263,7 @@ pub fn desktop_main() {
 
 /// Android starts the app here (NativeActivity): its state goes in the
 /// app's own folder; the window is the activity's.
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "gui", target_os = "android"))]
 #[unsafe(no_mangle)]
 fn android_main(app: iced_winit::android::AndroidApp) {
     android::start_logging();
