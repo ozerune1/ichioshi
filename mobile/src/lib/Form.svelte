@@ -58,7 +58,7 @@
     {:else if it.t === "buttons"}
       <div class="buttons">
         {#each it.buttons as b, i}
-          <Button {b} kind={it.primary && i === 0 ? "primary" : "secondary"} />
+          <Button {b} small={it.small} kind={b.kind ?? (it.primary && i === 0 ? "primary" : "secondary")} />
         {/each}
       </div>
     {:else if it.t === "link"}

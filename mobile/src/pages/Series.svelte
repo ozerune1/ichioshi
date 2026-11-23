@@ -67,7 +67,7 @@
   {/if}
 
   {#if page.description}
-    <button class="desc" class:more onclick={() => (more = !more)}>{@html page.description}</button>
+    <div class="desc" class:more role="button" tabindex="0" onclick={() => (more = !more)} onkeydown={() => (more = !more)}>{@html page.description}</div>
   {/if}
 
   {#if page.library}
@@ -202,7 +202,7 @@
   .lists .row2 { display: grid; grid-template-columns: 3fr 2fr; gap: 8px; }
   .progress { display: flex; align-items: center; gap: 10px; }
   .grow { flex: 1; }
-  .desc { background: none; border: none; color: var(--muted); font: inherit; font-size: 14px; line-height: 1.55; text-align: left; padding: 0; display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .desc { color: var(--muted); font-size: 14px; line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
   .desc.more { display: block; }
   .check { display: flex; align-items: center; gap: 10px; background: none; border: none; color: var(--text); font: inherit; font-size: 14px; padding: 0; text-align: left; }
   .tick { width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface2); display: grid; place-items: center; font-size: 13px; flex: none; }

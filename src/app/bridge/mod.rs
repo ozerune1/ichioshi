@@ -9,6 +9,7 @@
 //! the desktop GUI does with its messages.
 
 mod browse;
+mod dialogs;
 mod downloads;
 mod form;
 mod library;

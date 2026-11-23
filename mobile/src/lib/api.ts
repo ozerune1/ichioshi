@@ -15,6 +15,8 @@ export type View = {
   page: any;
   /** Opens the search page. */
   search: string;
+  /** The dialog open (a sheet), if any. */
+  dialog: any;
   tab: "library" | "discover" | "downloads" | "more";
   servers: boolean;
   downloading: number;

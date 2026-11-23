@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ui::{Handler, Handles, Ui};
-use super::{Core, browse, downloads, library, play, series, settings};
+use super::{Core, browse, dialogs, downloads, library, play, series, settings};
 use crate::app::watching::PlayerAction;
 use crate::app::{Action, App, Origin, Page};
 
@@ -143,12 +143,14 @@ pub(super) fn view(app: &App, handles: &mut Handles) -> Value {
         Page::Remux(_) => json!({"kind": "remux"}),
         Page::Playlist(_) => json!({"kind": "playlist"}),
     };
+    let dialog = dialogs::dialog(&mut ui);
     let search = ui.edit(|app| {
         app.cancel_listing();
         app.page = Page::Results;
     });
     json!({
         "page": page,
+        "dialog": dialog,
         "search": search,
         "tab": match tab(app) {
             Tab::Library => "library",

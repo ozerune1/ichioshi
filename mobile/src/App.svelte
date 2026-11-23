@@ -12,11 +12,12 @@
   import Files from "./pages/Files.svelte";
   import Downloads from "./pages/Downloads.svelte";
   import { press } from "./lib/api";
+  import Sheet from "./lib/Sheet.svelte";
 
   start();
   // Back: out of an open settings group first, then the app's own.
   function goBack() {
-    if (app.section) app.section = null;
+    if (app.section && !app.view?.dialog) app.section = null;
     else back();
   }
   onBackButtonPress(goBack);
@@ -106,6 +107,10 @@
       <p class="muted center">{page.kind}: coming soon</p>
     {/if}
   </main>
+
+  {#if app.view?.dialog}
+    <Sheet d={app.view.dialog} />
+  {/if}
 
   <nav>
     {#each tabs as t}
