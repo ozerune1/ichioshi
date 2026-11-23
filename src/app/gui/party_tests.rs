@@ -198,3 +198,81 @@ fn it_waits_for_everyone_to_have_the_episode() {
     });
     send(&mut host, [act(Action::Party(PartyAction::Leave))]);
 }
+
+/// Host a party for a phone (by hand: `ICHIOSHI_PARTY_RELAY=1`, over
+/// iroh's relays). The code goes to `$PARTY_CODE_FILE`; once someone's
+/// joined and has the episode, it plays, pauses, seeks and plays again,
+/// closes and ends, saying what it does.
+#[test]
+#[ignore = "by hand, with a phone"]
+fn hosts_for_a_phone() {
+    let sample = std::path::PathBuf::from(std::env::var_os("PARTY_SAMPLE").unwrap());
+    let base = tempfile::tempdir().unwrap();
+    let hb = base.path().join("host");
+    let mut host = harness(&hb, &one_series(&hb, &[("Show - 01.mkv", &sample)]));
+    send(&mut host, [edit(|g| g.app.page = Page::Party)]);
+    type_into(&mut host, "party-name", "Desk", false);
+    click(&mut host, "Start a party");
+    wait(&mut host, "the party to start", |g| {
+        g.app.party_size().is_some()
+    });
+    let code = match &host.app.party.role {
+        Some(Role::Host(h)) => h.code.clone(),
+        _ => unreachable!(),
+    };
+    std::fs::write(std::env::var_os("PARTY_CODE_FILE").unwrap(), &code).unwrap();
+    eprintln!("code written ({} characters)", code.len());
+    let until = Instant::now() + Duration::from_secs(600);
+    while host.app.party_size() != Some(2) {
+        assert!(Instant::now() < until, "nobody joined");
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = host.update(Message::Tick);
+    }
+    eprintln!("joined: {:?}", host.app.party_people());
+    send(&mut host, [play(9, 1)]);
+    let mut step = 0;
+    let mut at = Instant::now();
+    let mut last = Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = host.update(Message::Tick);
+        if last.elapsed() > Duration::from_secs(2) {
+            last = Instant::now();
+            eprintln!(
+                "host at {:.1} {} · {:?} · note: {}",
+                position(&host),
+                if paused(&host) { "paused" } else { "playing" },
+                host.app
+                    .party_people()
+                    .iter()
+                    .map(|p| (p.1.clone(), p.2))
+                    .collect::<Vec<_>>(),
+                note(&host)
+            );
+        }
+        if host.player.is_none() && step == 0 {
+            at = Instant::now();
+            continue;
+        }
+        let t = at.elapsed().as_secs();
+        let next = match step {
+            0 if t >= 25 => Some("pause"),
+            1 if t >= 40 => Some("seek to 100"),
+            2 if t >= 55 => Some("play"),
+            3 if t >= 75 => Some("close"),
+            4 if t >= 85 => Some("end"),
+            5 if t >= 88 => break,
+            _ => None,
+        };
+        if let Some(what) = next {
+            eprintln!(">>> {what} (host at {:.1})", position(&host));
+            match step {
+                0 | 2 => send(&mut host, [Message::Player(player::Msg::TogglePause)]),
+                1 => host.player.as_mut().unwrap().seek_to(100.0, true),
+                3 => send(&mut host, [Message::Player(player::Msg::Back)]),
+                _ => send(&mut host, [act(Action::Party(PartyAction::Leave))]),
+            }
+            step += 1;
+        }
+    }
+}

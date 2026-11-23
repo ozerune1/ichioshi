@@ -48,25 +48,61 @@ pub struct Invite {
 }
 
 impl Invite {
-    /// The code to send friends.
+    /// The code to send friends: short, so it's easy to pass on. The
+    /// host's key, the secret, and its relay (members find the direct way
+    /// through it); without a relay, its addresses.
     pub fn code(&self) -> String {
-        let json = serde_json::to_vec(self).unwrap_or_default();
+        use iroh::TransportAddr;
+        let mut bytes = vec![1u8];
+        bytes.extend_from_slice(self.host.id.as_bytes());
+        bytes.extend_from_slice(&self.secret);
+        let relays = self.host.addrs.iter().any(TransportAddr::is_relay);
+        let addrs: Vec<String> = self
+            .host
+            .addrs
+            .iter()
+            .filter_map(|a| match a {
+                TransportAddr::Relay(url) => Some(format!("r{url}")),
+                TransportAddr::Ip(ip) if !relays => Some(format!("i{ip}")),
+                _ => None,
+            })
+            .collect();
+        bytes.extend_from_slice(addrs.join(" ").as_bytes());
         format!(
             "{PREFIX}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
         )
     }
 
     /// Read a code (pasted with spaces or line breaks in it, or without its
     /// start).
     pub fn parse(text: &str) -> Result<Self, String> {
+        use iroh::TransportAddr;
         let text: String = text.chars().filter(|c| !c.is_whitespace()).collect();
         let body = text.strip_prefix(PREFIX).unwrap_or(&text);
-        let bad = || "That isn't a watch party code".to_owned();
-        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        let bad = || "That isn't a watch party code (copy all of it)".to_owned();
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(body)
             .map_err(|_| bad())?;
-        serde_json::from_slice(&json).map_err(|_| bad())
+        if bytes.len() < 49 || bytes[0] != 1 {
+            return Err(bad());
+        }
+        let id =
+            iroh::PublicKey::from_bytes(bytes[1..33].try_into().unwrap()).map_err(|_| bad())?;
+        let secret: [u8; 16] = bytes[33..49].try_into().unwrap();
+        let rest = std::str::from_utf8(&bytes[49..]).map_err(|_| bad())?;
+        let mut addrs = Vec::new();
+        for a in rest.split(' ').filter(|a| !a.is_empty()) {
+            addrs.push(match a.split_at(1) {
+                ("r", url) => TransportAddr::Relay(url.parse().map_err(|_| bad())?),
+                ("i", ip) => TransportAddr::Ip(ip.parse().map_err(|_| bad())?),
+                _ => return Err(bad()),
+            });
+        }
+        Ok(Self {
+            host: EndpointAddr::from_parts(id, addrs),
+            secret,
+        })
     }
 }
 
@@ -173,12 +209,18 @@ pub enum ToHost {
     },
 }
 
+/// Tests stay on this machine (unless one says to use the relays).
+pub(crate) fn local() -> bool {
+    (cfg!(test) && std::env::var_os("ICHIOSHI_PARTY_RELAY").is_none())
+        || std::env::var_os("ICHIOSHI_PARTY_LOCAL").is_some()
+}
+
 /// The party's connection: iroh's relays (to find a way between home
 /// networks) and nothing published about it elsewhere: members dial what
-/// the invite says. Tests stay on this machine.
+/// the invite says.
 pub async fn endpoint() -> anyhow::Result<Endpoint> {
     let builder = Endpoint::builder(presets::Minimal).alpns(vec![ALPN.to_vec()]);
-    let builder = if cfg!(test) || std::env::var_os("ICHIOSHI_PARTY_LOCAL").is_some() {
+    let builder = if local() {
         builder
             .relay_mode(iroh::RelayMode::Disabled)
             .bind_addr("127.0.0.1:0")
@@ -250,7 +292,7 @@ impl Hosting {
     /// through `events`.
     pub async fn start(events: impl Fn(HostEvent) + Send + Sync + 'static) -> anyhow::Result<Self> {
         let endpoint = endpoint().await?;
-        if !cfg!(test) {
+        if !local() {
             // With a relay's address in it, the code works from anywhere.
             let _ = tokio::time::timeout(Duration::from_secs(8), endpoint.online()).await;
         }
@@ -518,6 +560,32 @@ mod tests {
         };
         let code = invite.code();
         assert!(code.starts_with(PREFIX));
+        // With a relay: only the relay (members find the rest), so it's short.
+        let relayed = Invite {
+            host: EndpointAddr::from_parts(
+                invite.host.id,
+                [
+                    iroh::TransportAddr::Relay(
+                        "https://use1-1.relay.n0.iroh.link./".parse().unwrap(),
+                    ),
+                    iroh::TransportAddr::Ip("203.0.113.5:4433".parse().unwrap()),
+                ],
+            ),
+            secret: [7; 16],
+        };
+        let short = Invite::parse(&relayed.code()).unwrap();
+        assert_eq!(short.host.addrs.len(), 1);
+        assert!(short.host.addrs.iter().all(|a| a.is_relay()));
+        assert!(relayed.code().len() < 160, "{}", relayed.code().len());
+        // Without one: its addresses.
+        let direct = Invite {
+            host: EndpointAddr::from_parts(
+                invite.host.id,
+                [iroh::TransportAddr::Ip("127.0.0.1:4433".parse().unwrap())],
+            ),
+            secret: [7; 16],
+        };
+        assert_eq!(Invite::parse(&direct.code()).unwrap(), direct);
         // Pasted broken over lines, or without its start.
         let broken = format!("  {}\n{}  ", &code[..20], &code[20..]);
         assert_eq!(Invite::parse(&broken).unwrap(), invite);
