@@ -334,8 +334,10 @@ impl Session {
             if pages > 100 {
                 break;
             }
-            let page: Page =
-                Self::json(self.send(|t| self.http.get(&url).bearer_auth(t)).await?).await?;
+            let page: Page = crate::net::retrying(|| async {
+                Self::json(self.send(|t| self.http.get(&url).bearer_auth(t)).await?).await
+            })
+            .await?;
             for item in page.data {
                 if let Some(entry) = item.list_status.entry() {
                     out.insert(item.node.id, entry);

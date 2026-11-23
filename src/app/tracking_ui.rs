@@ -13,6 +13,8 @@ use crate::tracking::{Change, Config, Endpoints, Entry, Service, SignedOut, anil
 
 /// How often the lists are read again (changes made on the sites show up).
 const REFRESH: Duration = Duration::from_secs(15 * 60);
+/// How soon a list that couldn't be read is tried again.
+const LIST_RETRY: Duration = Duration::from_secs(60);
 
 pub(super) struct SignIn {
     pub(super) service: Service,
@@ -31,6 +33,8 @@ pub(super) struct TrackingState {
     pub(super) lists: HashMap<Service, HashMap<u64, Entry>>,
     fetching: HashSet<Service>,
     fetched: HashMap<Service, Instant>,
+    /// Lists that couldn't be read: when to try again.
+    retry_at: HashMap<Service, Instant>,
     /// AniList IDs being looked up for MyAnimeList's, and ones it hasn't got.
     looking_up: HashSet<u64>,
     pub(super) no_mal: HashSet<u64>,
@@ -55,6 +59,8 @@ pub(super) enum Account {
 
 pub(super) struct Failure {
     message: String,
+    /// What went wrong at bottom ("connection aborted").
+    cause: String,
     signed_out: bool,
 }
 
@@ -63,6 +69,7 @@ impl From<anyhow::Error> for Failure {
         Failure {
             signed_out: e.is::<SignedOut>(),
             message: format!("{e:#}"),
+            cause: e.root_cause().to_string(),
         }
     }
 }
@@ -113,6 +120,7 @@ impl TrackingState {
             lists: HashMap::new(),
             fetching: HashSet::new(),
             fetched: HashMap::new(),
+            retry_at: HashMap::new(),
             looking_up: HashSet::new(),
             no_mal: HashSet::new(),
             lookup_failed: None,
@@ -288,7 +296,9 @@ impl App {
             .services()
             .into_iter()
             .filter(|s| {
-                !t.fetching.contains(s) && t.fetched.get(s).is_none_or(|at| at.elapsed() > REFRESH)
+                !t.fetching.contains(s)
+                    && t.fetched.get(s).is_none_or(|at| at.elapsed() > REFRESH)
+                    && t.retry_at.get(s).is_none_or(|at| Instant::now() >= *at)
             })
             .collect();
         for service in due {
@@ -453,8 +463,23 @@ impl App {
                     Ok(list) => {
                         self.tracking.lists.insert(service, list);
                         self.tracking.errors.remove(&service);
+                        self.tracking.retry_at.remove(&service);
                     }
-                    Err(f) => self.tracking_failed(service, f),
+                    Err(f) if f.signed_out => self.tracking_failed(service, f),
+                    Err(f) => {
+                        // Again in a minute, not at the next refresh: the
+                        // connection may have dropped (on a phone, while the
+                        // app was in the background).
+                        self.tracking.fetched.remove(&service);
+                        self.tracking
+                            .retry_at
+                            .insert(service, Instant::now() + LIST_RETRY);
+                        let message = format!(
+                            "Couldn't read your list: {}. Trying again in a minute.",
+                            f.cause
+                        );
+                        self.tracking_failed(service, Failure { message, ..f });
+                    }
                 }
             }
             TrackingMsg::Saved {
@@ -521,8 +546,12 @@ impl App {
                 service.name()
             ));
         } else {
+            // Said once (not again each time it's retried).
+            let again = self.tracking.errors.get(&service) == Some(&f.message);
             self.tracking.errors.insert(service, f.message.clone());
-            self.set_error(format!("{}: {}", service.name(), f.message));
+            if !again {
+                self.set_error(format!("{}: {}", service.name(), f.message));
+            }
         }
     }
 

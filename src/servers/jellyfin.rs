@@ -120,7 +120,7 @@ impl Jellyfin {
             .header("Authorization", self.authorization())
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!(super::describe(&e, "Jellyfin")))?;
+            .map_err(|e| super::failed(e, "Jellyfin"))?;
         let status = resp.status();
         if status.as_u16() == 401 {
             bail!("Jellyfin refused the sign-in (sign in again in Settings)");
@@ -159,7 +159,7 @@ impl Jellyfin {
             .json(&json!({ "Username": username, "Pw": password }))
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!(super::describe(&e, "Jellyfin")))?;
+            .map_err(|e| super::failed(e, "Jellyfin"))?;
         let status = resp.status();
         if status.as_u16() == 401 {
             bail!("Jellyfin didn't accept that username and password");

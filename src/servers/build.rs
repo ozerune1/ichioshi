@@ -24,6 +24,57 @@ pub struct Built {
     pub parts: HashMap<u64, crate::browse::Part>,
     /// What couldn't be read ("Radarr: couldn't reach …").
     pub problems: Vec<String>,
+    /// What couldn't be read: its series stay as they were.
+    pub unread: Unread,
+    /// Some of it for the connection's sake (it dropped, or a server
+    /// couldn't be reached): worth reading again soon.
+    pub dropped: bool,
+}
+
+/// What a read couldn't get: the library keeps what it had of it.
+#[derive(Debug, Default)]
+pub struct Unread {
+    /// Sonarr's or Radarr's whole list.
+    pub sonarr: bool,
+    pub radarr: bool,
+    /// Sonarr's series, by Sonarr's ID.
+    pub shows: HashSet<u64>,
+}
+
+impl Unread {
+    /// Whether `s` (as the library had it) is in what couldn't be read.
+    pub fn covers(&self, s: &Series) -> bool {
+        match s.remote.as_ref().map(|r| r.arr) {
+            Some(ArrRef::Sonarr { id, .. }) => self.sonarr || self.shows.contains(&id),
+            Some(ArrRef::Radarr { .. }) => self.radarr,
+            None => false,
+        }
+    }
+}
+
+/// Series Sonarr couldn't give (title, why), said briefly: ones the
+/// connection failed for as one line, and a few of the others.
+fn unread_series(failed: &[(String, anyhow::Error)]) -> Vec<String> {
+    let (dropped, other): (Vec<_>, Vec<_>) =
+        failed.iter().partition(|(_, e)| crate::net::dropped(e));
+    let mut said = Vec::new();
+    if let Some((_, first)) = dropped.first() {
+        said.push(format!(
+            "Couldn't read {} series from Sonarr ({}): kept as they were, and read again in a minute",
+            dropped.len(),
+            crate::net::brief(first)
+        ));
+    }
+    for (title, e) in other.iter().take(3) {
+        said.push(format!("Sonarr ({title}): {e:#}"));
+    }
+    if other.len() > 3 {
+        said.push(format!(
+            "…and {} more series Sonarr couldn't give (kept as they were)",
+            other.len() - 3
+        ));
+    }
+    said
 }
 
 /// The file name at the end of a path (either kind of slash).
@@ -65,19 +116,19 @@ pub async fn build(
     let (shows, movies, items, sonarr_queue, radarr_queue) = tokio::join!(
         async {
             match &sonarr {
-                Some(s) => Some(s.shows().await),
+                Some(s) => Some(crate::net::retrying(|| s.shows()).await),
                 None => None,
             }
         },
         async {
             match &radarr {
-                Some(r) => Some(r.movies().await),
+                Some(r) => Some(crate::net::retrying(|| r.movies()).await),
                 None => None,
             }
         },
         async {
             match &jelly {
-                Some(j) => Some(j.items().await),
+                Some(j) => Some(crate::net::retrying(|| j.items()).await),
                 None => None,
             }
         },
@@ -94,11 +145,25 @@ pub async fn build(
             }
         },
     );
-    let mut problem = |what: &str, e: anyhow::Error| built.problems.push(format!("{what}: {e:#}"));
+    // A server that couldn't be read: said, and what the library has from it
+    // kept as it was.
+    let problem = |built: &mut Built, what: &str, e: anyhow::Error| {
+        let dropped = crate::net::dropped(&e);
+        built.dropped |= dropped;
+        built.problems.push(if dropped {
+            format!(
+                "{what}: {}; kept as it was, and read again in a minute",
+                crate::net::brief(&e)
+            )
+        } else {
+            format!("{what}: {e:#}")
+        });
+    };
     let shows = match shows {
         Some(Ok(s)) => s,
         Some(Err(e)) => {
-            problem("Sonarr", e);
+            built.unread.sonarr = true;
+            problem(&mut built, "Sonarr", e);
             Vec::new()
         }
         None => Vec::new(),
@@ -106,7 +171,8 @@ pub async fn build(
     let movies = match movies {
         Some(Ok(m)) => m,
         Some(Err(e)) => {
-            problem("Radarr", e);
+            built.unread.radarr = true;
+            problem(&mut built, "Radarr", e);
             Vec::new()
         }
         None => Vec::new(),
@@ -114,7 +180,7 @@ pub async fn build(
     let items = match items {
         Some(Ok(i)) => i,
         Some(Err(e)) => {
-            problem("Jellyfin", e);
+            problem(&mut built, "Jellyfin", e);
             Vec::new()
         }
         None => Vec::new(),
@@ -133,7 +199,12 @@ pub async fn build(
         Some(s) => {
             super::each(anime_shows.iter().map(|x| x.id).collect(), 4, |id| {
                 let s = s.clone();
-                async move { Ok((s.episodes(id).await?, s.episode_files(id).await?)) }
+                async move {
+                    crate::net::retrying(|| async {
+                        Ok((s.episodes(id).await?, s.episode_files(id).await?))
+                    })
+                    .await
+                }
             })
             .await
         }
@@ -182,13 +253,14 @@ pub async fn build(
             .collect();
         if !wanted.is_empty() && !anilist_down {
             asked.extend(&wanted);
-            match crate::browse::parts(client, &wanted).await {
+            match crate::net::retrying(|| crate::browse::parts(client, &wanted)).await {
                 Ok(p) => {
                     built.parts.extend(p.clone());
                     parts.extend(p);
                 }
                 Err(e) => {
                     tracing::warn!("AniList (lengths and sequels): {e:#}");
+                    built.dropped |= crate::net::dropped(&e);
                     anilist_down = true;
                 }
             }
@@ -244,9 +316,17 @@ pub async fn build(
         Some(j) => {
             let got = super::each(wanted.clone(), 4, |id| {
                 let j = j.clone();
-                async move { (id.clone(), j.episodes(&id).await) }
+                async move {
+                    let got = crate::net::retrying(|| j.episodes(&id)).await;
+                    (id, got)
+                }
             })
             .await;
+            // (A series Jellyfin couldn't give plays from Sonarr's files
+            // until it's read again.)
+            built.dropped |= got
+                .iter()
+                .any(|(_, r)| r.as_ref().is_err_and(crate::net::dropped));
             got.into_iter()
                 .filter_map(|(id, r)| r.ok().map(|e| (id, e)))
                 .collect()
@@ -254,12 +334,14 @@ pub async fn build(
         None => HashMap::new(),
     };
 
-    let mut problem = |what: &str, e: anyhow::Error| built.problems.push(format!("{what}: {e:#}"));
+    let mut failed = Vec::new();
     for ((show, got), seasons) in anime_shows.iter().zip(details).zip(&plans) {
         let (episodes, files) = match got {
             Ok(x) => x,
             Err(e) => {
-                problem(&format!("Sonarr ({})", show.title), e);
+                built.unread.shows.insert(show.id);
+                built.dropped |= crate::net::dropped(&e);
+                failed.push((show.title.clone(), e));
                 continue;
             }
         };
@@ -393,6 +475,7 @@ pub async fn build(
     // One entry an anime (Sonarr and Radarr could both have it).
     let mut seen = HashSet::new();
     built.series.retain(|s| seen.insert(s.anilist_id));
+    built.problems.extend(unread_series(&failed));
 
     // AniList's titles and covers for the anime not seen before.
     let new: Vec<u64> = built
@@ -402,7 +485,7 @@ pub async fn build(
         .filter(|id| !known.contains(id))
         .collect();
     if !new.is_empty() {
-        match crate::browse::by_ids(client, &new).await {
+        match crate::net::retrying(|| crate::browse::by_ids(client, &new)).await {
             Ok(media) => {
                 let media: HashMap<u64, crate::browse::Media> =
                     media.into_iter().map(|m| (m.id, m)).collect();
@@ -416,6 +499,13 @@ pub async fn build(
                         s.episodes = m.episodes;
                     }
                 }
+            }
+            Err(e) if crate::net::dropped(&e) => {
+                built.dropped = true;
+                built.problems.push(format!(
+                    "AniList: {}; titles and covers come with the next read, in a minute",
+                    crate::net::brief(&e)
+                ));
             }
             Err(e) => built.problems.push(format!("AniList: {e:#}")),
         }
@@ -519,7 +609,20 @@ fn remote_series(
 /// The new list, keeping what's known of each series from before (AniList's
 /// details and titles, when it was added, its languages, and progress not
 /// in Jellyfin yet).
-pub fn merge(old: &[Series], mut new: Vec<Series>, have_jellyfin: bool) -> Vec<Series> {
+pub fn merge(
+    old: &[Series],
+    mut new: Vec<Series>,
+    have_jellyfin: bool,
+    unread: &Unread,
+) -> Vec<Series> {
+    // What couldn't be read this time stays as it was (not dropped from the
+    // library, with its marks and settings).
+    let read: HashSet<u64> = new.iter().map(|s| s.anilist_id).collect();
+    let kept: Vec<Series> = old
+        .iter()
+        .filter(|s| !read.contains(&s.anilist_id) && unread.covers(s))
+        .cloned()
+        .collect();
     let old: HashMap<u64, &Series> = old.iter().map(|s| (s.anilist_id, s)).collect();
     for s in &mut new {
         let Some(o) = old.get(&s.anilist_id) else {
@@ -567,6 +670,7 @@ pub fn merge(old: &[Series], mut new: Vec<Series>, have_jellyfin: bool) -> Vec<S
             }
         }
     }
+    new.extend(kept);
     new
 }
 
@@ -861,7 +965,7 @@ mod tests {
                 at: 5,
             },
         );
-        let merged = merge(&old, fresh, true);
+        let merged = merge(&old, fresh, true, &Unread::default());
         assert!(
             !merged[0].watched.contains_key(&9),
             "not one of its episodes now"
@@ -871,6 +975,124 @@ mod tests {
         assert_eq!(
             merged[0].watched[&2].position, 10.0,
             "no Jellyfin episode: kept"
+        );
+    }
+
+    /// A read that couldn't get everything keeps what the library had of
+    /// it: a series Sonarr couldn't give stays as it was (not dropped, with
+    /// its marks), and a server that couldn't be reached is read again soon.
+    #[test]
+    fn keeps_what_it_couldnt_read() {
+        let _net = crate::mock_http::mocked();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let base = rt.block_on(mock(|req| {
+            let path = req.target.split('?').next().unwrap();
+            if path == "/sonarr/api/v3/episode"
+                && req.query().get("seriesId").map(String::as_str) == Some("2")
+            {
+                crate::mock_http::Resp::html(500, "busy")
+            } else {
+                servers(req)
+            }
+        }));
+        let whole = rt.block_on(mock(servers));
+        *crate::seadex::ANILIST_BASE.lock().unwrap() = Some(format!("{whole}/anilist"));
+        let arr = |b: &str, p: &str| ArrAccount {
+            url: format!("{b}/{p}"),
+            api_key: "k".into(),
+            ..Default::default()
+        };
+        let config = |b: &str, jellyfin: String| Config {
+            mode: super::super::LibraryMode::Servers,
+            sonarr: arr(b, "sonarr"),
+            radarr: arr(b, "radarr"),
+            jellyfin: JellyfinAccount {
+                url: jellyfin,
+                token: Some("t".into()),
+                user_id: Some("u".into()),
+                ..Default::default()
+            },
+        };
+        let read = |c: &Config| {
+            rt.block_on(build(
+                &reqwest::Client::new(),
+                c,
+                &mapping(),
+                &HashSet::from([501]),
+                &Parts::default(),
+            ))
+        };
+        // Read whole once, with a mark on the split show's first part.
+        let first = read(&config(&whole, format!("{whole}/jf")));
+        assert!(first.problems.is_empty(), "{:?}", first.problems);
+        let mut library = merge(&[], first.series, true, &Unread::default());
+        let split = library.iter_mut().find(|s| s.anilist_id == 501).unwrap();
+        split.prefs = Some(Default::default());
+        let before = split.clone();
+
+        // Then: Sonarr can't give the split show; Jellyfin's down.
+        let second = read(&config(&base, "http://127.0.0.1:9".into()));
+        *crate::seadex::ANILIST_BASE.lock().unwrap() = None;
+        assert_eq!(second.unread.shows, HashSet::from([2]));
+        assert!(!second.unread.sonarr && !second.unread.radarr);
+        assert!(
+            second.dropped,
+            "Jellyfin couldn't be reached: read again soon"
+        );
+        assert!(
+            second
+                .problems
+                .iter()
+                .any(|p| p.starts_with("Sonarr (Split): Sonarr answered HTTP 500")),
+            "{:?}",
+            second.problems
+        );
+        assert!(
+            second
+                .problems
+                .iter()
+                .any(|p| p.starts_with("Jellyfin: couldn't reach Jellyfin")
+                    && p.ends_with("kept as it was, and read again in a minute")),
+            "{:?}",
+            second.problems
+        );
+        assert!(!second.series.iter().any(|s| s.anilist_id == 501));
+        let merged = merge(&library, second.series, false, &second.unread);
+        let kept = merged.iter().find(|s| s.anilist_id == 501).expect("kept");
+        assert_eq!(kept, &before);
+        assert!(
+            merged.iter().any(|s| s.anilist_id == 502),
+            "the split show's other part"
+        );
+        assert_eq!(merged.len(), library.len());
+    }
+
+    /// Series Sonarr couldn't give are said briefly: those the connection
+    /// failed for in one line, and a few others by name.
+    #[test]
+    fn says_briefly_what_it_couldnt_read() {
+        let down = || {
+            anyhow::Error::new(crate::net::Unreachable(
+                "the connection to Sonarr dropped".into(),
+            ))
+        };
+        let mut failed: Vec<(String, anyhow::Error)> =
+            (0..14).map(|i| (format!("Show {i}"), down())).collect();
+        for i in 0..5 {
+            failed.push((
+                format!("Odd {i}"),
+                anyhow::anyhow!("Sonarr answered HTTP 500"),
+            ));
+        }
+        assert_eq!(
+            unread_series(&failed),
+            [
+                "Couldn't read 14 series from Sonarr (the connection to Sonarr dropped): kept as they were, and read again in a minute",
+                "Sonarr (Odd 0): Sonarr answered HTTP 500",
+                "Sonarr (Odd 1): Sonarr answered HTTP 500",
+                "Sonarr (Odd 2): Sonarr answered HTTP 500",
+                "…and 2 more series Sonarr couldn't give (kept as they were)",
+            ]
         );
     }
 

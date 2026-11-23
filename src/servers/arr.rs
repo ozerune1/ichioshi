@@ -259,7 +259,7 @@ impl Arr {
             .header("X-Api-Key", &self.key)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!(super::describe(&e, name)))?;
+            .map_err(|e| super::failed(e, name))?;
         let status = resp.status();
         if !status.is_success() {
             let body: Value = resp.json().await.unwrap_or(Value::Null);
@@ -276,7 +276,7 @@ impl Arr {
                 _ => bail!("{name} answered HTTP {status}"),
             }
         }
-        let text = resp.text().await.unwrap_or_default();
+        let text = resp.text().await.map_err(|e| super::failed(e, name))?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }

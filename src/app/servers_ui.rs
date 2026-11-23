@@ -31,6 +31,8 @@ pub(super) struct ServersState {
     pub(super) about: HashMap<Kind, Loaded<About>>,
     pub(super) refreshing: bool,
     pub(super) refreshed: Option<Instant>,
+    /// A read the connection failed (part of): when to read again.
+    retry_at: Option<Instant>,
     /// What couldn't be read last time.
     pub(super) problems: Vec<String>,
     /// Episodes downloading on the servers, how far along, by AniList ID.
@@ -121,6 +123,7 @@ impl ServersState {
             about: HashMap::new(),
             refreshing: false,
             refreshed: None,
+            retry_at: None,
             problems: Vec::new(),
             progress: HashMap::new(),
             password: String::new(),
@@ -299,6 +302,14 @@ impl App {
                 }
                 self.servers.refreshing = false;
                 self.servers.refreshed = Some(Instant::now());
+                // The connection failed (on a phone, the app may have been in
+                // the background): again in a minute, not at the next read.
+                let again = Some(Instant::now() + Duration::from_secs(60));
+                self.servers.retry_at = match &result {
+                    Ok((_, built)) if built.dropped => again,
+                    Ok(_) => None,
+                    Err(_) => again,
+                };
                 match result {
                     Ok((mapping, built)) => {
                         self.servers.mapping = Some(mapping);
@@ -316,8 +327,12 @@ impl App {
                             return;
                         }
                         let jellyfin = self.servers.config.jellyfin.signed_in();
-                        self.library.series =
-                            build::merge(&self.library.series, built.series, jellyfin);
+                        self.library.series = build::merge(
+                            &self.library.series,
+                            built.series,
+                            jellyfin,
+                            &built.unread,
+                        );
                         self.library.save_or_warn();
                         self.servers.progress = built.progress;
                         self.servers.problems = built.problems;
@@ -389,7 +404,8 @@ impl App {
         let due = self
             .servers
             .refreshed
-            .is_none_or(|t| t.elapsed() > every(!self.servers.progress.is_empty()));
+            .is_none_or(|t| t.elapsed() > every(!self.servers.progress.is_empty()))
+            || self.servers.retry_at.is_some_and(|t| Instant::now() >= t);
         if due {
             self.refresh_servers();
         }
@@ -479,6 +495,7 @@ impl App {
         }
         self.servers.seq += 1;
         self.servers.refreshing = true;
+        self.servers.retry_at = None;
         let seq = self.servers.seq;
         let (client, config, have) = (
             self.http.clone(),

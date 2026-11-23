@@ -239,9 +239,10 @@ impl Session {
         }
         let mut out = HashMap::new();
         for chunk in 1..=200 {
-            let d: Data = self
-                .graphql(QUERY, json!({"user": self.user_id, "chunk": chunk}))
-                .await?;
+            let d: Data = crate::net::retrying(|| {
+                self.graphql(QUERY, json!({"user": self.user_id, "chunk": chunk}))
+            })
+            .await?;
             for e in d.collection.lists.iter().flat_map(|l| &l.entries) {
                 if let (Some(id), Some(entry)) = (e.media_id, e.entry()) {
                     out.insert(id, entry);

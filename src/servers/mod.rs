@@ -136,12 +136,25 @@ where
     out.into_iter().map(|(_, r)| r).collect()
 }
 
+/// A request to a server that failed, said readably; trouble with the
+/// connection is `crate::net::Unreachable` (tried again, kept apart).
+pub(crate) fn failed(e: reqwest::Error, what: &str) -> anyhow::Error {
+    let said = describe(&e, what);
+    if crate::net::connection_trouble(&e) && e.status().is_none() {
+        crate::net::Unreachable(said).into()
+    } else {
+        anyhow::anyhow!(said)
+    }
+}
+
 /// What went wrong talking to a server, readably.
 pub(crate) fn describe(e: &reqwest::Error, what: &str) -> String {
     if e.is_connect() {
         format!("couldn't reach {what} (is the address right, and is it running?)")
     } else if e.is_timeout() {
         format!("{what} didn't answer in time")
+    } else if (e.is_request() || e.is_body() || e.is_decode()) && e.status().is_none() {
+        format!("the connection to {what} dropped")
     } else if let Some(s) = e.status() {
         match s.as_u16() {
             401 | 403 => format!("{what} refused the API key or sign-in (HTTP {s})"),

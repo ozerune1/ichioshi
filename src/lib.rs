@@ -32,6 +32,7 @@ mod live_tests;
 mod mkv;
 #[cfg(test)]
 mod mock_http;
+mod net;
 mod nyaa;
 mod pick;
 mod player;
