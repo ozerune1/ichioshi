@@ -178,6 +178,7 @@ impl Gui {
                 row![
                     text("API key").size(14).color(MUTED).width(80),
                     field("Paste it here", &key)
+                        .id("debrid-key")
                         .secure(true)
                         .on_input(move |k| edit(move |g| {
                             g.app.debrid.config.keys.insert(provider, k.clone());

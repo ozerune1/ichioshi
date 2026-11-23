@@ -759,6 +759,7 @@ impl Gui {
             }),
             row![
                 field("Search Nyaa", &search.query)
+                    .id("nyaa-search")
                     .on_input(|q| on_page(move |ap| {
                         if let Some(s) = &mut ap.nyaa {
                             s.query = q.clone();

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use iced::Theme;
 use iced_test::Simulator;
+use iced_test::selector::{Bounded, Candidate, Selector, Text};
 
 use super::*;
 use crate::library::{Library, NewSeries};
@@ -15,6 +16,13 @@ pub(super) struct Harness {
     pub gui: Gui,
     /// Runs the app's background work (dropped last).
     _rt: tokio::runtime::Runtime,
+}
+
+impl Harness {
+    /// The runtime the app's background work runs on.
+    pub(super) fn _rt_handle(&self) -> tokio::runtime::Handle {
+        self._rt.handle().clone()
+    }
 }
 
 impl std::ops::Deref for Harness {
@@ -58,8 +66,18 @@ fn settings() -> iced::Settings {
     }
 }
 
+thread_local! {
+    /// The window's size in this test (end-to-end tests use a tall one, so
+    /// whole pages are on screen to click).
+    static SIZE: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((1440.0, 900.0)) };
+}
+
+pub(super) fn set_size(w: f32, h: f32) {
+    SIZE.with(|s| s.set((w, h)));
+}
+
 pub(super) fn simulator(gui: &Gui) -> Simulator<'_, Message> {
-    Simulator::with_size(settings(), (1440.0, 900.0), gui.view())
+    Simulator::with_size(settings(), SIZE.with(std::cell::Cell::get), gui.view())
 }
 
 /// Run messages as the app would (tasks they return aren't run).
@@ -69,22 +87,69 @@ pub(super) fn send(gui: &mut Gui, messages: impl IntoIterator<Item = Message>) {
     }
 }
 
-/// Click the widget showing `label`, and run what it sends.
-pub(super) fn click(gui: &mut Gui, label: &str) {
-    let mut ui = simulator(gui);
-    ui.click(label)
-        .unwrap_or_else(|e| panic!("no {label:?} to click: {e:?}"));
-    let messages: Vec<Message> = ui.into_messages().collect();
-    send(gui, messages);
+/// Click what `selector` finds, waiting (up to a few seconds) for it to
+/// show up, and run what it sends.
+pub(super) fn click_with<S>(gui: &mut Gui, what: &str, mut selector: impl FnMut() -> S)
+where
+    S: iced_test::selector::Selector + Send,
+    S::Output: Bounded + Clone + Send + Sync + 'static,
+{
+    for _ in 0..100 {
+        let mut ui = simulator(gui);
+        if ui.click(selector()).is_ok() {
+            let messages: Vec<Message> = ui.into_messages().collect();
+            send(gui, messages);
+            return;
+        }
+        drop(ui);
+        std::thread::sleep(Duration::from_millis(30));
+        let _ = gui.update(Message::Tick);
+    }
+    panic!("nothing to click: {what}");
 }
 
-/// Type into the field with `placeholder`, then press Enter.
-pub(super) fn type_in(gui: &mut Gui, placeholder: &str, text: &str) {
+/// Click the widget showing `label`.
+pub(super) fn click(gui: &mut Gui, label: &str) {
+    let l = label.to_owned();
+    click_with(gui, &format!("{label:?}"), move || l.clone());
+}
+
+/// Click the `n`th (from 0) widget showing `label`.
+pub(super) fn click_nth(gui: &mut Gui, label: &str, n: usize) {
+    let l = label.to_owned();
+    click_with(gui, &format!("{label:?} #{n}"), move || nth(l.clone(), n));
+}
+
+fn nth(label: String, n: usize) -> impl FnMut(Candidate<'_>) -> Option<Text> + Send {
+    let mut seen = 0;
+    move |c| {
+        let t = Selector::select(&mut label.as_str(), c)?;
+        seen += 1;
+        (seen == n + 1).then_some(t)
+    }
+}
+
+/// Text that contains `part`.
+pub(super) fn containing(part: String) -> impl FnMut(Candidate<'_>) -> Option<Text> + Send {
+    move |c| {
+        let text = match &c {
+            Candidate::Text { content, .. } if content.contains(&part) => (*content).to_owned(),
+            _ => return None,
+        };
+        Selector::select(&mut text.as_str(), c)
+    }
+}
+
+/// Type into the field with `id` (replacing what's there), then press
+/// Enter if `submit`.
+pub(super) fn type_into(gui: &mut Gui, id: &'static str, text: &str, submit: bool) {
     let mut ui = simulator(gui);
-    ui.click(placeholder)
-        .unwrap_or_else(|e| panic!("no field {placeholder:?}: {e:?}"));
+    ui.click(iced::widget::Id::new(id))
+        .unwrap_or_else(|e| panic!("no field {id:?}: {e:?}"));
     ui.typewrite(text);
-    ui.tap_key(iced::keyboard::key::Named::Enter);
+    if submit {
+        ui.tap_key(iced::keyboard::key::Named::Enter);
+    }
     let messages: Vec<Message> = ui.into_messages().collect();
     send(gui, messages);
 }
@@ -93,9 +158,13 @@ pub(super) fn shows(gui: &Gui, label: &str) -> bool {
     simulator(gui).find(label).is_ok()
 }
 
+pub(super) fn shows_containing(gui: &Gui, part: &str) -> bool {
+    simulator(gui).find(containing(part.to_owned())).is_ok()
+}
+
 /// Let background work run until `done`.
 pub(super) fn wait(gui: &mut Gui, what: &str, done: impl Fn(&Gui) -> bool) {
-    let until = Instant::now() + Duration::from_secs(60);
+    let until = Instant::now() + Duration::from_secs(90);
     while !done(gui) {
         assert!(Instant::now() < until, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(50));

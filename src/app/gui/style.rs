@@ -356,17 +356,16 @@ pub(super) fn field_style(_: &Theme, status: text_input::Status) -> text_input::
     }
 }
 
+/// A checkbox whose label can be clicked too.
 pub(super) fn check<'a>(
     label: impl text::IntoFragment<'a>,
     on: bool,
     on_toggle: impl Fn(bool) -> Message + 'a,
 ) -> Element<'a, Message> {
-    checkbox(on)
-        .label(label)
+    let flip = on_toggle(!on);
+    let boxed = checkbox(on)
         .on_toggle(on_toggle)
         .size(16)
-        .text_size(14)
-        .spacing(10)
         .style(|_, status| {
             let (checked, hovered) = match status {
                 checkbox::Status::Active { is_checked } => (is_checked, false),
@@ -389,8 +388,15 @@ pub(super) fn check<'a>(
                 },
                 text_color: Some(TEXT),
             }
-        })
-        .into()
+        });
+    mouse_area(
+        row![boxed, text(label).size(14).color(TEXT)]
+            .spacing(10)
+            .align_y(Alignment::Center),
+    )
+    .on_press(flip)
+    .interaction(iced::mouse::Interaction::Pointer)
+    .into()
 }
 
 pub(super) fn switch<'a>(

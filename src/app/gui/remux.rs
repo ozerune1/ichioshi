@@ -165,6 +165,20 @@ impl Gui {
     }
 }
 
+/// Keep `code`'s audio (or subtitles), with its best track.
+pub(super) fn pick_language(kind: Kind, code: Option<String>) -> Message {
+    on_remux(move |rp| match kind {
+        Kind::Audio => {
+            rp.audio_lang = code.clone();
+            rp.refresh_audio_track();
+        }
+        _ => {
+            rp.sub_lang = code.clone();
+            rp.refresh_subtitle_track();
+        }
+    })
+}
+
 fn language_pick<'a>(
     analysis: &Analysis,
     kind: Kind,
@@ -197,19 +211,10 @@ fn language_pick<'a>(
         text("Language").size(13).color(MUTED).width(80),
         dropdown(options, current, move |o: LangPick| {
             if locked {
-                return Message::Wake;
+                Message::Wake
+            } else {
+                pick_language(kind, o.code)
             }
-            let code = o.code;
-            on_remux(move |rp| match kind {
-                Kind::Audio => {
-                    rp.audio_lang = code.clone();
-                    rp.refresh_audio_track();
-                }
-                _ => {
-                    rp.sub_lang = code.clone();
-                    rp.refresh_subtitle_track();
-                }
-            })
         }),
     ]
     .spacing(10)

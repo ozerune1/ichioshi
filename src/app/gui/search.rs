@@ -25,6 +25,7 @@ impl Gui {
         let a = &self.app;
         let search = row![
             field("Search anime, e.g. Frieren", &a.query)
+                .id("search")
                 .on_input(|q| edit(move |g| g.app.query = q.clone()))
                 .on_submit(act(Action::Search))
                 .size(16)
@@ -158,9 +159,17 @@ impl Gui {
             if nzbs.iter().any(Option::is_none) {
                 head = head.push(weak("Checking which episodes are on Usenet…"));
             } else if on > 0 {
+                let mut names: Vec<&str> = nzbs
+                    .iter()
+                    .flatten()
+                    .flat_map(|l| l.iter().map(|x| x.indexer.name()))
+                    .collect();
+                names.sort_unstable();
+                names.dedup();
                 head = head.push(
                     text(format!(
-                        "{on} of {} episodes are on Usenet and download from your providers",
+                        "On Usenet ({}): {on} of {} episodes download from your Usenet providers",
+                        names.join(", "),
                         nzbs.len()
                     ))
                     .size(13)
@@ -196,6 +205,7 @@ impl Gui {
         }
         tools = tools.push(space().width(12)).push(
             field("Filter, e.g. S01E0 or NCOP", &fp.filter)
+                .id("filter")
                 .on_input(|f| on_files(move |fp| fp.filter = f.clone()))
                 .width(260)
                 .padding([7, 12])

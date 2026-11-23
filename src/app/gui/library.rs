@@ -160,20 +160,59 @@ impl Gui {
         }
         let episodes: usize = self.app.pages.stats.values().map(|s| s.files.len()).sum();
         let (color, state) = self.engine_line();
-        let status = container(
-            column![
-                row![dot(color), text(state).size(12).color(MUTED)]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                text(format!("{episodes} episodes in the library"))
-                    .size(11)
-                    .color(FAINT),
-            ]
-            .spacing(4),
-        )
-        .padding(12)
-        .width(Fill)
-        .style(|_| card_style(SURFACE));
+        let mut lines = column![
+            row![dot(color), text(state).size(12).color(MUTED)]
+                .spacing(8)
+                .align_y(Alignment::Center),
+        ]
+        .spacing(4);
+        // Torrents here, over the VPN: how it is.
+        let a = &self.app;
+        if !a.debrid.config.enabled && a.vpn.config.enabled && !matches!(a.engine, EngineState::Off)
+        {
+            use crate::vpn::{Port, Status};
+            let (color, line) = match a.vpn.monitor.status() {
+                Status::Off => (MUTED, String::new()),
+                Status::Checking => (MUTED, "VPN: checking…".to_owned()),
+                Status::Down { .. } => (GOLD, "VPN: not connected".to_owned()),
+                Status::Up {
+                    interface,
+                    port: Port::Open(p),
+                    ..
+                } => (GREEN, format!("VPN: {interface} · port {p}")),
+                Status::Up { interface, .. } => (GREEN, format!("VPN: {interface}")),
+            };
+            if !line.is_empty() {
+                lines = lines.push(
+                    row![dot(color), text(line).size(12).color(MUTED)]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                );
+            }
+        }
+        // An upload to Google Drive keeps going on every page.
+        if let Some(p) = self.app.drive.upload_progress() {
+            let left = self.app.drive.upload_time_left().unwrap_or_default();
+            lines = lines.push(
+                column![
+                    text(format!("Uploading to Drive · {:.0}%", p * 100.0))
+                        .size(12)
+                        .color(TEXT),
+                    bar(p, ACCENT, 4.0),
+                    text(left).size(11).color(FAINT),
+                ]
+                .spacing(4),
+            );
+        }
+        lines = lines.push(
+            text(format!("{episodes} episodes in the library"))
+                .size(11)
+                .color(FAINT),
+        );
+        let status = container(lines)
+            .padding(12)
+            .width(Fill)
+            .style(|_| card_style(SURFACE));
 
         let content = column![
             logo,
@@ -485,6 +524,17 @@ impl Gui {
             (n, Some(t)) => format!("{n} of {t} episodes"),
             (n, None) => format!("{n} episodes"),
         };
+        let state = if stats.is_some_and(|s| s.downloading) {
+            text("Downloading").size(12).color(GREEN)
+        } else {
+            text(
+                details
+                    .and_then(crate::app::library_ui::airing_line)
+                    .unwrap_or_default(),
+            )
+            .size(12)
+            .color(FAINT)
+        };
         let mut card = column![
             mouse_area(column![
                 poster,
@@ -495,6 +545,7 @@ impl Gui {
                     .color(TEXT)
                     .height(38),
                 text(meta).size(12).color(MUTED),
+                state,
             ])
             .on_press(act(Action::OpenSeries(id)))
             .interaction(iced::mouse::Interaction::Pointer),

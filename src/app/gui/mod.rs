@@ -8,6 +8,8 @@
 
 mod dialogs;
 mod downloads;
+#[cfg(test)]
+mod flows;
 mod images;
 mod library;
 mod player;
