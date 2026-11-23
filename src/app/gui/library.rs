@@ -130,13 +130,9 @@ impl Gui {
         let active = self.app.active_downloads();
         let playlist = self.app.playlist.items.len();
         let logo = row![
-            container(text("S").size(16).font(BOLD).color(Color::WHITE))
-                .center(28)
-                .style(|_| container::Style {
-                    background: Some(accent_gradient()),
-                    border: rounded(8.0),
-                    ..Default::default()
-                }),
+            iced::widget::svg(iced::widget::svg::Handle::from_memory(super::ICON_SVG))
+                .width(30)
+                .height(30),
             column![
                 text("SeaDex").size(16).font(BOLD).color(TEXT),
                 text("anime library").size(11).color(FAINT)

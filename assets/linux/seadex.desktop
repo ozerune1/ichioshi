@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SeaDex
+GenericName=Anime library
+Comment=Download, organize and watch anime
+Exec=seadex-downloader
+Icon=seadex
+StartupWMClass=seadex
+Categories=AudioVideo;Video;Player;Network;
+Terminal=false

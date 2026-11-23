@@ -61,9 +61,28 @@ pub fn run(rt: tokio::runtime::Handle, state_dir: PathBuf) -> iced::Result {
     .subscription(Gui::subscription)
     .theme(|_: &Gui| Theme::Dark)
     .default_font(INTER)
-    .window_size((1440.0, 900.0))
-    .exit_on_close_request(false)
+    .window(window_settings())
     .run()
+}
+
+/// The app's icon (assets/icon/seadex.svg, as made by scripts/make-icons.sh).
+pub(super) const ICON_SVG: &[u8] = include_bytes!("../../../assets/icon/seadex.svg");
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon/png/seadex-256.png");
+
+/// The main window: its size and icon (and, on Linux, the app ID desktops
+/// match it to its desktop entry by).
+fn window_settings() -> iced::window::Settings {
+    iced::window::Settings {
+        size: iced::Size::new(1440.0, 900.0),
+        icon: iced::window::icon::from_file_data(ICON_PNG, None).ok(),
+        exit_on_close_request: false,
+        #[cfg(target_os = "linux")]
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: "seadex".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 #[derive(Clone)]
