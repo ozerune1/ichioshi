@@ -1652,7 +1652,9 @@ fn library_on_your_servers() {
 
     // Downloads: Sonarr's queue, and Radarr's (empty).
     click(&mut h, "Downloads");
-    wait(&mut h, "the queue", |g| shows_containing(g, "Killing Magic"));
+    wait(&mut h, "the queue", |g| {
+        shows_containing(g, "Killing Magic")
+    });
     assert!(shows_containing(&h, "Episode 3"));
     assert!(shows_containing(&h, "60% · Downloading · 3 min left"));
     assert!(shows_containing(&h, "WEBDL-1080p · qBittorrent (torrent)"));

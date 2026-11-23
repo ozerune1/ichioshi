@@ -255,7 +255,7 @@ pub async fn schedule(client: &reqwest::Client, from: i64, to: i64) -> Result<Ve
 }
 
 /// How long an anime is, and what follows it.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Part {
     pub episodes: Option<u32>,
     /// Its sequels (series, not films or specials).

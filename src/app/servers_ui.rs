@@ -20,6 +20,9 @@ use crate::servers::mapping::{self, Mapping};
 use crate::servers::{Config, LibraryMode};
 
 pub(super) struct ServersState {
+    /// What AniList said about anime's lengths and sequels (which episodes
+    /// a season's sequel gets), and when (Unix time); kept on disk.
+    parts: HashMap<u64, (crate::browse::Part, i64)>,
     pub(super) config: Config,
     /// As last saved.
     saved: Config,
@@ -100,7 +103,12 @@ pub(super) enum ServersMsg {
 impl ServersState {
     pub(super) fn load(state_dir: &Path) -> Self {
         let config = Config::load(state_dir);
+        let parts = std::fs::read(parts_file(state_dir))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         Self {
+            parts,
             saved: config.clone(),
             config,
             mapping: None,
@@ -120,6 +128,13 @@ impl ServersState {
         }
     }
 }
+
+fn parts_file(state_dir: &Path) -> PathBuf {
+    state_dir.join("anilist-parts.json")
+}
+
+/// How long what AniList said about an anime's length is trusted.
+const PARTS_FOR: i64 = 12 * 3600;
 
 /// Where each library is kept.
 pub(super) fn library_file(state_dir: &Path, mode: LibraryMode) -> PathBuf {
@@ -255,6 +270,16 @@ impl App {
                 match result {
                     Ok((mapping, built)) => {
                         self.servers.mapping = Some(mapping);
+                        if !built.parts.is_empty() {
+                            let now = chrono::Utc::now().timestamp();
+                            for (id, p) in &built.parts {
+                                self.servers.parts.insert(*id, (p.clone(), now));
+                            }
+                            let file = parts_file(&self.state_dir);
+                            if let Ok(json) = serde_json::to_vec(&self.servers.parts) {
+                                let _ = crate::fsutil::write_private(&file, &json);
+                            }
+                        }
                         if !self.servers_mode() {
                             return;
                         }
@@ -437,13 +462,29 @@ impl App {
             .filter(|s| s.remote.is_some() && (s.romaji.is_some() || s.cover.is_some()))
             .map(|s| s.anilist_id)
             .collect();
+        let now = chrono::Utc::now().timestamp();
+        let parts = build::Parts {
+            known: self
+                .servers
+                .parts
+                .iter()
+                .map(|(id, (p, _))| (*id, p.clone()))
+                .collect(),
+            fresh: self
+                .servers
+                .parts
+                .iter()
+                .filter(|(_, (_, at))| now - at < PARTS_FOR)
+                .map(|(id, _)| *id)
+                .collect(),
+        };
         self.spawn(async move {
             let result = async {
                 let mapping = match have {
                     Some(m) => m,
                     None => Arc::new(mapping::load(&client, &file).await?),
                 };
-                let built = build::build(&client, &config, &mapping, &known).await;
+                let built = build::build(&client, &config, &mapping, &known, &parts).await;
                 anyhow::Ok((mapping, built))
             }
             .await

@@ -370,6 +370,11 @@ impl Gui {
                 }),
             ));
         }
+        if let Some(series) = self.app.library.find(id) {
+            c = c
+                .push(super::library::rule())
+                .push(self.series_languages(series));
+        }
         card(c)
     }
 }

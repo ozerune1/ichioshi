@@ -20,6 +20,8 @@ pub struct Built {
     pub progress: HashMap<u64, BTreeMap<u32, f32>>,
     /// Sonarr's and Radarr's queues.
     pub queue: Vec<(Kind, arr::Queued)>,
+    /// What AniList said this time about anime's lengths and sequels.
+    pub parts: HashMap<u64, crate::browse::Part>,
     /// What couldn't be read ("Radarr: couldn't reach …").
     pub problems: Vec<String>,
 }
@@ -31,11 +33,20 @@ fn file_name(path: &str) -> &str {
 
 /// Read everything; `known` are the AniList anime whose titles are already
 /// known (the others' are fetched).
+/// What AniList said before about anime's lengths and sequels; `fresh`
+/// are recent enough not to ask about again.
+#[derive(Clone, Debug, Default)]
+pub struct Parts {
+    pub known: HashMap<u64, crate::browse::Part>,
+    pub fresh: HashSet<u64>,
+}
+
 pub async fn build(
     client: &reqwest::Client,
     config: &Config,
     mapping: &Mapping,
     known: &HashSet<u64>,
+    cached: &Parts,
 ) -> Built {
     let mut built = Built::default();
     let sonarr = config
@@ -136,7 +147,12 @@ pub async fn build(
         .iter()
         .map(|s| mapping.seasons_of(s.tvdb_id).to_vec())
         .collect();
-    let mut parts: HashMap<u64, crate::browse::Part> = HashMap::new();
+    // AniList is asked only about what it wasn't asked lately; when it
+    // can't answer (it limits how often it's asked), what it said before
+    // does.
+    let mut parts: HashMap<u64, crate::browse::Part> = cached.known.clone();
+    let mut asked: HashSet<u64> = cached.fresh.clone();
+    let mut anilist_down = false;
     for _ in 0..4 {
         let mut open = Vec::new();
         for (i, (plan, got)) in plans.iter().zip(&details).enumerate() {
@@ -160,16 +176,20 @@ pub async fn build(
         let wanted: Vec<u64> = open
             .iter()
             .map(|(_, (id, _, _), _)| *id)
-            .filter(|id| !parts.contains_key(id))
+            .filter(|id| !asked.contains(id))
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
-        if !wanted.is_empty() {
+        if !wanted.is_empty() && !anilist_down {
+            asked.extend(&wanted);
             match crate::browse::parts(client, &wanted).await {
-                Ok(p) => parts.extend(p),
+                Ok(p) => {
+                    built.parts.extend(p.clone());
+                    parts.extend(p);
+                }
                 Err(e) => {
-                    built.problems.push(format!("AniList: {e:#}"));
-                    break;
+                    tracing::warn!("AniList (lengths and sequels): {e:#}");
+                    anilist_down = true;
                 }
             }
         }
@@ -611,6 +631,9 @@ mod tests {
                 let ids = body["variables"]["ids"].as_array().unwrap().clone();
                 // Lengths and sequels (AniList's, for Steel Ball Run).
                 if body["query"].as_str().unwrap().contains("relations") {
+                    if ANILIST_DOWN.load(std::sync::atomic::Ordering::SeqCst) {
+                        return reply(429, json!({"errors": [{"message": "Too Many Requests."}]}));
+                    }
                     let part = |id: &Value| match id.as_u64() {
                         Some(190327) => {
                             json!({"id": 190327, "episodes": 1, "relations": {"edges": [
@@ -635,6 +658,9 @@ mod tests {
         };
         reply(200, v)
     }
+
+    /// AniList refuses to say more (as when it's been asked too often).
+    static ANILIST_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     fn mapping() -> Mapping {
         Mapping::parse(
@@ -679,6 +705,7 @@ mod tests {
             &config,
             &mapping(),
             &HashSet::from([501]),
+            &Parts::default(),
         ));
         *crate::seadex::ANILIST_BASE.lock().unwrap() = None;
         assert!(built.problems.is_empty(), "{:?}", built.problems);
@@ -712,6 +739,30 @@ mod tests {
         assert_eq!(second.len(), 11);
         assert_eq!(second[0], (1, Some(42)), "its episode 1 is S06E02");
         assert_eq!(second[10], (11, Some(52)));
+
+        // Read again while AniList won't answer: what it said before does.
+        ANILIST_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+        *crate::seadex::ANILIST_BASE.lock().unwrap() = Some(format!("{base}/anilist"));
+        let known: HashSet<u64> = built.series.iter().map(|s| s.anilist_id).collect();
+        let again = rt.block_on(build(
+            &reqwest::Client::new(),
+            &config,
+            &mapping(),
+            &known,
+            &Parts {
+                known: built.parts.clone(),
+                fresh: HashSet::new(),
+            },
+        ));
+        *crate::seadex::ANILIST_BASE.lock().unwrap() = None;
+        ANILIST_DOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(again.parts.is_empty(), "nothing new from AniList");
+        let still = again.series.iter().find(|s| s.anilist_id == 210482);
+        assert_eq!(
+            still.map(|s| s.remote.as_ref().unwrap().episodes.len()),
+            Some(11),
+            "2nd & 3rd STAGE stays"
+        );
         let get = |id| built.series.iter().find(|s| s.anilist_id == id).unwrap();
         let s1 = get(161645);
         assert_eq!(s1.romaji.as_deref(), Some("Anime 161645"));
@@ -812,6 +863,7 @@ mod tests {
             &Config::default(),
             &mapping(),
             &HashSet::new(),
+            &Parts::default(),
         ));
         assert!(built.series.is_empty() && built.problems.is_empty());
     }

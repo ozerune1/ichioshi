@@ -1102,6 +1102,35 @@ impl Gui {
 
     // ── In the library ────────────────────────────────────────────────
 
+    /// A series' languages: the library's, or its own.
+    pub(super) fn series_languages<'a>(
+        &'a self,
+        series: &'a crate::library::Series,
+    ) -> Column<'a, Message> {
+        let id = series.anilist_id;
+        let own = series.prefs.is_some();
+        let languages = column![
+            label("Languages"),
+            check("Use different languages for this series", own, move |on| {
+                // Starting from the library's.
+                edit(move |g| {
+                    let prefs = on.then(|| g.app.settings.prefs.clone());
+                    g.app.perform(Action::SetSeriesPrefs { id, prefs });
+                })
+            }),
+        ]
+        .spacing(10);
+        match &series.prefs {
+            Some(prefs) => languages.push(lang_editor(prefs, move |p| {
+                act(Action::SetSeriesPrefs { id, prefs: Some(p) })
+            })),
+            None => languages.push(weak(format!(
+                "Everyone's: {} (in Settings)",
+                self.app.settings.prefs.summary()
+            ))),
+        }
+    }
+
     fn library_box<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
         let anime = &ap.anime;
         if self.app.servers_mode() {
@@ -1151,25 +1180,7 @@ impl Gui {
         let id = series.anilist_id;
         let stats = self.app.pages.stats.get(&id).cloned().unwrap_or_default();
         let folder = series.folder.clone();
-        let library_prefs = self.app.settings.prefs.summary();
-        let own = series.prefs.is_some();
-        let mut languages = column![
-            label("Languages"),
-            check("Use different languages for this series", own, move |on| {
-                // Starting from the library's.
-                edit(move |g| {
-                    let prefs = on.then(|| g.app.settings.prefs.clone());
-                    g.app.perform(Action::SetSeriesPrefs { id, prefs });
-                })
-            }),
-        ]
-        .spacing(10);
-        languages = match &series.prefs {
-            Some(prefs) => languages.push(lang_editor(prefs, move |p| {
-                act(Action::SetSeriesPrefs { id, prefs: Some(p) })
-            })),
-            None => languages.push(weak(format!("The library's: {library_prefs}"))),
-        };
+        let mut languages = self.series_languages(series);
         let count = stats.files.len();
         if count > 0 {
             let done = count.saturating_sub(stats.pending);

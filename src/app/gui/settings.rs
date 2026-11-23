@@ -43,6 +43,7 @@ impl Gui {
             ),
             gap(10.0),
             self.library_settings(),
+            self.language_settings(),
             self.download_settings(),
             self.usenet_settings(),
         ]
@@ -104,19 +105,6 @@ impl Gui {
                     secondary("Browse…", Some(act(Action::PickLibraryFolder))),
                 ]
                 .spacing(10)
-                .align_y(Alignment::Center),
-                row![
-                    column![
-                        text("Languages").size(14).font(MEDIUM).color(TEXT),
-                        weak(format!(
-                            "{} · series can have their own; every track is kept",
-                            s.prefs.summary()
-                        )),
-                    ]
-                    .spacing(2)
-                    .width(Fill),
-                    secondary("Change…", Some(act(Action::OpenLanguages))),
-                ]
                 .align_y(Alignment::Center),
                 with_tip(
                     check(
@@ -733,29 +721,39 @@ impl Gui {
         c.into()
     }
 
+    /// Which audio and subtitles play: in the player (files here and
+    /// Jellyfin's streams), as the library's default tracks, and for
+    /// remuxes. Series can have their own (on their pages).
+    fn language_settings(&self) -> Element<'_, Message> {
+        let note = if self.app.servers_mode() {
+            "What the player plays, from Jellyfin or from files here, and what remuxes keep. A \
+             series can have its own, on its page; any track can still be picked while watching."
+        } else {
+            "What the player plays, what the library marks default in its files (every track is \
+             kept), and what remuxes keep. A series can have its own, on its page."
+        };
+        group(
+            "Languages",
+            note,
+            super::series::lang_editor(&self.app.settings.prefs, |p| {
+                edit(move |g| {
+                    g.app.settings.prefs = p.clone();
+                    g.app.recheck_defaults();
+                    g.app.pages.last_stats = None;
+                    if let Some(player) = &mut g.player {
+                        player.use_languages(&p);
+                    }
+                })
+            }),
+        )
+    }
+
     fn player_settings(&self) -> Element<'_, Message> {
         let p = &self.app.settings.player;
         group(
             "Player",
             "Also in the player's own settings.",
             column![
-                row![
-                    column![
-                        text("Audio and subtitles")
-                            .size(14)
-                            .font(MEDIUM)
-                            .color(TEXT),
-                        weak(format!(
-                            "{}, as for remuxes; a series' own languages win. Any track can \
-                             still be picked while watching.",
-                            self.app.settings.prefs.summary()
-                        )),
-                    ]
-                    .spacing(2)
-                    .width(Fill),
-                    secondary("Change…", Some(act(Action::OpenLanguages))),
-                ]
-                .align_y(Alignment::Center),
                 check("Skip openings automatically", p.skip_openings, |on| edit(
                     move |g| g.app.settings.player.skip_openings = on
                 )),
