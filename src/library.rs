@@ -136,6 +136,82 @@ pub struct Series {
     /// Where it is on your servers (when the library is there).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<Remote>,
+    /// Each episode file's release, by path within the folder.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub releases: BTreeMap<String, Described>,
+}
+
+/// Who released an episode's file, and how: its group, BD or WEB, dual
+/// audio, censored or not (`None`: not known).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EpisodeRelease {
+    pub group: Option<String>,
+    /// "BD" or "WEB".
+    pub source: Option<String>,
+    pub dual_audio: Option<bool>,
+    pub censored: Option<bool>,
+}
+
+impl EpisodeRelease {
+    /// What a release's names say (the file's, then its folders'), and its
+    /// audio languages if they're known (ISO 639-2).
+    pub fn from_names(names: &[&str], audio: Option<&[String]>) -> Self {
+        let parsed: Vec<crate::title::ParsedTitle> =
+            names.iter().map(|n| crate::title::parse(n)).collect();
+        let source = parsed
+            .iter()
+            .map(|p| p.source.label())
+            .find(|l| !l.is_empty())
+            .map(str::to_owned);
+        let named_dual = parsed.iter().any(|p| p.dual_audio || p.multi_audio);
+        let dual_audio = match audio {
+            // Japanese and something else (an English dub, say).
+            Some(langs) if !langs.is_empty() => {
+                let mut distinct: Vec<&String> = langs.iter().filter(|l| *l != "und").collect();
+                distinct.sort();
+                distinct.dedup();
+                Some(distinct.len() >= 2 && distinct.iter().any(|l| *l == "jpn") || named_dual)
+            }
+            _ => named_dual.then_some(true),
+        };
+        Self {
+            group: parsed.iter().find_map(|p| p.group.clone()),
+            source,
+            dual_audio,
+            censored: names.iter().find_map(|n| crate::title::censored(n)),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// An episode file's release, as read (redone when the file changes size).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Described {
+    pub len: u64,
+    pub release: EpisodeRelease,
+}
+
+/// What a file on disk is: from its name, its folders' names (within the
+/// series' folder) and its audio tracks.
+pub fn describe_file(path: &Path, rel: &str) -> EpisodeRelease {
+    let mut names: Vec<&str> = rel.rsplit('/').collect();
+    // File name first, without its extension.
+    if let Some(first) = names.first_mut() {
+        *first = first.rsplit_once('.').map_or(*first, |(stem, _)| stem);
+    }
+    let audio: Option<Vec<String>> = crate::mkv::probe(path).ok().map(|info| {
+        info.tracks
+            .iter()
+            .filter(|t| t.kind == crate::mkv::TrackKind::Audio)
+            .map(crate::prefs::track_language)
+            .collect()
+    });
+    EpisodeRelease::from_names(&names, audio.as_deref())
 }
 
 /// A series on your servers: Sonarr's series (one season of it) or
@@ -180,6 +256,9 @@ pub struct RemoteEpisode {
     /// The file in Sonarr or Radarr.
     #[serde(default)]
     pub file_id: Option<u64>,
+    /// Its release (as Sonarr or Radarr has it).
+    #[serde(default)]
+    pub release: Option<EpisodeRelease>,
     /// Jellyfin's episode (or film).
     pub jellyfin: Option<String>,
 }
@@ -413,6 +492,7 @@ impl Library {
             applied: BTreeMap::new(),
             watched: BTreeMap::new(),
             remote: None,
+            releases: BTreeMap::new(),
         });
         self.save_or_warn();
         self.series.last_mut().unwrap()
@@ -528,6 +608,45 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What names and audio tracks say about a release.
+    #[test]
+    fn reads_releases() {
+        let langs = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let r = EpisodeRelease::from_names(&["[SubsPlease] Frieren - 01 (1080p) [ABCD1234]"], None);
+        assert_eq!(r.group.as_deref(), Some("SubsPlease"));
+        assert_eq!(
+            (r.source.as_deref(), r.dual_audio, r.censored),
+            (None, None, None)
+        );
+        // The folder says what the file doesn't; the tracks say dual audio.
+        let r = EpisodeRelease::from_names(
+            &["Show - 01", "[Group] Show S01 (BD 1080p HEVC) [Uncensored]"],
+            Some(&langs(&["jpn", "eng"])),
+        );
+        assert_eq!(
+            r,
+            EpisodeRelease {
+                group: Some("Group".into()),
+                source: Some("BD".into()),
+                dual_audio: Some(true),
+                censored: Some(false),
+            }
+        );
+        let r = EpisodeRelease::from_names(
+            &["Show.S01E01.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG (Censored)"],
+            Some(&langs(&["jpn"])),
+        );
+        assert_eq!(r.group.as_deref(), Some("VARYG"));
+        assert_eq!(r.source.as_deref(), Some("WEB"));
+        assert_eq!(r.dual_audio, Some(false), "Japanese only");
+        assert_eq!(r.censored, Some(true));
+        assert_eq!(
+            EpisodeRelease::from_names(&["Show - 01"], Some(&langs(&["jpn", "und"]))).dual_audio,
+            Some(false),
+            "an unlabelled track isn't a second language"
+        );
+    }
 
     fn new(id: u64, english: &str, year: i32) -> NewSeries {
         NewSeries {

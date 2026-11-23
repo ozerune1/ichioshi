@@ -282,11 +282,8 @@ pub async fn build(
                 .filter(|e| e.episode_number > offset && e.episode_number <= until)
             {
                 let n = e.episode_number - offset;
-                let file = e
-                    .has_file
-                    .then(|| files.get(&e.episode_file_id))
-                    .flatten()
-                    .map(|f| (file_name(&f.relative_path).to_owned(), f.size));
+                let arr_file = e.has_file.then(|| files.get(&e.episode_file_id)).flatten();
+                let file = arr_file.map(|f| (file_name(&f.relative_path).to_owned(), f.size));
                 let jep = jeps.and_then(|list| {
                     file.as_ref()
                         .and_then(|(name, _)| {
@@ -308,6 +305,7 @@ pub async fn build(
                         arr_id: Some(e.id),
                         monitored: e.monitored,
                         file_id: file.as_ref().map(|_| e.episode_file_id),
+                        release: arr_file.map(|f| f.release()),
                         file,
                         jellyfin: jep.map(|j| j.id.clone()),
                     },
@@ -378,6 +376,11 @@ pub async fn build(
                         arr_id: None,
                         monitored: m.monitored,
                         file_id: file.as_ref().and(m.movie_file.as_ref()).map(|f| f.id),
+                        release: m
+                            .movie_file
+                            .as_ref()
+                            .filter(|_| m.has_file)
+                            .map(arr::File::release),
                         file,
                         jellyfin: jitem.map(|i| i.id.clone()),
                     },
@@ -508,6 +511,7 @@ fn remote_series(
         applied: Default::default(),
         watched,
         remote: Some(remote),
+        releases: Default::default(),
     }
 }
 

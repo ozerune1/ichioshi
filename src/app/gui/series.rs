@@ -506,7 +506,11 @@ impl Gui {
         for e in &episodes {
             list = list.push(self.episode_row(id, e, &coverage));
         }
-        let mut c = column![header, gap(12.0), list];
+        let mut c = column![header];
+        if let Some(from) = self.release_runs(id, &episodes) {
+            c = c.push(gap(4.0)).push(weak(from));
+        }
+        let mut c = c.push(gap(12.0)).push(list);
         if !extras.is_empty() {
             let mut files = Column::new().spacing(4);
             for (rel, len) in extras {
@@ -570,6 +574,10 @@ impl Gui {
             title = title.push(badge("Recap", MUTED));
         }
         let mut middle = column![title].spacing(5).width(Fill);
+        // Its file's release: group, BD or WEB, dual audio, censored.
+        if present && let Some(r) = self.app.episode_release(id, n).filter(|r| !r.is_empty()) {
+            middle = middle.push(release_tags(r));
+        }
         if let Some(w) = watch.filter(|w| !w.done && w.position > 0.0 && w.duration > 0.0) {
             middle = middle.push(
                 row![
@@ -1241,6 +1249,82 @@ impl Gui {
             ]
             .spacing(16),
         )
+    }
+}
+
+/// A release, in words: "SubsPlease · WEB · Dual audio · Uncensored".
+fn release_words(r: &crate::library::EpisodeRelease) -> String {
+    let mut w: Vec<String> = Vec::new();
+    w.extend(r.group.clone());
+    w.extend(r.source.clone());
+    if r.dual_audio == Some(true) {
+        w.push("Dual audio".into());
+    }
+    match r.censored {
+        Some(true) => w.push("Censored".into()),
+        Some(false) => w.push("Uncensored".into()),
+        None => {}
+    }
+    w.join(" · ")
+}
+
+/// An episode's release, as tags.
+fn release_tags<'a>(r: &crate::library::EpisodeRelease) -> Element<'a, Message> {
+    let mut tags = Row::new().spacing(6).align_y(Alignment::Center);
+    if let Some(g) = &r.group {
+        tags = tags.push(text(g.clone()).size(11).font(SEMI).color(MUTED));
+    }
+    if let Some(s) = &r.source {
+        tags = tags.push(badge(s.clone(), if s == "BD" { ACCENT } else { MUTED }));
+    }
+    match r.dual_audio {
+        Some(true) => tags = tags.push(badge("Dual audio", GREEN)),
+        Some(false) => tags = tags.push(text("Japanese only").size(11).color(FAINT)),
+        None => {}
+    }
+    match r.censored {
+        Some(true) => tags = tags.push(badge("Censored", GOLD)),
+        Some(false) => tags = tags.push(badge("Uncensored", GREEN)),
+        None => {}
+    }
+    tags.into()
+}
+
+impl Gui {
+    /// Which releases the episodes here are, run by run: "From
+    /// SubsPlease · WEB (1–10), Group · BD (11–12)".
+    fn release_runs(&self, id: u64, episodes: &[Episode]) -> Option<String> {
+        let mut runs: Vec<(String, u32, u32)> = Vec::new();
+        for e in episodes.iter().filter(|e| e.file.is_some()) {
+            let words = self
+                .app
+                .episode_release(id, e.n)
+                .map(release_words)
+                .unwrap_or_default();
+            match runs.last_mut() {
+                Some((w, _, last)) if *w == words => *last = e.n,
+                _ => runs.push((words, e.n, e.n)),
+            }
+        }
+        runs.retain(|(w, _, _)| !w.is_empty());
+        let span = |a: u32, b: u32| {
+            if a == b {
+                format!("{a}")
+            } else {
+                format!("{a}–{b}")
+            }
+        };
+        match runs.as_slice() {
+            [] => None,
+            [(w, _, _)] => Some(format!("From {w}")),
+            many => Some(format!(
+                "From {}",
+                many.iter()
+                    .map(|(w, a, b)| format!("{w} ({})", span(*a, *b)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 }
 

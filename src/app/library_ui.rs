@@ -20,6 +20,9 @@ pub(super) struct LibraryState {
     last_defaults: Option<Instant>,
     /// Default tracks are being set on some files.
     applying: bool,
+    /// Episode files' releases are being read.
+    describing: bool,
+    last_describe: Option<Instant>,
 }
 
 /// A file's size and modification time (Unix seconds).
@@ -73,6 +76,90 @@ impl App {
             self.move_finished_jobs();
         }
         self.hand_over_failed();
+    }
+
+    /// Now and then: read the releases of episode files not read yet (or
+    /// changed), a few at a time, off the UI thread.
+    pub(super) fn describe_episodes(&mut self) {
+        if self.servers_mode()
+            || self.lib.describing
+            || self
+                .lib
+                .last_describe
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
+        {
+            return;
+        }
+        self.lib.last_describe = Some(Instant::now());
+        let mut todo = Vec::new();
+        'all: for s in &self.library.series {
+            let Some(stats) = self.pages.stats.get(&s.anilist_id) else {
+                continue;
+            };
+            for (rel, len) in stats.episodes.values() {
+                if s.releases.get(rel).is_none_or(|d| d.len != *len) {
+                    todo.push((s.anilist_id, s.folder.join(rel), rel.clone(), *len));
+                    if todo.len() >= 16 {
+                        break 'all;
+                    }
+                }
+            }
+        }
+        if todo.is_empty() {
+            return;
+        }
+        self.lib.describing = true;
+        self.spawn(async move {
+            let read = tokio::task::spawn_blocking(move || {
+                todo.into_iter()
+                    .map(|(id, path, rel, len)| {
+                        let r = crate::library::describe_file(&path, &rel);
+                        (id, rel, len, r)
+                    })
+                    .collect()
+            })
+            .await
+            .unwrap_or_default();
+            Msg::Described(read)
+        });
+    }
+
+    pub(super) fn handle_described(
+        &mut self,
+        read: Vec<(u64, String, u64, crate::library::EpisodeRelease)>,
+    ) {
+        self.lib.describing = false;
+        for (id, rel, len, release) in read {
+            if let Some(s) = self.library.find_mut(id) {
+                s.releases
+                    .insert(rel, crate::library::Described { len, release });
+            }
+        }
+        // Files no longer there take theirs with them.
+        for s in &mut self.library.series {
+            if let Some(stats) = self.pages.stats.get(&s.anilist_id) {
+                s.releases
+                    .retain(|rel, _| stats.files.iter().any(|(f, _)| f == rel));
+            }
+        }
+        self.library.save_or_warn();
+    }
+
+    /// An episode's release, as far as it's known.
+    pub(super) fn episode_release(
+        &self,
+        id: u64,
+        n: u32,
+    ) -> Option<&crate::library::EpisodeRelease> {
+        let s = self.library.find(id)?;
+        if let Some(r) = &s.remote {
+            return r.episodes.get(&n)?.release.as_ref();
+        }
+        let (rel, len) = self.pages.stats.get(&id)?.episodes.get(&n)?;
+        s.releases
+            .get(rel)
+            .filter(|d| d.len == *len)
+            .map(|d| &d.release)
     }
 
     /// The preferences that apply to a series.

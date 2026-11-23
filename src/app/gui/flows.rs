@@ -1475,7 +1475,9 @@ fn library_on_your_servers() {
             }
             ("GET", "/sonarr/api/v3/episodefile") => json!([{"id": 100,
                 "relativePath": "Season 01/Frieren - S01E01.mkv", "size": video_bytes.len(),
-                "releaseGroup": "Group", "quality": {"quality": {"name": "Bluray-1080p"}},
+                "releaseGroup": "Group",
+                "sceneName": "[Group] Frieren - 01 (BD 1080p) [Uncensored]",
+                "quality": {"quality": {"name": "Bluray-1080p", "source": "bluray"}},
                 "mediaInfo": {"videoCodec": "x265", "resolution": "1920x1080",
                               "audioCodec": "FLAC", "audioLanguages": "jpn", "subtitles": "eng"}}]),
             // Managing the series.
@@ -1679,6 +1681,9 @@ fn library_on_your_servers() {
     wait_until(&mut h, "its release read", has_release);
     assert!(shows(&h, "▶ Play"));
     assert!(shows(&h, "60%"), "Sonarr's download of episode 3");
+    // Episode 1's release, as Sonarr has it.
+    assert!(shows(&h, "From Group · BD · Uncensored"));
+    assert!(shows(&h, "Uncensored") && shows(&h, "Japanese only"));
     assert!(
         h.app.manage.as_ref().is_some_and(|m| m.anilist == FRIEREN),
         "its Sonarr panel"
@@ -2302,6 +2307,12 @@ fn library_and_series_pages() {
     );
     assert!(shows_containing(&h, "2 of 28 in your library"));
     assert!(shows(&h, "↓  Download 2 missing"));
+    // Each episode's release, read from its file: Japanese audio only.
+    wait_until(&mut h, "the episodes' releases", |g| {
+        g.app.episode_release(1, 1).is_some() && g.app.episode_release(1, 2).is_some()
+    });
+    assert_eq!(h.app.episode_release(1, 1).unwrap().dual_audio, Some(false));
+    assert_eq!(count(&h, "Japanese only"), 2);
     save(&h, &out, "library-5-episodes");
 
     // Episodes to the playlist: one from its row, then the rest.

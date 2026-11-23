@@ -251,6 +251,7 @@ impl Gui {
         a.request_nzb_lookups();
         a.tidy_library();
         a.apply_defaults();
+        a.describe_episodes();
         a.refresh_library_stats();
         a.request_details();
         a.request_release_files();

@@ -119,6 +119,53 @@ pub struct File {
     pub relative_path: String,
     #[serde(default)]
     pub size: u64,
+    #[serde(default)]
+    pub release_group: Option<String>,
+    /// The release's own name, when it was grabbed.
+    #[serde(default)]
+    pub scene_name: Option<String>,
+    #[serde(default)]
+    pub quality: Value,
+    #[serde(default)]
+    pub media_info: Value,
+}
+
+impl File {
+    /// Its release: group, BD or WEB, dual audio, censored or not.
+    pub fn release(&self) -> crate::library::EpisodeRelease {
+        let file = self.relative_path.rsplit('/').next().unwrap_or_default();
+        let mut names: Vec<&str> = Vec::new();
+        names.extend(self.scene_name.as_deref());
+        names.push(file.rsplit_once('.').map_or(file, |(s, _)| s));
+        // Its audio, as read from the file ("jpn/eng").
+        let audio: Option<Vec<String>> = self.media_info["audioLanguages"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                s.split(['/', ','])
+                    .map(|l| crate::remux::normalize_language(l.trim()))
+                    .collect()
+            });
+        let mut r = crate::library::EpisodeRelease::from_names(&names, audio.as_deref());
+        if let Some(g) = self.release_group.clone().filter(|g| !g.is_empty()) {
+            r.group = Some(g);
+        }
+        let source = self.quality["quality"]["source"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let source = match source.as_str() {
+            s if s.starts_with("bluray") => Some("BD"),
+            s if s.starts_with("web") => Some("WEB"),
+            s if s.starts_with("tv") || s.starts_with("television") => Some("TV"),
+            "dvd" => Some("DVD"),
+            _ => None,
+        };
+        if let Some(s) = source {
+            r.source = Some(s.to_owned());
+        }
+        r
+    }
 }
 
 /// A film in Radarr.
@@ -1035,6 +1082,29 @@ mod tests {
             .block_on(sonarr.add_show(431162, 2, &unset, false))
             .unwrap_err();
         assert!(e.to_string().contains("root folder in Settings"), "{e}");
+    }
+
+    /// A file's release: its group, BD or WEB, dual audio, uncensored.
+    #[test]
+    fn reads_files_releases() {
+        let f: File = serde_json::from_value(json!({
+            "id": 1, "relativePath": "Season 01/Show - S01E01.mkv", "size": 9,
+            "releaseGroup": "Group", "sceneName": "[Group] Show - 01 (BD 1080p) [Uncensored]",
+            "quality": {"quality": {"name": "Bluray-1080p", "source": "bluray"}},
+            "mediaInfo": {"audioLanguages": "jpn/eng"}}))
+        .unwrap();
+        let r = f.release();
+        assert_eq!(r.group.as_deref(), Some("Group"));
+        assert_eq!(r.source.as_deref(), Some("BD"));
+        assert_eq!((r.dual_audio, r.censored), (Some(true), Some(false)));
+        let web: File = serde_json::from_value(json!({"id": 2,
+            "quality": {"quality": {"source": "webRip"}}, "mediaInfo": {"audioLanguages": "Japanese"}}))
+        .unwrap();
+        let r = web.release();
+        assert_eq!(
+            (r.source.as_deref(), r.dual_audio),
+            (Some("WEB"), Some(false))
+        );
     }
 
     /// Managing a series: interactive search and grabbing, files, renames,

@@ -162,6 +162,8 @@ enum Msg {
     Tracking(tracking_ui::TrackingMsg),
     Servers(servers_ui::ServersMsg),
     Manage(manage_ui::ManageMsg),
+    /// Episode files' releases, read: by series, path, size.
+    Described(Vec<(u64, String, u64, crate::library::EpisodeRelease)>),
     Engine {
         seq: u64,
         result: Result<Arc<Engine>, String>,
@@ -1166,6 +1168,7 @@ impl App {
                 Msg::Tracking(msg) => self.handle_tracking_msg(msg),
                 Msg::Servers(msg) => self.handle_servers_msg(msg),
                 Msg::Manage(msg) => self.handle_manage_msg(msg),
+                Msg::Described(read) => self.handle_described(read),
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),

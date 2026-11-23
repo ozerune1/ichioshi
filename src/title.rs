@@ -91,6 +91,8 @@ re!(
     r"(?i)\b(web|web-?dl|web-?rip|webrip|cr|amzn|nf|dsnp|hidive|adn|b-global|bilibili|baha|funi|yt)\b"
 );
 re!(DUAL_AUDIO, r"(?i)dual[ ._-]?audio|\bDUAL\b");
+re!(UNCENSORED, r"(?i)\b(un-?censored|uncen)\b");
+re!(CENSORED, r"(?i)(?:^|[^a-z-])censored\b");
 re!(MULTI_AUDIO, r"(?i)multi[ ._-]?audio|\bMULTi\b");
 re!(DUB, r"(?i)\b(english\s+dub|dubbed|dub)\b");
 re!(BATCH, r"(?i)\b(batch|complete)\b");
@@ -177,6 +179,18 @@ pub fn parse(title: &str) -> ParsedTitle {
         multi_audio: MULTI_AUDIO.is_match(title),
         dub_only: !dual_audio && DUB.is_match(title),
         batch_word: BATCH.is_match(title),
+    }
+}
+
+/// Whether a release says it's censored (`Some(true)`) or uncensored;
+/// `None` when it doesn't say.
+pub fn censored(title: &str) -> Option<bool> {
+    if UNCENSORED.is_match(title) {
+        Some(false)
+    } else if CENSORED.is_match(title) {
+        Some(true)
+    } else {
+        None
     }
 }
 
