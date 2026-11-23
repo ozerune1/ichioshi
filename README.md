@@ -29,8 +29,8 @@ For Linux, Windows and Android.</p>
 - **Plays it.** The built-in player draws subtitles with libass and can
   skip openings and endings. It moves on to the next episode and remembers
   where you stopped.
-- **Tracks it.** Signs in to AniList and MyAnimeList. Status, score and
-  progress update as you watch.
+- **Tracks it.** Signs in to AniList and MyAnimeList with one button.
+  Status, score and progress update as you watch.
 - **Discovers.** Browse trending and seasonal anime, see an airing calendar,
   and read each episode's discussion threads.
 - **Works with your server.** Jellyfin: stream your library, or save
@@ -88,6 +88,12 @@ The release builds are made by these scripts:
 | `scripts/linux/build.sh` | the Linux download | cargo-zigbuild and Zig |
 | `scripts/windows/build.sh` | the Windows download, cross-compiled from Linux | cargo-zigbuild, Zig, MSYS2's GStreamer |
 | `scripts/android/build.sh` | the APK | the Android SDK and NDK, a JDK, Node |
+
+The release builds carry Ichioshi's own AniList and MyAnimeList API clients,
+so signing in is one button. They're read when building from a file outside
+the repository (see `scripts/release-keys.sh`). A build without them asks for
+your own client: make one on AniList or MyAnimeList, with the redirect URL
+Settings shows.
 
 Tests: `cargo test`. Tests that reach real sites are `#[ignore]`d;
 `cargo test -- --include-ignored` runs them too.

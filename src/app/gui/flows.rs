@@ -3748,3 +3748,63 @@ fn updates_from_github() {
     );
     drop(rt);
 }
+
+/// A build with its own AniList client: signing in is one button, with the
+/// build's client; your own client is a click away, and back.
+#[test]
+#[ignore = "renders screenshots"]
+fn signs_in_with_the_built_in_client() {
+    use crate::tracking::{Endpoints, Service};
+    let (base, out) = dir("built-in-client");
+    let base = base.path();
+    let mut h = app_harness(base);
+    // Nothing reaches AniList: the sign-in page is only made, not opened.
+    h.app.tracking.endpoints = Endpoints {
+        anilist_auth: "http://127.0.0.1:9/anilist/authorize".into(),
+        anilist_token: "http://127.0.0.1:9/anilist/token".into(),
+        anilist_api: "http://127.0.0.1:9/graphql".into(),
+        mal_auth: "http://127.0.0.1:9/mal/authorize".into(),
+        mal_token: "http://127.0.0.1:9/mal/token".into(),
+        mal_api: "http://127.0.0.1:9/mal/api".into(),
+        port: 0,
+    };
+    h.app.tracking.built_in.insert(
+        Service::AniList,
+        ("built-in-id".into(), "built-in-secret".into()),
+    );
+    click(&mut h, "Settings");
+    // AniList: one button. MyAnimeList (none built in): the steps.
+    assert_eq!(count(&h, "Use your own API client"), 1);
+    assert!(shows(&h, "Sign in with AniList"));
+    assert!(shows(&h, "Sign in with MyAnimeList"));
+    assert!(shows(&h, "3. Its client ID"), "MyAnimeList's steps");
+    save(&h, &out, "built-in-1-settings");
+
+    click(&mut h, "Sign in with AniList");
+    wait_until(&mut h, "the sign-in page", |g| {
+        g.app
+            .tracking
+            .signing_in
+            .as_ref()
+            .is_some_and(|j| j.url.is_some())
+    });
+    let url = h
+        .app
+        .tracking
+        .signing_in
+        .as_ref()
+        .unwrap()
+        .url
+        .clone()
+        .unwrap();
+    assert!(url.contains("client_id=built-in-id"), "{url}");
+    click(&mut h, "Cancel");
+
+    // Your own client instead, then back to the build's.
+    click(&mut h, "Use your own API client");
+    assert_eq!(count(&h, "3. Its client ID"), 2);
+    assert!(shows(&h, "Use Ichioshi's client instead"));
+    save(&h, &out, "built-in-2-own-client");
+    click(&mut h, "Use Ichioshi's client instead");
+    assert_eq!(count(&h, "Use your own API client"), 1);
+}

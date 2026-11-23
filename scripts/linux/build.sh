@@ -8,6 +8,7 @@
 # and GStreamer's development files.
 set -eu
 cd "$(dirname "$0")/../.."
+. scripts/release-keys.sh
 command -v zig >/dev/null ||
     export PATH="${ICHIOSHI_WINDOWS_TOOLS:-$HOME/.local/share/ichioshi-windows}/zig-x86_64-linux-0.15.2:$PATH"
 # Zig doesn't look in the system's library folder by itself; GLib and

@@ -622,6 +622,25 @@ fn account(ui: &mut Ui, service: Service) -> Vec<Value> {
         }
         return items;
     }
+    let sign_in = ui.button(
+        format!("Sign in with {}", service.name()),
+        t.signing_in
+            .is_none()
+            .then_some(Action::Tracking(TrackingAction::SignIn(service))),
+    );
+    // A client's built in: one button (your own, if you'd rather).
+    if t.just_sign_in(service) {
+        items.push(buttons(vec![sign_in], true));
+        let own = ui.edit(move |app| {
+            app.tracking.own_client.insert(service);
+        });
+        items.push(buttons(
+            vec![json!({"label": "Use your own API client", "id": own})],
+            false,
+        ));
+        return items;
+    }
+    let built_in = t.built_in.contains_key(&service);
     let (site, site_url, kind) = match service {
         Service::AniList => (
             "anilist.co/settings/developer",
@@ -673,13 +692,14 @@ fn account(ui: &mut Ui, service: Service) -> Vec<Value> {
             }
         },
     ));
-    let sign_in = ui.button(
-        format!("Sign in with {}", service.name()),
-        t.signing_in
-            .is_none()
-            .then_some(Action::Tracking(TrackingAction::SignIn(service))),
-    );
     items.push(buttons(vec![sign_in], true));
+    if built_in {
+        let back = ui.edit(move |app| app.tracking.use_built_in(service));
+        items.push(buttons(
+            vec![json!({"label": "Use Ichioshi's client instead", "id": back})],
+            false,
+        ));
+    }
     items
 }
 

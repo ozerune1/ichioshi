@@ -19,6 +19,39 @@ use serde::{Deserialize, Serialize};
 /// The port in the redirect URLs registered with AniList and MyAnimeList.
 pub const PORT: u16 = 47341;
 
+/// An API client: its ID, and its secret ("" if it has none).
+pub type Client = (String, String);
+
+/// The API client a release build carries for `service`, so signing in
+/// needs no setup: given when building (`ICHIOSHI_ANILIST_CLIENT_ID` and
+/// `_SECRET`; `ICHIOSHI_MAL_CLIENT_ID`, and `_SECRET` if it has one), never
+/// in the repository. AniList's needs both.
+pub fn built_in(service: Service) -> Option<Client> {
+    let given = |s: Option<&'static str>| s.map(str::trim).filter(|s| !s.is_empty());
+    match service {
+        Service::AniList => Some((
+            given(option_env!("ICHIOSHI_ANILIST_CLIENT_ID"))?.to_owned(),
+            given(option_env!("ICHIOSHI_ANILIST_CLIENT_SECRET"))?.to_owned(),
+        )),
+        Service::Mal => Some((
+            given(option_env!("ICHIOSHI_MAL_CLIENT_ID"))?.to_owned(),
+            given(option_env!("ICHIOSHI_MAL_CLIENT_SECRET"))
+                .unwrap_or_default()
+                .to_owned(),
+        )),
+    }
+}
+
+/// The client to use: your own, if you've given its ID; else the one built
+/// in (if there's one).
+pub fn client(own_id: &str, own_secret: &str, built_in: Option<&Client>) -> Option<Client> {
+    let id = own_id.trim();
+    if !id.is_empty() {
+        return Some((id.to_owned(), own_secret.trim().to_owned()));
+    }
+    built_in.cloned()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Service {
     AniList,

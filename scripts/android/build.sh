@@ -9,6 +9,7 @@
 # Node and npm.
 set -eu
 cd "$(dirname "$0")/../.."
+. scripts/release-keys.sh
 mkdir -p dist
 cd mobile
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/.local/share/android-sdk}"

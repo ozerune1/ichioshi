@@ -535,6 +535,30 @@ impl Gui {
             }
             return c.push(r).into();
         }
+        let sign_in = primary(
+            format!("Sign in with {}", service.name()),
+            t.signing_in
+                .is_none()
+                .then(|| act(Action::Tracking(TrackingAction::SignIn(service)))),
+        );
+        // A client's built in: one button (your own, if you'd rather).
+        if t.just_sign_in(service) {
+            return c
+                .push(
+                    row![
+                        sign_in,
+                        link(
+                            "Use your own API client",
+                            Some(edit(move |g| {
+                                g.app.tracking.own_client.insert(service);
+                            }))
+                        ),
+                    ]
+                    .spacing(14)
+                    .align_y(Alignment::Center),
+                )
+                .into();
+        }
         let redirect = crate::tracking::redirect_url(service);
         let (site, site_url, kind) = match service {
             Service::AniList => (
@@ -626,13 +650,14 @@ impl Gui {
                 set_secret,
             ),
         ]));
-        c.push(primary(
-            format!("Sign in with {}", service.name()),
-            t.signing_in
-                .is_none()
-                .then(|| act(Action::Tracking(TrackingAction::SignIn(service)))),
-        ))
-        .into()
+        let mut end = row![sign_in].spacing(14).align_y(Alignment::Center);
+        if t.built_in.contains_key(&service) {
+            end = end.push(link(
+                "Use Ichioshi's client instead",
+                Some(edit(move |g| g.app.tracking.use_built_in(service))),
+            ));
+        }
+        c.push(end).into()
     }
 
     /// Google Drive: the one-time setup, signing in, the folder; and

@@ -484,3 +484,22 @@ async fn mal_signs_out_when_the_tokens_are_dead() {
     let err = session.list().await.unwrap_err();
     assert!(err.is::<SignedOut>(), "{err:#}");
 }
+
+/// Your own API client wins; without one, the build's (if it has one).
+#[test]
+fn own_client_else_the_built_in_one() {
+    let built_in = ("ichioshi".to_owned(), "its secret".to_owned());
+    assert_eq!(
+        super::client(" mine ", " shh ", Some(&built_in)),
+        Some(("mine".to_owned(), "shh".to_owned()))
+    );
+    assert_eq!(
+        super::client("", "", Some(&built_in)),
+        Some(built_in.clone())
+    );
+    assert_eq!(
+        super::client("  ", "stray", Some(&built_in)),
+        Some(built_in)
+    );
+    assert_eq!(super::client("", "", None), None);
+}

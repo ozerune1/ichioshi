@@ -42,6 +42,10 @@ pub(super) struct TrackingState {
     /// Episodes finished in the player, to put on the lists once they're
     /// read (by AniList ID: the latest episode).
     pub(super) to_sync: BTreeMap<u64, u32>,
+    /// The API clients this build carries (`crate::tracking::built_in`).
+    pub(crate) built_in: HashMap<Service, crate::tracking::Client>,
+    /// Services whose own-client form is open, though one's built in.
+    pub(crate) own_client: HashSet<Service>,
 }
 
 pub(super) enum Account {
@@ -117,7 +121,48 @@ impl TrackingState {
             signing_in: None,
             seq: 0,
             to_sync: BTreeMap::new(),
+            built_in: [Service::AniList, Service::Mal]
+                .into_iter()
+                .filter_map(|s| Some((s, crate::tracking::built_in(s)?)))
+                .collect(),
+            own_client: HashSet::new(),
         }
+    }
+
+    /// The API client to sign in (and stay signed in) with: yours, else the
+    /// one built in.
+    pub(crate) fn client(&self, service: Service) -> Option<crate::tracking::Client> {
+        let (id, secret) = match service {
+            Service::AniList => (
+                &self.config.anilist.client_id,
+                &self.config.anilist.client_secret,
+            ),
+            Service::Mal => (&self.config.mal.client_id, &self.config.mal.client_secret),
+        };
+        crate::tracking::client(id, secret, self.built_in.get(&service))
+    }
+
+    /// Back to the build's own API client: yours forgotten.
+    pub(crate) fn use_built_in(&mut self, service: Service) {
+        self.own_client.remove(&service);
+        let c = &mut self.config;
+        match service {
+            Service::AniList => (c.anilist.client_id.clear(), c.anilist.client_secret.clear()),
+            Service::Mal => (c.mal.client_id.clear(), c.mal.client_secret.clear()),
+        };
+        self.save();
+    }
+
+    /// Signing in is one button: a client's built in, and you haven't given
+    /// (or asked to give) your own.
+    pub(crate) fn just_sign_in(&self, service: Service) -> bool {
+        let own = match service {
+            Service::AniList => &self.config.anilist.client_id,
+            Service::Mal => &self.config.mal.client_id,
+        };
+        self.built_in.contains_key(&service)
+            && own.trim().is_empty()
+            && !self.own_client.contains(&service)
     }
 
     pub(super) fn save(&self) {
@@ -225,12 +270,12 @@ impl App {
         if t.mal.is_none()
             && let Some(tokens) = &t.config.mal.tokens
         {
-            let m = &t.config.mal;
+            let (client_id, secret) = t.client(Service::Mal).unwrap_or_default();
             let session = mal::Session::new(
                 self.http.clone(),
                 t.endpoints.clone(),
-                m.client_id.trim().to_owned(),
-                m.client_secret.trim().to_owned(),
+                client_id,
+                secret,
                 tokens.clone(),
             );
             t.mal = Some(Arc::new(session));
@@ -505,16 +550,7 @@ impl App {
         if self.tracking.signing_in.is_some() {
             return;
         }
-        let (client_id, secret) = match service {
-            Service::AniList => (
-                self.tracking.config.anilist.client_id.trim().to_owned(),
-                self.tracking.config.anilist.client_secret.trim().to_owned(),
-            ),
-            Service::Mal => (
-                self.tracking.config.mal.client_id.trim().to_owned(),
-                self.tracking.config.mal.client_secret.trim().to_owned(),
-            ),
-        };
+        let (client_id, secret) = self.tracking.client(service).unwrap_or_default();
         if client_id.is_empty() {
             self.set_error(format!("Paste the {} client ID first", service.name()));
             return;
