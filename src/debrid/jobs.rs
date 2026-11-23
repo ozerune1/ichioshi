@@ -876,7 +876,7 @@ async fn cancelled(cancel: &AtomicBool) {
 
 /// Download `url` to `dest` (via `dest.part`), resuming a partial file
 /// where the server allows it. `progress` gets bytes so far and the speed.
-async fn fetch(
+pub(crate) async fn fetch(
     http: &reqwest::Client,
     url: &str,
     dest: &Path,

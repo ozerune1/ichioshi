@@ -265,6 +265,32 @@ impl Gui {
                      client, and puts it in place."
                 ),
             ));
+            // Its episodes on Jellyfin, kept here to watch offline.
+            if let Some(r) = series.and_then(|s| s.remote.as_ref()) {
+                let savable = r
+                    .episodes
+                    .iter()
+                    .filter(|(n, e)| {
+                        e.jellyfin.is_some()
+                            && self.app.offline_copy(id, **n).is_none()
+                            && self.app.offline_job(id, **n).is_none()
+                    })
+                    .count();
+                if savable > 0 {
+                    buttons = buttons.push(with_tip(
+                        secondary(
+                            format!("↓  Save {savable} offline"),
+                            Some(act(Action::Offline(OfflineAction::Save {
+                                id,
+                                episodes: Vec::new(),
+                            }))),
+                        ),
+                        "Download its episodes from Jellyfin to this computer, to watch \
+                         without it"
+                            .into(),
+                    ));
+                }
+            }
             let lists: Element<'_, Message> = if self.app.tracking.any() {
                 self.lists_panel(id)
             } else {
@@ -619,7 +645,9 @@ impl Gui {
         } else if let (Some((_, len)), Some(r)) = (&e.file, series.and_then(|s| s.remote.as_ref()))
         {
             // On the servers: it plays from Jellyfin.
-            let playable = r.episodes.get(&n).is_some_and(|x| x.jellyfin.is_some());
+            let on_jellyfin = r.episodes.get(&n).is_some_and(|x| x.jellyfin.is_some());
+            let copy = self.app.offline_copy(id, n).is_some();
+            let playable = on_jellyfin || copy;
             let play: Element<'_, Message> = if done {
                 text("✓ Watched").size(12).font(SEMI).color(GREEN).into()
             } else if !playable {
@@ -633,6 +661,7 @@ impl Gui {
                 text("▶ Play").size(12).font(SEMI).color(ACCENT).into()
             };
             row![
+                self.offline_controls(id, n, on_jellyfin),
                 text(fmt_bytes(*len)).size(12).color(FAINT),
                 container(play).width(110).align_x(Alignment::End),
             ]
@@ -1249,6 +1278,67 @@ impl Gui {
             ]
             .spacing(16),
         )
+    }
+}
+
+use crate::app::offline_ui::{OfflineAction, Saving};
+
+impl Gui {
+    /// An episode's offline copy: there (remove it), being saved (how far;
+    /// stop), failed (retry), or to save.
+    fn offline_controls(&self, id: u64, n: u32, on_jellyfin: bool) -> Element<'_, Message> {
+        let offline = |a: OfflineAction| act(Action::Offline(a));
+        if self.app.offline_copy(id, n).is_some() {
+            return row![
+                badge("Offline ✓", GREEN),
+                small(
+                    "Remove copy",
+                    Some(offline(OfflineAction::Remove { id, episode: n }))
+                ),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into();
+        }
+        if let Some(j) = self.app.offline_job(id, n) {
+            let (status, extra): (Element<'_, Message>, Element<'_, Message>) = match &j.state {
+                Saving::Waiting => (
+                    text("Waiting to save").size(12).color(FAINT).into(),
+                    small("Stop", Some(offline(OfflineAction::Cancel(j.id)))),
+                ),
+                Saving::Getting => (
+                    row![
+                        bar(j.fraction(), ACCENT, 4.0).length(80),
+                        text(format!("{:.0}%", j.fraction() * 100.0))
+                            .size(12)
+                            .font(SEMI)
+                            .color(ACCENT),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                    .into(),
+                    small("Stop", Some(offline(OfflineAction::Cancel(j.id)))),
+                ),
+                Saving::Failed(e) => (
+                    with_tip(text("Couldn't save").size(12).color(RED).into(), e.clone()),
+                    small("Retry", Some(offline(OfflineAction::Retry(j.id)))),
+                ),
+            };
+            return row![status, extra]
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into();
+        }
+        if on_jellyfin {
+            return small(
+                "↓ Save offline",
+                Some(offline(OfflineAction::Save {
+                    id,
+                    episodes: vec![n],
+                })),
+            );
+        }
+        space().width(0).into()
     }
 }
 

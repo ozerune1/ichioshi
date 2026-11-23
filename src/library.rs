@@ -139,6 +139,9 @@ pub struct Series {
     /// Each episode file's release, by path within the folder.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub releases: BTreeMap<String, Described>,
+    /// Copies of episodes on the servers kept here, to watch offline.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub offline: BTreeMap<u32, PathBuf>,
 }
 
 /// Who released an episode's file, and how: its group, BD or WEB, dual
@@ -493,6 +496,7 @@ impl Library {
             watched: BTreeMap::new(),
             remote: None,
             releases: BTreeMap::new(),
+            offline: BTreeMap::new(),
         });
         self.save_or_warn();
         self.series.last_mut().unwrap()

@@ -86,6 +86,9 @@ pub struct Playable {
     /// Fonts and other attachments: index and file name.
     pub attachments: Vec<(u64, String)>,
     pub duration: f64,
+    /// The file's size, and its name on the server.
+    pub size: u64,
+    pub file_name: Option<String>,
 }
 
 impl Jellyfin {
@@ -297,6 +300,12 @@ impl Jellyfin {
             chapters,
             attachments,
             duration: v["RunTimeTicks"].as_f64().unwrap_or(0.0) / TICKS,
+            size: source["Size"].as_u64().unwrap_or(0),
+            file_name: source["Path"]
+                .as_str()
+                .and_then(|p| p.rsplit(['/', '\\']).next())
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned),
         })
     }
 
@@ -312,6 +321,16 @@ impl Jellyfin {
             url += &format!("&api_key={t}");
         }
         url
+    }
+
+    /// Where the file downloads from as it is (Jellyfin's download, which
+    /// the account may not be allowed: else its stream, also as it is).
+    pub fn download_urls(&self, p: &Playable) -> [String; 2] {
+        let token = self.token.as_deref().unwrap_or_default();
+        [
+            format!("{}/Items/{}/Download?api_key={token}", self.base, p.item),
+            self.stream_url(p),
+        ]
     }
 
     /// A subtitle stream as a whole file (ASS ones as ASS, others as SRT).

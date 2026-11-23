@@ -418,7 +418,14 @@ impl Gui {
 
     fn play(&mut self, id: u64, episode: u32) -> Task<Message> {
         if self.app.servers_mode() {
-            return self.play_from_jellyfin(id, episode);
+            // Its offline copy, if there's one; else Jellyfin's stream.
+            return match self.app.offline_copy(id, episode).cloned() {
+                Some(path) => {
+                    self.save_progress();
+                    self.play_file(id, episode, path)
+                }
+                None => self.play_from_jellyfin(id, episode),
+            };
         }
         self.save_progress();
         let busy = self.app.busy_files();
@@ -428,6 +435,14 @@ impl Gui {
         let Some(path) = episode_files(series, &busy).remove(&episode) else {
             self.app
                 .set_error(format!("Episode {episode} isn't in the library"));
+            return Task::none();
+        };
+        self.play_file(id, episode, path)
+    }
+
+    /// Play an episode's file on this computer.
+    fn play_file(&mut self, id: u64, episode: u32, path: PathBuf) -> Task<Message> {
+        let Some(series) = self.app.library.find(id) else {
             return Task::none();
         };
         // Your languages choose the audio and subtitles (the series' own,

@@ -101,6 +101,30 @@ impl Gui {
                 "Set up Sonarr or Radarr in Settings to see their queues.",
             ));
         }
+        // Episodes from Jellyfin being saved here, to watch offline.
+        let saving = &self.app.offline.jobs;
+        if !saving.is_empty() {
+            let mut list = Column::new().spacing(10);
+            for j in saving {
+                list = list.push(self.offline_card(j));
+            }
+            page_c = page_c
+                .push(
+                    row![
+                        text("Saving offline").size(17).font(SEMI).color(TEXT),
+                        weak(format!(
+                            "{} from Jellyfin · into {}",
+                            saving.len(),
+                            self.app.library_dir().join("Offline").display()
+                        )),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                )
+                .push(gap(12.0))
+                .push(list)
+                .push(gap(24.0));
+        }
         let own = self.app.debrid.manager.views().len()
             + self.app.usenet.manager.views().len()
             + self.app.engine().map_or(0, |e| e.torrents().len());
@@ -203,6 +227,81 @@ impl Gui {
             ]
             .spacing(16)
             .align_y(Alignment::Start),
+        )
+        .padding(16)
+        .width(Fill)
+        .style(|_| card_style(SURFACE))
+        .into()
+    }
+
+    /// An episode being saved offline: how far, and stopping it.
+    fn offline_card<'a>(
+        &'a self,
+        j: &'a crate::app::offline_ui::OfflineJob,
+    ) -> Element<'a, Message> {
+        use crate::app::offline_ui::{OfflineAction, Saving};
+        let series = self.app.library.find(j.anilist);
+        let cover = self.images.get(series.and_then(|s| {
+            s.cover
+                .as_deref()
+                .or(s.details.as_ref().and_then(|d| d.cover.as_deref()))
+        }));
+        let len = j.len.load(std::sync::atomic::Ordering::Relaxed);
+        let have = j.have.load(std::sync::atomic::Ordering::Relaxed);
+        let speed = *j.speed.lock().unwrap();
+        let (status, color) = match &j.state {
+            Saving::Waiting => ("Waiting its turn".to_owned(), MUTED),
+            Saving::Getting if len == 0 => ("Asking Jellyfin for it…".to_owned(), ACCENT),
+            Saving::Getting => {
+                let mut s = format!(
+                    "{:.0}% · {} of {}",
+                    j.fraction() * 100.0,
+                    fmt_bytes(have),
+                    fmt_bytes(len)
+                );
+                if speed > 0.0 {
+                    s += &format!(
+                        " · {} · {} left",
+                        fmt_speed(speed / 1_048_576.0),
+                        fmt_duration((len - have.min(len)) as f64 / speed)
+                    );
+                }
+                (s, ACCENT)
+            }
+            Saving::Failed(e) => (format!("Couldn't save it: {e}"), RED),
+        };
+        let mut buttons = Row::new().spacing(6);
+        if matches!(j.state, Saving::Failed(_)) {
+            buttons = buttons.push(small(
+                "Retry",
+                Some(act(Action::Offline(OfflineAction::Retry(j.id)))),
+            ));
+        }
+        buttons = buttons.push(small(
+            "Stop",
+            Some(act(Action::Offline(OfflineAction::Cancel(j.id)))),
+        ));
+        container(
+            row![
+                picture(cover, 40.0, 56.0, 6.0),
+                column![
+                    row![
+                        badge("Jellyfin", ACCENT),
+                        text(clip(&j.title, 90)).size(15).font(SEMI).color(TEXT),
+                        text(format!("Episode {}", j.episode)).size(13).color(MUTED),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                    bar(j.fraction(), color, 6.0),
+                    text(status)
+                        .size(12)
+                        .color(if color == RED { RED } else { MUTED }),
+                    buttons,
+                ]
+                .spacing(8)
+                .width(Fill),
+            ]
+            .spacing(16),
         )
         .padding(16)
         .width(Fill)

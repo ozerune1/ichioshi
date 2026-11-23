@@ -1425,6 +1425,7 @@ fn library_on_your_servers() {
         return;
     };
     let video_bytes = std::fs::read(&video).unwrap();
+    let video_bytes2 = video_bytes.clone();
     let ass = std::fs::read(base.join("sample").join("typeset.ass")).unwrap();
     let torrent = crate::debrid::jobs::tests::make_torrent(
         "[Group] Frieren S01",
@@ -1560,7 +1561,8 @@ fn library_on_your_servers() {
             ("GET", "/jf/Items/je1") => json!({"RunTimeTicks": 50_000_000,
                 "Chapters": [{"StartPositionTicks": 0, "Name": "Opening"},
                              {"StartPositionTicks": 20_000_000, "Name": "Part A"}],
-                "MediaSources": [{"Id": "src1", "MediaStreams": [
+                "MediaSources": [{"Id": "src1", "Size": video_bytes.len(),
+                    "Path": "/media/anime/Frieren/Season 01/Frieren - S01E01.mkv", "MediaStreams": [
                     {"Index": 0, "Type": "Video", "Codec": "h264"},
                     {"Index": 1, "Type": "Audio", "Codec": "flac", "Language": "jpn", "Channels": 1,
                      "IsDefault": true},
@@ -1571,6 +1573,8 @@ fn library_on_your_servers() {
                 return Resp::binary(200, ass.clone());
             }
             ("POST", "/jf/UserItems/je1/UserData") => json!({}),
+            // Not allowed to download: saved from the stream instead.
+            ("GET", "/jf/Items/je1/Download") => return reply(403, json!({})),
             ("GET", "/download/777.torrent") => return Resp::binary(200, torrent.clone()),
             (_, "/seadex") => {
                 if q.get("filter")
@@ -1964,6 +1968,38 @@ fn library_on_your_servers() {
         told["PlaybackPositionTicks"].as_i64().unwrap() > 5_000_000,
         "{told}"
     );
+
+    // Saved offline (from its stream: downloads aren't allowed), then
+    // played from here, then its copy removed.
+    click(&mut h, "↓ Save offline");
+    wait_until(&mut h, "saved offline", |g| {
+        g.app.offline_copy(FRIEREN, 1).is_some()
+    });
+    let copy = h.app.offline_copy(FRIEREN, 1).unwrap().clone();
+    assert!(
+        copy.starts_with(base.join("downloads").join("Offline")),
+        "{copy:?}"
+    );
+    assert_eq!(copy.file_name().unwrap(), "Frieren - S01E01.mkv");
+    assert_eq!(std::fs::read(&copy).unwrap(), video_bytes2);
+    assert!(shows(&h, "Offline ✓"));
+    save(&h, &out, "4b-offline");
+    send(
+        &mut h,
+        [act(Action::Player(PlayerAction::Play {
+            id: FRIEREN,
+            episode: 1,
+        }))],
+    );
+    assert_eq!(
+        h.player.as_ref().map(|p| p.path.clone()),
+        Some(copy.clone()),
+        "the copy plays"
+    );
+    send(&mut h, [Message::Player(player::Msg::Back)]);
+    click(&mut h, "Remove copy");
+    assert!(!copy.exists());
+    assert!(h.app.offline_copy(FRIEREN, 1).is_none());
 
     // An anime not on the servers yet.
     let link_click = crate::browse::Media {

@@ -512,6 +512,7 @@ fn remote_series(
         watched,
         remote: Some(remote),
         releases: Default::default(),
+        offline: Default::default(),
     }
 }
 
@@ -535,6 +536,18 @@ pub fn merge(old: &[Series], mut new: Vec<Series>, have_jellyfin: bool) -> Vec<S
         s.added = o.added;
         s.details = o.details.clone();
         s.prefs = o.prefs.clone();
+        // Offline copies (of episodes it still has, still there).
+        s.offline = o
+            .offline
+            .iter()
+            .filter(|(n, p)| {
+                s.remote
+                    .as_ref()
+                    .is_some_and(|r| r.episodes.contains_key(n))
+                    && p.exists()
+            })
+            .map(|(n, p)| (*n, p.clone()))
+            .collect();
         for (n, w) in &o.watched {
             // Episodes it no longer has (they turned out to be another
             // anime's: a sequel's, say) take their marks with them.

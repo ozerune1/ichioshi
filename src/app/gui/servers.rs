@@ -42,6 +42,19 @@ impl Gui {
                  a split-cour season) is its own anime with its own episode numbers."
             ),
             self.jellyfin_settings(),
+            row![
+                column![
+                    text("Offline copies").size(15).font(SEMI).color(TEXT),
+                    weak(format!(
+                        "Episodes saved from Jellyfin go in {}",
+                        self.app.library_dir().join("Offline").display()
+                    )),
+                ]
+                .spacing(2)
+                .width(Fill),
+                secondary("Change…", Some(act(Action::PickLibraryFolder))),
+            ]
+            .align_y(Alignment::Center),
             self.arr_settings(Kind::Sonarr),
             self.arr_settings(Kind::Radarr),
         ]

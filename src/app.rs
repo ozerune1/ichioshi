@@ -33,6 +33,7 @@ pub(crate) mod gui;
 mod handover;
 mod library_ui;
 mod manage_ui;
+mod offline_ui;
 mod playlist_page;
 mod remux_page;
 mod servers_ui;
@@ -162,6 +163,7 @@ enum Msg {
     Tracking(tracking_ui::TrackingMsg),
     Servers(servers_ui::ServersMsg),
     Manage(manage_ui::ManageMsg),
+    Offline(offline_ui::OfflineMsg),
     /// Episode files' releases, read: by series, path, size.
     Described(Vec<(u64, String, u64, crate::library::EpisodeRelease)>),
     Engine {
@@ -446,6 +448,7 @@ enum Action {
     Tracking(tracking_ui::TrackingAction),
     Servers(servers_ui::ServersAction),
     Manage(manage_ui::ManageAction),
+    Offline(offline_ui::OfflineAction),
 }
 
 /// A download picked on the Downloads page (to remove several at once).
@@ -811,6 +814,8 @@ pub struct App {
     servers: servers_ui::ServersState,
     /// The page's series, managed as in Sonarr (on the servers).
     manage: Option<manage_ui::Manage>,
+    /// Episodes on Jellyfin being saved here, to watch offline.
+    offline: offline_ui::OfflineState,
     /// AniList's lists to discover anime in.
     discover: discover_ui::DiscoverState,
     /// What's airing.
@@ -890,6 +895,7 @@ impl App {
             tracking: tracking_ui::TrackingState::load(&state_dir),
             servers,
             manage: None,
+            offline: Default::default(),
             discover: Default::default(),
             calendar: Default::default(),
             episode_scores: Default::default(),
@@ -1169,6 +1175,7 @@ impl App {
                 Msg::Servers(msg) => self.handle_servers_msg(msg),
                 Msg::Manage(msg) => self.handle_manage_msg(msg),
                 Msg::Described(read) => self.handle_described(read),
+                Msg::Offline(msg) => self.handle_offline_msg(msg),
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
@@ -1390,6 +1397,7 @@ impl App {
             Action::Tracking(action) => self.tracking_action(action),
             Action::Servers(action) => self.servers_action(action),
             Action::Manage(action) => self.manage_action(action),
+            Action::Offline(action) => self.offline_action(action),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),
@@ -1922,7 +1930,13 @@ impl App {
         } else {
             0
         };
-        torrents + debrid + usenet + queued
+        let saving = self
+            .offline
+            .jobs
+            .iter()
+            .filter(|j| !matches!(j.state, offline_ui::Saving::Failed(_)))
+            .count();
+        torrents + debrid + usenet + queued + saving
     }
 }
 
