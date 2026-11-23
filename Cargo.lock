@@ -3809,7 +3809,7 @@ dependencies = [
 
 [[package]]
 name = "ichioshi"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3860,7 +3860,7 @@ dependencies = [
 
 [[package]]
 name = "ichioshi-mobile"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "ichioshi",
  "serde_json",
