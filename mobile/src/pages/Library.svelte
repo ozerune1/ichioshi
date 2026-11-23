@@ -2,19 +2,43 @@
   // The library: how it is, what's next to watch, and your series.
   import Button from "../lib/Button.svelte";
   import Poster from "../lib/Poster.svelte";
-  import { press } from "../lib/api";
+  import { goTab, press } from "../lib/api";
+  import { app } from "../lib/store.svelte";
 
   let { page }: { page: any } = $props();
 
   let search = $state("");
-  let only = $state<string | null>(null);
+  // The list status filtered by, remembered (a big library is mostly what
+  // you're not watching).
+  const KEY = "library-filter";
+  function remembered(): string | null {
+    try {
+      return localStorage.getItem(KEY);
+    } catch {
+      return null;
+    }
+  }
+  let only = $state<string | null>(remembered());
+  function filter(k: string | null) {
+    only = k;
+    try {
+      if (k) localStorage.setItem(KEY, k);
+      else localStorage.removeItem(KEY);
+    } catch {}
+  }
+  // Lists' sign-ins are in More › Lists.
+  function signIn() {
+    app.section = { key: "lists", name: "Lists" };
+    goTab("more");
+  }
+  let filtering = $derived(page.lists && !!only);
 
   const statuses = ["watching", "completed", "planning", "paused", "dropped"];
   let shown = $derived(
     page.series.filter(
       (s: any) =>
         (!search || s.title.toLowerCase().includes(search.toLowerCase())) &&
-        (!only || s.status?.key === only),
+        (!filtering || s.status?.key === only),
     ),
   );
   let counts = $derived(
@@ -48,7 +72,7 @@
   {:else}
     <input class="search" placeholder="Search your library" bind:value={search} />
 
-    {#if page.continue.length && !search && !only}
+    {#if page.continue.length && !search && (!filtering || only === "watching")}
       <h2>Continue watching</h2>
       <div class="shelf">
         {#each page.continue as c (c.id)}
@@ -70,15 +94,25 @@
 
     {#if page.lists}
       <div class="chips">
-        <button class="chip" class:on={!only} onclick={() => (only = null)}>All {page.series.length}</button>
+        <button class="chip" class:on={!only} onclick={() => filter(null)}>All {page.series.length}</button>
         {#each statuses as k}
           {#if counts[k] || k !== "dropped"}
-            <button class="chip" class:on={only === k} onclick={() => (only = k)}>
+            <button class="chip" class:on={only === k} onclick={() => filter(k)}>
               {k[0].toUpperCase() + k.slice(1)} {counts[k]}
             </button>
           {/if}
         {/each}
       </div>
+      {#if filtering && !shown.length}
+        <p class="muted small none">
+          {page.listsLoading ? "Reading your lists…" : search ? "Nothing matches." : "Nothing with this status."}
+        </p>
+      {/if}
+    {:else}
+      <p class="small hint">
+        <span class="muted">To filter by Watching, Completed and the rest, and keep dropped shows off the calendar:</span>
+        <button class="link" onclick={signIn}>sign in to AniList or MyAnimeList</button>
+      </p>
     {/if}
 
     <div class="grid">
@@ -127,6 +161,9 @@
     border: 1px solid var(--line); background: var(--surface); color: var(--muted);
   }
   .chip.on { background: var(--accent-gradient); color: white; border-color: transparent; }
+  .none { margin-top: 18px; text-align: center; }
+  .hint { margin: 14px 0 0; }
+  .link { background: none; border: none; padding: 0; font: inherit; color: var(--accent); }
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px 10px; margin-top: 14px; }
   .card {
     display: flex; flex-direction: column; gap: 2px; min-width: 0;

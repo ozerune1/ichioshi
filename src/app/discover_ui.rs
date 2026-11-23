@@ -146,19 +146,19 @@ impl App {
         self.calendar.weeks.insert(week, (loaded, Instant::now()));
     }
 
-    /// Whether an anime is on your lists (other than dropped). Without lists,
-    /// whether it's in the library.
+    /// Whether an anime is on your lists, and not dropped on any of them.
+    /// Without lists, whether it's in the library.
     pub(super) fn on_your_lists(&self, m: &Media) -> bool {
         let t = &self.tracking;
         if !t.any() {
             return self.library.find(m.id).is_some();
         }
         let anilist = t.lists.get(&Service::AniList).and_then(|l| l.get(&m.id));
-        let mal = m.id_mal.and_then(|k| t.lists.get(&Service::Mal)?.get(&k));
-        [anilist, mal]
-            .into_iter()
-            .flatten()
-            .any(|e| e.status != Status::Dropped)
+        let mal = m
+            .id_mal
+            .or_else(|| t.key(Service::Mal, m.id))
+            .and_then(|k| t.lists.get(&Service::Mal)?.get(&k));
+        still_yours([anilist, mal].into_iter().flatten().map(|e| e.status))
     }
 
     /// An anime from Discover or the calendar: its page (the library's, if
@@ -175,9 +175,32 @@ impl App {
     }
 }
 
+/// On a list, and dropped on none: a list you've dropped it on is the one
+/// you keep up to date (the other may not be).
+fn still_yours(statuses: impl Iterator<Item = Status>) -> bool {
+    let mut any = false;
+    for s in statuses {
+        if s == Status::Dropped {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_on_either_list_is_not_yours() {
+        use Status::*;
+        assert!(still_yours([Watching].into_iter()));
+        assert!(still_yours([Watching, Planning].into_iter()));
+        assert!(!still_yours([Watching, Dropped].into_iter()));
+        assert!(!still_yours([Dropped, Watching].into_iter()));
+        assert!(!still_yours([].into_iter()), "on no list");
+    }
 
     #[test]
     fn weeks_start_on_monday() {

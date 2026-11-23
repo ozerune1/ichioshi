@@ -109,6 +109,12 @@ pub(super) fn page(ui: &mut Ui) -> Value {
         "summary": summary,
         "about": about,
         "lists": app.tracking.any(),
+        // Signed in, but a list isn't read yet: statuses are still to come.
+        "listsLoading": app
+            .tracking
+            .services()
+            .iter()
+            .any(|s| !app.tracking.lists.contains_key(s)),
         "continue": shelf,
         "series": cards,
         "empty": app.library.series.is_empty(),

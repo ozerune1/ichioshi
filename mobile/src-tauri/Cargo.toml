@@ -1,6 +1,6 @@
 [package]
 name = "ichioshi-mobile"
-version = "0.2.0"
+version = "0.2.1"
 description = "Ichioshi for phones: the app's core, with a web UI (Tauri)"
 edition = "2024"
 
