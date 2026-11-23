@@ -52,14 +52,16 @@ impl Gui {
         if !self.app.debrid.config.enabled {
             c = c.push(self.vpn_settings());
         }
-        c = c
-            .push(self.list_settings())
-            .push(group(
-                "Google Drive",
-                "Upload playlist exports to a folder in your Drive.",
-                self.drive_section(None),
-            ))
-            .push(self.player_settings());
+        c = c.push(self.list_settings());
+        if DESKTOP {
+            c = c
+                .push(group(
+                    "Google Drive",
+                    "Upload playlist exports to a folder in your Drive.",
+                    self.drive_section(None),
+                ))
+                .push(self.player_settings());
+        }
         page(c)
     }
 
@@ -70,7 +72,11 @@ impl Gui {
         let on_servers = self.app.servers_mode();
         let mode = row![
             chip(
-                "On this computer",
+                if DESKTOP {
+                    "On this computer"
+                } else {
+                    "On this phone"
+                },
                 !on_servers,
                 Some(act(Action::Servers(ServersAction::SetMode(
                     LibraryMode::Local
@@ -102,7 +108,7 @@ impl Gui {
                     field("Library folder", &s.library_dir.display().to_string())
                         .on_input(|t| edit(move |g| g.app.settings.library_dir = PathBuf::from(&t)))
                         .width(Fill),
-                    secondary("Browse…", Some(act(Action::PickLibraryFolder))),
+                    desktop_only(secondary("Browse…", Some(act(Action::PickLibraryFolder)))),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),

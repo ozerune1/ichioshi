@@ -63,7 +63,8 @@ pub(super) fn on_disk(gui: &Gui, id: u64) -> BTreeSet<u32> {
 impl Gui {
     // ── Sidebar ───────────────────────────────────────────────────────
 
-    pub(super) fn sidebar(&self) -> Element<'_, Message> {
+    /// Where the app's pages are: (icon, name, badge, is it this one, go).
+    fn places(&self) -> Vec<(&'static str, &'static str, Option<String>, bool, Message)> {
         let page = &self.app.page;
         let in_library = |id: u64| self.app.library.find(id).is_some();
         let came_from = |o: Origin| matches!(page, Page::Anime(ap) if ap.origin == o);
@@ -82,6 +83,97 @@ impl Gui {
             Page::Anime(ap) => ap.origin == Origin::Results && !in_library(ap.anime.anilist_id),
             _ => false,
         };
+        let active = self.app.active_downloads();
+        let playlist = self.app.playlist.items.len();
+        vec![
+            (
+                "▦",
+                "Library",
+                Some(self.app.library.series.len().to_string()),
+                on_library,
+                act(Action::GoLibrary),
+            ),
+            ("✦", "Discover", None, on_discover, act(Action::GoDiscover)),
+            ("◷", "Calendar", None, on_calendar, act(Action::GoCalendar)),
+            (
+                "↓",
+                "Downloads",
+                (active > 0).then(|| active.to_string()),
+                matches!(page, Page::Downloads),
+                act(Action::GoDownloads),
+            ),
+            (
+                "⌕",
+                "Search",
+                None,
+                on_search,
+                edit(|g| {
+                    g.app.cancel_listing();
+                    g.app.page = Page::Results;
+                }),
+            ),
+            (
+                "≡",
+                "Playlist",
+                (playlist > 0).then(|| playlist.to_string()),
+                matches!(page, Page::Playlist(_)),
+                act(Action::OpenPlaylist),
+            ),
+            (
+                "⚙",
+                "Settings",
+                None,
+                matches!(page, Page::Settings),
+                edit(|g| {
+                    g.app.cancel_listing();
+                    g.app.page = Page::Settings;
+                }),
+            ),
+        ]
+    }
+
+    /// A phone's: the places as tabs along the bottom.
+    pub(super) fn tab_bar(&self) -> Element<'_, Message> {
+        let tabs = self
+            .places()
+            .into_iter()
+            .map(|(icon, name, badge, active, to)| {
+                let color = if active { ACCENT } else { MUTED };
+                let mut top = row![text(icon).size(17).color(color)]
+                    .spacing(3)
+                    .align_y(Alignment::Center);
+                if let Some(b) = badge.filter(|_| name != "Library") {
+                    top = top.push(text(b).size(9).font(SEMI).color(TEXT));
+                }
+                button(
+                    column![
+                        top,
+                        text(name)
+                            .size(9)
+                            .font(if active { SEMI } else { MEDIUM })
+                            .color(if active { TEXT } else { MUTED }),
+                    ]
+                    .spacing(2)
+                    .align_x(Alignment::Center),
+                )
+                .width(Fill)
+                .padding([8, 0])
+                .on_press(to)
+                .style(|_, _| button::Style {
+                    background: None,
+                    text_color: TEXT,
+                    ..button::Style::default()
+                })
+                .into()
+            });
+        container(Row::with_children(tabs).align_y(Alignment::Center))
+            .width(Fill)
+            .padding([2, 4])
+            .style(|_| fill(SIDEBAR))
+            .into()
+    }
+
+    pub(super) fn sidebar(&self) -> Element<'_, Message> {
         let nav = |icon: &'static str,
                    label: &'static str,
                    badge: Option<String>,
@@ -127,8 +219,6 @@ impl Gui {
                     }
                 })
         };
-        let active = self.app.active_downloads();
-        let playlist = self.app.playlist.items.len();
         let logo = row![
             iced::widget::svg(iced::widget::svg::Handle::from_memory(super::ICON_SVG))
                 .width(30)
@@ -209,61 +299,23 @@ impl Gui {
             .width(Fill)
             .style(|_| card_style(SURFACE));
 
-        let content = column![
-            logo,
-            space().height(22),
-            label("Browse"),
-            space().height(4),
-            nav(
-                "▦",
-                "Library",
-                Some(self.app.library.series.len().to_string()),
-                on_library,
-                act(Action::GoLibrary)
-            ),
-            nav("✦", "Discover", None, on_discover, act(Action::GoDiscover)),
-            nav("◷", "Calendar", None, on_calendar, act(Action::GoCalendar)),
-            nav(
-                "↓",
-                "Downloads",
-                (active > 0).then(|| active.to_string()),
-                matches!(page, Page::Downloads),
-                act(Action::GoDownloads)
-            ),
-            nav(
-                "⌕",
-                "Search",
-                None,
-                on_search,
-                edit(|g| {
-                    g.app.cancel_listing();
-                    g.app.page = Page::Results;
-                })
-            ),
-            nav(
-                "≡",
-                "Playlist",
-                (playlist > 0).then(|| playlist.to_string()),
-                matches!(page, Page::Playlist(_)),
-                act(Action::OpenPlaylist)
-            ),
-            nav(
-                "⚙",
-                "Settings",
-                None,
-                matches!(page, Page::Settings),
-                edit(|g| {
-                    g.app.cancel_listing();
-                    g.app.page = Page::Settings;
-                })
-            ),
-            space::vertical(),
-            accounts,
-            space().height(14),
-            status,
-        ]
-        .spacing(2)
-        .padding([20, 16]);
+        let content =
+            column![
+                logo,
+                space().height(22),
+                label("Browse"),
+                space().height(4),
+                Column::with_children(self.places().into_iter().map(
+                    |(icon, name, badge, active, to)| nav(icon, name, badge, active, to).into()
+                ))
+                .spacing(2),
+                space::vertical(),
+                accounts,
+                space().height(14),
+                status,
+            ]
+            .spacing(2)
+            .padding([20, 16]);
         container(content)
             .width(236)
             .height(Fill)
@@ -314,26 +366,30 @@ impl Gui {
             .align_y(Alignment::Center)
             .into()
         };
-        let header = row![
-            page_title(
-                "Library",
-                format!(
-                    "{} series · {episodes} episodes · {}",
-                    a.library.series.len(),
-                    fmt_bytes(bytes)
-                ),
+        let title = page_title(
+            "Library",
+            format!(
+                "{} series · {episodes} episodes · {}",
+                a.library.series.len(),
+                fmt_bytes(bytes)
             ),
-            space::horizontal(),
-            column![
-                top_line,
-                field("Search your library", &self.lib_search)
-                    .on_input(|s| edit(move |g| g.lib_search = s.clone()))
-                    .width(320),
+        );
+        let search = field("Search your library", &self.lib_search)
+            .on_input(|s| edit(move |g| g.lib_search = s.clone()));
+        // A phone's: one above the other.
+        let header: Element<'_, Message> = if compact() {
+            column![title, top_line, search].spacing(10).into()
+        } else {
+            row![
+                title,
+                space::horizontal(),
+                column![top_line, search.width(320)]
+                    .spacing(8)
+                    .align_x(Alignment::End),
             ]
-            .spacing(8)
-            .align_x(Alignment::End),
-        ]
-        .align_y(Alignment::End);
+            .align_y(Alignment::End)
+            .into()
+        };
 
         if a.library.series.is_empty() && a.servers_mode() {
             return page(column![

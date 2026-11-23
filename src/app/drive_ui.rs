@@ -302,15 +302,11 @@ impl App {
 
     pub(super) fn drive_load_client(&mut self) {
         self.spawn(async move {
-            let picked = rfd::AsyncFileDialog::new()
-                .set_title("Google OAuth client file")
-                .add_filter("JSON", &["json"])
-                .pick_file()
-                .await;
+            let picked = crate::pick::file("Google OAuth client file", ("JSON", &["json"])).await;
             let Some(file) = picked else {
                 return Msg::DriveClientFile(Err("no file chosen".into()));
             };
-            let result = match tokio::fs::read_to_string(file.path()).await {
+            let result = match tokio::fs::read_to_string(&file).await {
                 Ok(text) => OAuthClient::from_json(&text).map_err(|e| format!("{e:#}")),
                 Err(e) => Err(e.to_string()),
             };

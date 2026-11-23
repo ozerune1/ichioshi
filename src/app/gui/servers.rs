@@ -52,7 +52,7 @@ impl Gui {
                 ]
                 .spacing(2)
                 .width(Fill),
-                secondary("Change…", Some(act(Action::PickLibraryFolder))),
+                desktop_only(secondary("Change…", Some(act(Action::PickLibraryFolder)))),
             ]
             .align_y(Alignment::Center),
             self.arr_settings(Kind::Sonarr),

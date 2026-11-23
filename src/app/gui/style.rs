@@ -28,12 +28,15 @@ pub(super) const GOLD: Color = Color::from_rgb8(0xfb, 0xbf, 0x24);
 pub(super) const RED: Color = Color::from_rgb8(0xf8, 0x71, 0x71);
 
 pub(super) const INTER: Font = Font::with_name("Inter");
-/// Inter's weights the app uses (built in: not every system has Inter).
-pub(crate) const FONTS: [&[u8]; 4] = [
+/// Inter's weights the app uses (built in: not every system has Inter), and
+/// the few symbols its icons use that Inter lacks.
+pub(crate) const FONTS: [&[u8]; 6] = [
     include_bytes!("../../../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../../../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"),
     include_bytes!("../../../assets/fonts/Inter-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/Symbols-DejaVu.ttf"),
+    include_bytes!("../../../assets/fonts/Symbols-Noto.ttf"),
 ];
 pub(super) const MEDIUM: Font = Font {
     weight: font::Weight::Medium,
@@ -480,8 +483,37 @@ pub(super) fn scroll_style(_: &Theme, _: scrollable::Status) -> scrollable::Styl
 }
 
 /// A page's content, scrolling, with the usual margins.
+/// Android has no file manager to open, nor dialogs to pick files and
+/// folders with: what needs them is left out there.
+pub(super) const DESKTOP: bool = !cfg!(target_os = "android");
+
+/// `e` on computers; nothing on Android (see [`DESKTOP`]).
+pub(super) fn desktop_only<'a>(e: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    if DESKTOP {
+        e.into()
+    } else {
+        iced::widget::space().width(0).height(0).into()
+    }
+}
+
+/// Is the window narrow (a phone's)? Then the places are tabs along the
+/// bottom, and pages have less margin.
+static COMPACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How wide a window has to be for the sidebar.
+pub(super) const COMPACT_BELOW: f32 = 720.0;
+
+pub(super) fn compact() -> bool {
+    COMPACT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(super) fn set_compact(on: bool) {
+    COMPACT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(super) fn page<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    scrollable(container(content).padding([28, 36]).width(Fill))
+    let margin = if compact() { [16, 14] } else { [28, 36] };
+    scrollable(container(content).padding(margin).width(Fill))
         .height(Fill)
         .style(scroll_style)
         .into()

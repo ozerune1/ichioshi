@@ -662,7 +662,9 @@ fn buttons<'a>(
     }
     b.push(small("Episodes…", Some(episodes)));
     b.push(small("Remux…", Some(remux)));
-    b.push(small("Open folder", Some(act(Action::OpenFolder(folder)))));
+    if DESKTOP {
+        b.push(small("Open folder", Some(act(Action::OpenFolder(folder)))));
+    }
     b.push(small("Remove", Some(remove)));
     b.push(outlined_red("Delete…", delete));
     b

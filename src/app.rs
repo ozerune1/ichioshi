@@ -76,7 +76,10 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            download_dir: dirs::download_dir()
+            // (Android says where, at start.)
+            download_dir: std::env::var_os("SEADEX_DOWNLOAD_DIR")
+                .map(PathBuf::from)
+                .or_else(dirs::download_dir)
                 .or_else(dirs::home_dir)
                 .unwrap_or_else(|| PathBuf::from(".")),
             library_dir: default_library_dir(),
@@ -152,6 +155,9 @@ impl Waker {
 fn default_library_dir() -> PathBuf {
     if cfg!(test) {
         return std::env::temp_dir().join("seadex-downloader-test-library");
+    }
+    if let Some(dir) = std::env::var_os("SEADEX_LIBRARY_DIR") {
+        return PathBuf::from(dir);
     }
     dirs::video_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join("Videos")))
@@ -1433,12 +1439,7 @@ impl App {
                     .map(Path::to_owned)
                     .unwrap_or(start);
                 self.spawn(async move {
-                    let picked = rfd::AsyncFileDialog::new()
-                        .set_title("Library folder")
-                        .set_directory(&start)
-                        .pick_folder()
-                        .await;
-                    Msg::LibraryFolderPicked(picked.map(|f| f.path().to_owned()))
+                    Msg::LibraryFolderPicked(crate::pick::folder("Library folder", &start).await)
                 });
             }
             Action::PickFolder => {
@@ -1452,12 +1453,7 @@ impl App {
                     .map(Path::to_owned)
                     .unwrap_or(start);
                 self.spawn(async move {
-                    let picked = rfd::AsyncFileDialog::new()
-                        .set_title("Save this download in")
-                        .set_directory(&start)
-                        .pick_folder()
-                        .await;
-                    Msg::FolderPicked(picked.map(|f| f.path().to_owned()))
+                    Msg::FolderPicked(crate::pick::folder("Save this download in", &start).await)
                 });
             }
         }
@@ -2060,6 +2056,16 @@ fn fmt_speed(mib_per_sec: f64) -> String {
 
 /// Open a folder in the system file manager (its nearest existing parent if
 /// it hasn't been created yet).
+#[cfg(target_os = "android")]
+fn open_folder(path: &Path) -> std::io::Result<()> {
+    let link = path.to_string_lossy();
+    if !link.contains("://") {
+        return Err(std::io::Error::other("Android has no folders to open"));
+    }
+    crate::android::view(&link, None).map_err(std::io::Error::other)
+}
+
+#[cfg(not(target_os = "android"))]
 fn open_folder(path: &Path) -> std::io::Result<()> {
     let target = path
         .ancestors()

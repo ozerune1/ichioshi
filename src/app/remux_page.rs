@@ -440,12 +440,7 @@ impl App {
             .map(Path::to_owned)
             .unwrap_or_else(|| self.download_dir());
         self.spawn(async move {
-            let picked = rfd::AsyncFileDialog::new()
-                .set_title("Save remuxes in")
-                .set_directory(&start)
-                .pick_folder()
-                .await;
-            Msg::RemuxFolderPicked(picked.map(|f| f.path().to_owned()))
+            Msg::RemuxFolderPicked(crate::pick::folder("Save remuxes in", &start).await)
         });
     }
 }

@@ -25,14 +25,14 @@ impl Gui {
         let missing = sizes.iter().filter(|s| s.is_none()).count();
         let total: u64 = sizes.iter().flatten().sum();
 
-        let mut tools = row![secondary(
+        let mut tools = row![desktop_only(secondary(
             if pp.adding {
                 "Adding…"
             } else {
                 "Add files…"
             },
             (!exporting && !pp.adding).then(|| act(Action::PlaylistAddFiles))
-        )]
+        ))]
         .spacing(10)
         .align_y(Alignment::Center);
         if !items.is_empty() {
@@ -121,10 +121,10 @@ impl Gui {
                             }
                         }))
                         .width(Fill),
-                    secondary(
+                    desktop_only(secondary(
                         "Browse…",
                         (!exporting).then(|| act(Action::PlaylistPickFolder))
-                    ),
+                    )),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
@@ -177,12 +177,12 @@ impl Gui {
                                     .size(13)
                                     .color(GREEN),
                                 )
-                                .push(small(
+                                .push(desktop_only(small(
                                     "Open folder",
                                     Some(act(Action::OpenFolder(
                                         path.parent().map(|p| p.to_owned()).unwrap_or_default(),
                                     ))),
-                                ));
+                                )));
                         }
                         Some(Err(e)) if e != "cancelled" => {
                             r = r.push(error_text(format!("Export failed: {e}")));
@@ -203,13 +203,15 @@ impl Gui {
             .and_then(|r| r.result.as_ref())
             .and_then(|r| r.as_ref().ok());
         c = c.push(self.remuxes_section(pp));
-        c = c.push(card(
-            column![
-                text("Google Drive").size(17).font(SEMI).color(TEXT),
-                self.drive_section(exported),
-            ]
-            .spacing(14),
-        ));
+        if DESKTOP {
+            c = c.push(card(
+                column![
+                    text("Google Drive").size(17).font(SEMI).color(TEXT),
+                    self.drive_section(exported),
+                ]
+                .spacing(14),
+            ));
+        }
         page(c)
     }
 
@@ -233,10 +235,10 @@ impl Gui {
                 ]
                 .spacing(4)
                 .width(Fill),
-                secondary(
+                desktop_only(secondary(
                     "Open folder",
                     root.is_dir().then(|| act(Action::OpenFolder(root.clone())))
-                ),
+                )),
             ]
             .spacing(10)
             .align_y(Alignment::Center),
@@ -287,7 +289,10 @@ impl Gui {
                                 fmt_bytes(r.bytes)
                             )),
                             space::horizontal(),
-                            small("Open folder", Some(act(Action::OpenFolder(r.dir.clone())))),
+                            desktop_only(small(
+                                "Open folder",
+                                Some(act(Action::OpenFolder(r.dir.clone())))
+                            )),
                             small(
                                 "Delete all…",
                                 Some(act(Action::AskDeleteRemux(r.dir.clone())))

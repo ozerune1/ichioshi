@@ -49,7 +49,8 @@ impl Gui {
         let id = ap.anime.anilist_id;
         let mut body = Column::new().spacing(0);
         body = body.push(self.hero(ap));
-        let mut rest = Column::new().spacing(28).padding([8, 36]);
+        let side = if compact() { 14 } else { 36 };
+        let mut rest = Column::new().spacing(28).padding([8, side]);
         rest = rest.push(self.series_actions(ap));
         if let Some(d) = self.app.details(id).and_then(|d| d.description.clone()) {
             rest = rest
@@ -76,7 +77,9 @@ impl Gui {
     // ── Header ────────────────────────────────────────────────────────
 
     fn hero<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
-        const HERO: f32 = 380.0;
+        // A phone's: smaller, with the facts under the poster.
+        let small = compact();
+        let hero: f32 = if small { 420.0 } else { 380.0 };
         let anime = &ap.anime;
         let id = anime.anilist_id;
         let details = self.app.details(id);
@@ -84,18 +87,18 @@ impl Gui {
         let backdrop: Element<'_, Message> = match banner {
             Some(h) => iced::widget::image(h)
                 .width(Fill)
-                .height(HERO)
+                .height(hero)
                 .content_fit(iced::ContentFit::Cover)
                 .into(),
             None => container(space())
                 .width(Fill)
-                .height(HERO)
+                .height(hero)
                 .style(|_| fill(SURFACE))
                 .into(),
         };
         let shade = container(space())
             .width(Fill)
-            .height(HERO)
+            .height(hero)
             .style(|_| container::Style {
                 background: Some(Background::Gradient(
                     gradient::Linear::new(std::f32::consts::PI)
@@ -150,11 +153,12 @@ impl Gui {
         };
         let mut titles = column![
             text(anime.title.clone())
-                .size(34)
+                .size(if small { 24 } else { 34 })
                 .font(BOLD)
                 .color(Color::WHITE),
         ]
-        .spacing(2);
+        .spacing(2)
+        .width(Fill);
         if let Some(alt) = anime
             .alt_title
             .clone()
@@ -162,14 +166,33 @@ impl Gui {
         {
             titles = titles.push(text(alt).size(14).color(MUTED));
         }
+        let facts = text(facts)
+            .size(13)
+            .font(MEDIUM)
+            .color(Color::from_rgb8(0xc9, 0xce, 0xda));
+        if small {
+            let tags = genres.push(links).wrap().vertical_spacing(6);
+            return stack![
+                backdrop,
+                shade,
+                column![
+                    back,
+                    space::vertical(),
+                    row![picture(cover, 100.0, 142.0, 10.0), titles]
+                        .spacing(14)
+                        .align_y(Alignment::End),
+                    facts,
+                    tags,
+                ]
+                .spacing(10)
+                .padding([16, 14])
+                .height(hero),
+            ]
+            .into();
+        }
         titles = titles
             .push(space().height(8))
-            .push(
-                text(facts)
-                    .size(13)
-                    .font(MEDIUM)
-                    .color(Color::from_rgb8(0xc9, 0xce, 0xda)),
-            )
+            .push(facts)
             .push(space().height(8))
             .push(row![genres, links].spacing(14).align_y(Alignment::Center));
         stack![
@@ -183,7 +206,7 @@ impl Gui {
                     .align_y(Alignment::End)
             ]
             .padding([22, 36])
-            .height(HERO),
+            .height(hero),
         ]
         .into()
     }
@@ -517,14 +540,30 @@ impl Gui {
                 ));
             }
         }
-        let header = row![
-            text("Episodes").size(18).font(SEMI).color(TEXT),
-            text(summary).size(13).color(MUTED),
-            space::horizontal(),
-            tools,
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center);
+        // A phone's: the tools under the title.
+        let header: Element<'_, Message> = if compact() {
+            column![
+                row![
+                    text("Episodes").size(18).font(SEMI).color(TEXT),
+                    text(summary).size(13).color(MUTED).width(Fill),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
+                tools,
+            ]
+            .spacing(8)
+            .into()
+        } else {
+            row![
+                text("Episodes").size(18).font(SEMI).color(TEXT),
+                text(summary).size(13).color(MUTED),
+                space::horizontal(),
+                tools,
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into()
+        };
         let mut list = Column::new().spacing(6);
         if episodes.is_empty() {
             list = list.push(weak("AniList doesn't list its episodes yet."));
@@ -766,11 +805,27 @@ impl Gui {
             Some((w, r)) => (w, r),
             None => (space().width(0).into(), space().width(0).into()),
         };
-        let row = container(
+        // A phone's: two lines, the episode, then when and what to do.
+        let line: Element<'_, Message> = if compact() {
+            column![
+                row![watch, number, middle, score]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                row![airs, discuss, releases, right]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .wrap()
+                    .vertical_spacing(6),
+            ]
+            .spacing(6)
+            .into()
+        } else {
             row![watch, number, middle, score, airs, discuss, releases, right]
                 .spacing(16)
-                .align_y(Alignment::Center),
-        )
+                .align_y(Alignment::Center)
+                .into()
+        };
+        let row = container(line)
         .padding([8, 12])
         .width(Fill)
         .style(move |_| container::Style {
@@ -820,10 +875,10 @@ impl Gui {
         };
         let mut c = column![
             row![
-                text(title).size(16).font(SEMI).color(TEXT),
-                space::horizontal(),
+                text(title).size(16).font(SEMI).color(TEXT).width(Fill),
                 toggle
             ]
+            .spacing(10)
             .align_y(Alignment::Center)
         ]
         .spacing(10);
@@ -1264,7 +1319,10 @@ impl Gui {
                     ]
                     .spacing(4),
                     space::horizontal(),
-                    secondary("Open folder", Some(act(Action::OpenFolder(folder.clone())))),
+                    desktop_only(secondary(
+                        "Open folder",
+                        Some(act(Action::OpenFolder(folder.clone())))
+                    )),
                     secondary(
                         "Remove",
                         Some(act(Action::RemoveSeries {

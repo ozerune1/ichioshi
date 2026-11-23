@@ -50,7 +50,7 @@ impl Gui {
                     |g| g.app.calendar.week = g.app.calendar.week + Days::new(7)
                 ))
             ),
-            iced::widget::space::horizontal(),
+            desktop_only(iced::widget::space::horizontal()),
             check("Show full schedule", c.full, |on| edit(move |g| g
                 .app
                 .calendar
@@ -58,7 +58,9 @@ impl Gui {
                 on)),
         ]
         .spacing(8)
-        .align_y(Alignment::Center);
+        .align_y(Alignment::Center)
+        .wrap()
+        .vertical_spacing(8);
         let head = column![
             page_title("Calendar", format!("{range} · {whose}")),
             controls
@@ -83,7 +85,7 @@ impl Gui {
                     .iter()
                     .filter(|a| c.full || self.app.on_your_lists(&a.media))
                     .collect();
-                let mut days = Row::new().spacing(10);
+                let mut days = Vec::new();
                 for i in 0..7 {
                     let day = week + Days::new(i);
                     let (from, to) = (midnight(day), midnight(day + Days::new(1)));
@@ -92,8 +94,13 @@ impl Gui {
                         .copied()
                         .filter(|a| a.at >= from && a.at < to)
                         .collect();
-                    days = days.push(self.day_column(day, day == today, on_day));
+                    days.push(self.day_column(day, day == today, on_day));
                 }
+                let days: Element<'_, Message> = if compact() {
+                    Column::with_children(days).spacing(10).into()
+                } else {
+                    Row::with_children(days).spacing(10).into()
+                };
                 let mut c = column![days].spacing(16);
                 if shown.is_empty() {
                     c = c.push(weak(if self.app.calendar.full {

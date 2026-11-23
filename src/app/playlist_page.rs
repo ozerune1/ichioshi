@@ -239,17 +239,8 @@ impl App {
         }
         let start = self.download_dir();
         self.spawn(async move {
-            let picked = rfd::AsyncFileDialog::new()
-                .set_title("Add episodes")
-                .add_filter("Matroska video", &["mkv"])
-                .set_directory(&start)
-                .pick_files()
-                .await;
-            let paths: Vec<PathBuf> = picked
-                .unwrap_or_default()
-                .into_iter()
-                .map(|f| f.path().to_owned())
-                .collect();
+            let paths: Vec<PathBuf> =
+                crate::pick::files("Add episodes", ("Matroska video", &["mkv"]), &start).await;
             let (items, errors) = tokio::task::spawn_blocking(move || items_for(paths))
                 .await
                 .unwrap_or_default();
@@ -268,12 +259,7 @@ impl App {
             .map(|p| p.to_owned())
             .unwrap_or_else(|| self.download_dir());
         self.spawn(async move {
-            let picked = rfd::AsyncFileDialog::new()
-                .set_title("Export the playlist to")
-                .set_directory(&start)
-                .pick_folder()
-                .await;
-            Msg::PlaylistFolderPicked(picked.map(|f| f.path().to_owned()))
+            Msg::PlaylistFolderPicked(crate::pick::folder("Export the playlist to", &start).await)
         });
     }
 

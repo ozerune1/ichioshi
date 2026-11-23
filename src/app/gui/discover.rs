@@ -129,7 +129,7 @@ impl Gui {
                 "Anime on AniList: open one to see its releases, add it or download it.".into()
             ),
             gap(18.0),
-            shelves,
+            shelves.wrap().vertical_spacing(8),
             gap(12.0),
             filters,
             gap(24.0),

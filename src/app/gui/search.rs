@@ -337,7 +337,10 @@ impl Gui {
                 .color(TEXT),
                 row![
                     weak(format!("Saves to {folder}")),
-                    link("Change…", (!existing).then(|| act(Action::PickFolder))),
+                    desktop_only(link(
+                        "Change…",
+                        (!existing).then(|| act(Action::PickFolder))
+                    )),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),

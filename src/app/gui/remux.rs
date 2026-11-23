@@ -99,7 +99,10 @@ impl Gui {
                             rp.out_dir_edited = true;
                         })))
                         .width(Fill),
-                    secondary("Browse…", (!locked).then(|| act(Action::PickRemuxFolder))),
+                    desktop_only(secondary(
+                        "Browse…",
+                        (!locked).then(|| act(Action::PickRemuxFolder))
+                    )),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
@@ -373,10 +376,10 @@ fn remux_controls<'a>(rp: &'a RemuxPage, plan: &[PlannedFile]) -> Element<'a, Me
             .spacing(10)
             .align_y(Alignment::Center);
             if let Some(run) = rp.run.as_ref().filter(|r| r.finished) {
-                r = r.push(secondary(
+                r = r.push(desktop_only(secondary(
                     "Open folder",
                     Some(act(Action::OpenFolder(PathBuf::from(rp.out_dir.trim())))),
-                ));
+                )));
                 let done = run
                     .states
                     .iter()

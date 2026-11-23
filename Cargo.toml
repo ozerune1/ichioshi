@@ -21,7 +21,6 @@ nzb-rs = "=0.6.0"
 par2-rs = "=0.13.1"
 regex = "1"
 reqwest = { version = "0.13", features = ["json", "query", "form", "multipart"] }
-rfd = "0.18"
 ring = "0.17"
 roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
@@ -37,10 +36,23 @@ url = "2"
 yenc-simd = "=0.1.1"
 zip = { version = "9.8", default-features = false, features = ["chrono"] }
 iced = { version = "0.14", features = ["image", "svg", "tokio", "advanced"] }
+
+# The player (GStreamer) and file dialogs: not on Android, where videos open
+# in a player app and paths are typed in.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rfd = "0.18"
 iced_video_player = "0.6"
 gstreamer = "0.23"
 gstreamer-app = "0.23"
 gstreamer-video = "0.23"
+
+# Android: started by the system (NativeActivity), through iced's patched
+# runner; videos and links open in other apps (JNI).
+[target.'cfg(target_os = "android")'.dependencies]
+iced_winit = "0.14"
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
+jni = "0.21"
+ndk-context = "0.1"
 
 [dev-dependencies]
 iced_test = "0.14"
@@ -52,3 +64,12 @@ tokio-rustls = "0.26"
 # downloads, and unoptimized SHA-1 would cap download speed.
 [profile.dev.package."*"]
 opt-level = 3
+
+# iced's runner, patched to start on Android (vendor/iced_winit: see
+# its src/lib.rs, `android`); the same everywhere else.
+[patch.crates-io]
+iced_winit = { path = "vendor/iced_winit" }
+# Android: checks servers' certificates against the phone's CA folders (the
+# crate's own Android verifier needs Java classes an APK without Gradle
+# hasn't got). Unchanged elsewhere.
+rustls-platform-verifier = { path = "vendor/rustls-platform-verifier" }

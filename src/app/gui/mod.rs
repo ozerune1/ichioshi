@@ -18,7 +18,13 @@ mod flows;
 mod images;
 mod library;
 mod manage;
+#[cfg(not(target_os = "android"))]
 mod player;
+#[cfg(target_os = "android")]
+#[path = "player_android.rs"]
+mod player;
+mod player_types;
+#[cfg(not(target_os = "android"))]
 mod player_view;
 mod playlist;
 mod remux;
@@ -45,8 +51,38 @@ use crate::library::Watch;
 use style::*;
 
 /// Run the GUI until its window closes.
+/// Android: the phone's own fonts for what the app's don't have (Japanese
+/// titles, say); iced doesn't find them by itself there.
+fn system_fonts() -> &'static [&'static [u8]] {
+    #[cfg(target_os = "android")]
+    {
+        static FONTS: std::sync::LazyLock<Vec<&'static [u8]>> = std::sync::LazyLock::new(|| {
+            let mut out = Vec::new();
+            for entry in std::fs::read_dir("/system/fonts")
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let wanted = name.starts_with("NotoSansCJK-Regular")
+                    || name.starts_with("NotoSansSymbols")
+                    || name.starts_with("DroidSansFallback");
+                if wanted && let Ok(bytes) = std::fs::read(entry.path()) {
+                    out.push(&*Box::leak(bytes.into_boxed_slice()));
+                }
+            }
+            out
+        });
+        &FONTS
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        &[]
+    }
+}
+
 pub fn run(rt: tokio::runtime::Handle, state_dir: PathBuf) -> iced::Result {
-    iced::application(
+    let app = iced::application(
         move || {
             let gui = Gui::new(rt.clone(), state_dir.clone());
             let scale = iced::window::latest()
@@ -60,13 +96,12 @@ pub fn run(rt: tokio::runtime::Handle, state_dir: PathBuf) -> iced::Result {
     .title("SeaDex")
     .subscription(Gui::subscription)
     .theme(|_: &Gui| Theme::Dark)
-    .default_font(INTER)
-    .font(style::FONTS[0])
-    .font(style::FONTS[1])
-    .font(style::FONTS[2])
-    .font(style::FONTS[3])
-    .window(window_settings())
-    .run()
+    .default_font(INTER);
+    let app = style::FONTS
+        .iter()
+        .chain(system_fonts().iter())
+        .fold(app, |app, f| app.font(*f));
+    app.window(window_settings()).run()
 }
 
 pub(crate) use style::FONTS;
@@ -167,6 +202,9 @@ pub(super) struct Gui {
     fullscreen: bool,
     window: iced::Size,
     scale: f32,
+    /// How much of the window's bottom the system covers (Android's
+    /// gesture bar, the keyboard): kept clear.
+    bottom_clear: f32,
     /// The library page's search and filter.
     lib_search: String,
     filter: Filter,
@@ -203,6 +241,7 @@ impl Gui {
             fullscreen: false,
             window: iced::Size::new(1440.0, 900.0),
             scale: 1.0,
+            bottom_clear: 0.0,
             lib_search: String::new(),
             filter: Filter::All,
             release_open: None,
@@ -245,6 +284,7 @@ impl Gui {
             Message::Key(key, modifiers) => self.key(key, modifiers),
             Message::Resized(size) => {
                 self.window = size;
+                style::set_compact(size.width < style::COMPACT_BELOW);
                 self.size_player();
                 Task::none()
             }
@@ -326,6 +366,10 @@ impl Gui {
     /// Every quarter second: the player's progress and the note's time.
     fn tick(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
+        #[cfg(target_os = "android")]
+        {
+            self.bottom_clear = crate::android::bottom_covered() / self.scale.max(1.0);
+        }
         // The end (the widget says so too, while the window draws).
         if self
             .player
@@ -465,7 +509,45 @@ impl Gui {
         self.play_file(id, episode, path)
     }
 
+    /// Android: an episode's file opens in a player app.
+    #[cfg(target_os = "android")]
+    fn play_file(&mut self, id: u64, episode: u32, path: PathBuf) -> Task<Message> {
+        let opened = crate::android::play_file(&path);
+        self.watched_elsewhere(id, episode, opened);
+        Task::none()
+    }
+
+    /// Android: Jellyfin's stream opens in a player app.
+    #[cfg(target_os = "android")]
+    fn open_stream(
+        &mut self,
+        id: u64,
+        episode: u32,
+        p: crate::servers::jellyfin::Playable,
+    ) -> Task<Message> {
+        if let Some(j) = self.app.jellyfin() {
+            let opened = crate::android::view(&j.stream_url(&p), Some("video/*"));
+            self.watched_elsewhere(id, episode, opened);
+        }
+        Task::none()
+    }
+
+    /// A video opened in the phone's player app (or not).
+    #[cfg(target_os = "android")]
+    fn watched_elsewhere(&mut self, id: u64, episode: u32, opened: Result<(), String>) {
+        match opened {
+            Ok(()) => self
+                .app
+                .set_info(format!("Episode {episode} is open in your player app")),
+            Err(e) => self.app.set_error(format!(
+                "Couldn't open it: {e} (install a player app, like VLC or mpv)"
+            )),
+        }
+        let _ = id;
+    }
+
     /// Play an episode's file on this computer.
+    #[cfg(not(target_os = "android"))]
     fn play_file(&mut self, id: u64, episode: u32, path: PathBuf) -> Task<Message> {
         let Some(series) = self.app.library.find(id) else {
             return Task::none();
@@ -529,6 +611,7 @@ impl Gui {
     }
 
     /// Jellyfin said what's in the file: stream it.
+    #[cfg(not(target_os = "android"))]
     fn open_stream(
         &mut self,
         id: u64,
@@ -551,6 +634,7 @@ impl Gui {
 
     /// Play `uri` (named `key`): episode `episode` of series `id`, from
     /// where it was left; its text subtitles and fonts arrive from `subs`.
+    #[cfg(not(target_os = "android"))]
     fn start_player(
         &mut self,
         id: u64,
@@ -787,11 +871,20 @@ impl Gui {
             Page::Discover => self.discover_page(),
             Page::Calendar => self.calendar_page(),
         };
-        let body = row![
-            self.sidebar(),
-            container(page).width(Fill).height(Fill).style(|_| fill(BG))
-        ];
-        let page = self.dialogs(body.into());
+        let page = container(page).width(Fill).height(Fill).style(|_| fill(BG));
+        let body: Element<'_, Message> = if style::compact() {
+            iced::widget::column![
+                page,
+                self.tab_bar(),
+                container(iced::widget::space().height(self.bottom_clear))
+                    .width(Fill)
+                    .style(|_| fill(SIDEBAR)),
+            ]
+            .into()
+        } else {
+            row![self.sidebar(), page].into()
+        };
+        let page = self.dialogs(body);
         self.with_note(page)
     }
 
