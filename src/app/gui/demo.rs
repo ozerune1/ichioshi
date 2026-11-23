@@ -184,15 +184,16 @@ pub async fn make(dir: &Path) -> anyhow::Result<()> {
 }
 
 /// `DEMO_DIR=<folder>`: make the demo library there (uses AniList).
-#[tokio::test]
+#[test]
 #[ignore = "needs DEMO_DIR and the network"]
-async fn make_demo_library() {
+fn make_demo_library() {
     let Some(dir) = std::env::var_os("DEMO_DIR") else {
         return;
     };
     // The real AniList, not another test's mock.
     let _net = crate::mock_http::real();
-    make(Path::new(&dir)).await.unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(make(Path::new(&dir))).unwrap();
     let library = Library::load(
         Path::new(&dir).join("state").join("library.json"),
         Path::new(&dir),

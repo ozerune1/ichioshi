@@ -135,7 +135,7 @@ fn anime_page(id: u64, episodes: u32, release: Option<crate::seadex::Release>) -
         },
         chosen: Some(0),
         nyaa: None,
-        from_library: false,
+        origin: crate::app::Origin::Results,
         entry_loading: false,
     })
 }
@@ -1505,7 +1505,7 @@ fn library_and_series_pages() {
     wait_until(
         &mut h,
         "series page",
-        |g| matches!(&g.app.page, Page::Anime(ap) if ap.from_library && ap.anime.entry.is_some()),
+        |g| matches!(&g.app.page, Page::Anime(ap) if ap.opened_from_library() && ap.anime.entry.is_some()),
     );
     save(&h, &out, "library-3-series");
     assert!(shows(&h, "In your library"));
@@ -2392,4 +2392,225 @@ fn searches_and_downloads_live() {
     click(&mut h, "Cancel");
     assert!(h.app.confirm_delete.is_none());
     h._rt_handle().block_on(engine.stop());
+}
+
+/// Discover (AniList's lists), the calendar (your lists' anime airing this
+/// week; everything when asked), and on a series page MyAnimeList's
+/// episode scores and each episode's discussion on both sites. AniList
+/// and MyAnimeList are mocks.
+#[test]
+#[ignore = "renders screenshots"]
+fn discovers_schedules_and_discusses() {
+    let _net = crate::mock_http::mocked();
+    use crate::discuss::tests::{episode_row, topic_page};
+    use crate::mock_http::{Resp, mock, reply};
+    use crate::tracking::{Entry, Status};
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            *crate::seadex::ANILIST_BASE.lock().unwrap() = None;
+            *crate::seadex::SEADEX_BASE.lock().unwrap() = None;
+            *crate::seadex::KITSU_BASE.lock().unwrap() = None;
+            *crate::discuss::MAL_BASE.lock().unwrap() = None;
+        }
+    }
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (base, out) = dir("discover-screens");
+    let base = base.path();
+    let asked: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let log = asked.clone();
+    let show = |id: u64, title: &str| {
+        json!({"id": id, "idMal": id + 100, "title": {"english": title}, "format": "TV",
+            "episodes": 12, "averageScore": 80 + id, "genres": ["Drama", "Fantasy"],
+            "season": "FALL", "seasonYear": 2026})
+    };
+    let server = rt.block_on(mock(move |req| {
+        let path = req.target.split('?').next().unwrap().to_owned();
+        if path.starts_with("/kitsu") {
+            return reply(200, json!({"data": [], "included": []}));
+        }
+        if path.starts_with("/seadex") {
+            return reply(200, json!({"items": []}));
+        }
+        // MyAnimeList's pages.
+        if path == "/anime/101/_/episode" {
+            let rows = episode_row(1, "4.28", 9001, 791, "")
+                + &episode_row(2, "3.90", 9002, 12, r#"<span>Filler</span>"#);
+            return Resp::html(200, &format!("<table>{rows}</table>"));
+        }
+        if path == "/forum/" {
+            let offset = req.query().get("show").cloned().unwrap_or_default();
+            assert_eq!(req.query()["topicid"], "9001");
+            return Resp::html(
+                200,
+                &topic_page(
+                    "Show One Episode 1 Discussion",
+                    &[(1, "malfan", "What an <b>opening</b>!"), (2, "other", "Agreed")],
+                    if offset == "0" { 50 } else { 0 },
+                ),
+            );
+        }
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let (q, v) = (body["query"].as_str().unwrap().to_owned(), body["variables"].clone());
+        log.lock().unwrap().push(v.clone());
+        if q.contains("airingSchedules") {
+            // On your list (watching), dropped, and not on it: Monday 20:00.
+            let at = v["from"].as_i64().unwrap() + 1 + 20 * 3600;
+            return reply(
+                200,
+                json!({"data": {"Page": {"pageInfo": {"hasNextPage": false}, "airingSchedules": [
+                    {"airingAt": at, "episode": 3, "media": show(1, "Show One")},
+                    {"airingAt": at + 60, "episode": 7, "media": show(2, "Dropped Show")},
+                    {"airingAt": at + 120, "episode": 1, "media": show(3, "Someone Else's")}]}}}),
+            );
+        }
+        if q.contains("media(type: ANIME") {
+            return reply(
+                200,
+                json!({"data": {"Page": {"media": [show(1, "Show One"), show(3, "Someone Else's")]}}}),
+            );
+        }
+        if q.contains("threads(") {
+            return reply(
+                200,
+                json!({"data": {"Page": {"pageInfo": {"hasNextPage": false}, "threads": [
+                    {"id": 600, "title": "[Spoilers] Show One - Episode 2 Discussion"},
+                    {"id": 500, "title": "[Spoilers] Show One - Episode 1 Discussion"}]}}}),
+            );
+        }
+        if q.contains("Thread(id") {
+            assert_eq!(v["id"], 500);
+            let page = v["page"].as_u64().unwrap();
+            let comments = if page == 1 {
+                json!([{"id": 11, "comment": "Great ~!the twist!~ though", "likeCount": 4,
+                    "createdAt": 1_700_000_000, "user": {"name": "fan"},
+                    "childComments": [{"id": 12, "comment": "Agreed!", "likeCount": 1,
+                        "createdAt": 1_700_000_100, "user": {"name": "pal"}, "childComments": null}]}])
+            } else {
+                json!([{"id": 13, "comment": "Late to this.", "likeCount": 0,
+                    "createdAt": 1_700_100_000, "user": {"name": "late"}, "childComments": null}])
+            };
+            return reply(
+                200,
+                json!({"data": {"Thread": {"id": 500, "title": "[Spoilers] Show One - Episode 1 Discussion",
+                    "body": "Discuss!", "replyCount": 3, "siteUrl": "https://anilist.co/forum/thread/500",
+                    "createdAt": 1_699_999_000, "likeCount": 2, "user": {"name": "op"}},
+                    "Page": {"pageInfo": {"hasNextPage": page == 1}, "threadComments": comments}}}),
+            );
+        }
+        if q.contains("Media(id") {
+            return reply(
+                200,
+                json!({"data": {"Media": {"idMal": 101, "status": "RELEASING", "format": "TV",
+                    "episodes": 2, "genres": [], "studios": {"nodes": []}, "startDate": {},
+                    "endDate": {}}}}),
+            );
+        }
+        panic!("unexpected query {q}")
+    }));
+    *crate::seadex::ANILIST_BASE.lock().unwrap() = Some(server.clone());
+    *crate::seadex::SEADEX_BASE.lock().unwrap() = Some(format!("{server}/seadex"));
+    *crate::seadex::KITSU_BASE.lock().unwrap() = Some(format!("{server}/kitsu"));
+    *crate::discuss::MAL_BASE.lock().unwrap() = Some(server.clone());
+    let _reset = Reset;
+
+    let mut h = app_harness(base);
+    let entry = |status| Entry {
+        status,
+        score: 0.0,
+        progress: 0,
+    };
+    h.app.tracking.pretend_lists(HashMap::from([
+        (1, entry(Status::Watching)),
+        (2, entry(Status::Dropped)),
+    ]));
+
+    // Discover: AniList's trending list; next season's, of a genre.
+    click(&mut h, "Discover");
+    wait_for(&mut h, "Someone Else's");
+    assert!(shows(&h, "Watching"), "your list's status on the card");
+    save(&h, &out, "1-discover");
+    click_with(&mut h, "Next season", || {
+        containing("Next season · ".into())
+    });
+    wait(&mut h, "next season's list", |g| {
+        g.app.discover.shelves.len() == 2
+            && matches!(
+                g.app.discover.shelves.get(&g.app.discover.filter),
+                Some((crate::app::discover_ui::Loaded::Ready(_), _))
+            )
+    });
+    assert!(
+        asked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["sort"] == json!(["POPULARITY_DESC"]) && v["season"].is_string()),
+        "a season asked for"
+    );
+    // An anime from it: its page, and Back to Discover.
+    click(&mut h, "Someone Else's");
+    wait_until(
+        &mut h,
+        "its page",
+        |g| matches!(&g.app.page, Page::Anime(ap) if ap.anime.anilist_id == 3 && !ap.entry_loading),
+    );
+    click(&mut h, "Discover");
+    assert!(matches!(h.app.page, Page::Discover));
+    click(&mut h, "Someone Else's");
+    click(&mut h, "←");
+    assert!(
+        matches!(h.app.page, Page::Discover),
+        "Back goes to Discover"
+    );
+
+    // The calendar: your list's anime only (not the dropped one)...
+    click(&mut h, "Calendar");
+    wait_for(&mut h, "Show One");
+    assert!(!shows(&h, "Dropped Show") && !shows(&h, "Someone Else's"));
+    save(&h, &out, "2-calendar");
+    // ...or everything.
+    click(&mut h, "Show full schedule");
+    assert!(shows(&h, "Dropped Show") && shows(&h, "Someone Else's"));
+    save(&h, &out, "3-calendar-full");
+    click(&mut h, "Next week →");
+    wait(&mut h, "next week", |g| g.app.calendar.weeks.len() == 2);
+    click(&mut h, "← Previous week");
+
+    // Its page, from the calendar: MyAnimeList's episode scores.
+    click(&mut h, "Show One");
+    wait_for(&mut h, "★ 4.28");
+    assert!(shows(&h, "★ 3.90") && shows(&h, "Filler"));
+    save(&h, &out, "4-series-scores");
+
+    // Episode 1's discussion: AniList's thread, spoilers hidden...
+    click_nth(&mut h, "Discuss", 0);
+    wait_for(&mut h, "[Spoilers] Show One - Episode 1 Discussion");
+    assert!(shows(&h, "Great") && shows(&h, "though") && !shows(&h, "the twist"));
+    assert!(shows(&h, "Agreed!"), "replies under their comment");
+    save(&h, &out, "5-discussion-anilist");
+    click(&mut h, "Show spoiler");
+    assert!(shows(&h, "the twist"));
+    click(&mut h, "Load more");
+    wait_for(&mut h, "Late to this.");
+    // ...and MyAnimeList's topic.
+    click_with(&mut h, "MyAnimeList tab", || {
+        containing("MyAnimeList · 791".into())
+    });
+    wait_for(&mut h, "Show One Episode 1 Discussion");
+    assert!(shows(&h, "malfan") && shows(&h, "What an opening!"));
+    save(&h, &out, "6-discussion-mal");
+    click(&mut h, "Load more");
+    wait(&mut h, "page two", |g| {
+        g.app.discussion.as_ref().is_some_and(|d| {
+            matches!(d.threads.get(&crate::discuss::Site::Mal),
+                Some(crate::app::discover_ui::Loaded::Ready(Some(t))) if t.posts.len() == 4)
+        })
+    });
+    click(&mut h, "Close");
+    assert!(h.app.discussion.is_none());
 }

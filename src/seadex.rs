@@ -269,6 +269,7 @@ pub async fn anilist_search(client: &reqwest::Client, query: &str) -> Result<Vec
 const DETAILS_QUERY: &str = r#"
 query ($id: Int) {
   Media(id: $id, type: ANIME) {
+    idMal
     title { romaji english native }
     synonyms
     description(asHtml: false)
@@ -301,7 +302,7 @@ pub static SEADEX_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new
 #[cfg(test)]
 pub static ANILIST_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-fn anilist_url() -> String {
+pub(crate) fn anilist_url() -> String {
     #[cfg(test)]
     if let Some(base) = ANILIST_BASE.lock().unwrap().as_ref() {
         return base.clone();
@@ -412,6 +413,7 @@ pub async fn anilist_details(client: &reqwest::Client, id: u64) -> Result<crate:
     }
     Ok(crate::library::Details {
         episode_list: episodes.into_values().collect(),
+        id_mal: m["idMal"].as_u64(),
         native: text(&m["title"]["native"]),
         synonyms: list(&m["synonyms"]),
         description: text(&m["description"]).map(|d| plain_text(&d)),

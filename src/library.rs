@@ -34,6 +34,8 @@ impl AnimeRef {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Details {
+    /// The anime on MyAnimeList.
+    pub id_mal: Option<u64>,
     pub native: Option<String>,
     pub synonyms: Vec<String>,
     /// Plain text.

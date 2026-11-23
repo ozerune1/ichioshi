@@ -1,5 +1,7 @@
 mod app;
+mod browse;
 mod debrid;
+mod discuss;
 mod engine;
 mod fallback;
 mod fsutil;

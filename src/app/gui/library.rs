@@ -10,7 +10,7 @@ use iced::{Alignment, Background, Border, Color, Element, Fill, Shadow, Vector, 
 
 use super::{Filter, Gui, Message, act, edit};
 use crate::app::watching::{PlayerAction, clock, up_next};
-use crate::app::{Action, EngineState, Page, fmt_bytes};
+use crate::app::{Action, EngineState, Origin, Page, fmt_bytes};
 use crate::library::Series;
 use crate::tracking::{Change, Status};
 
@@ -73,14 +73,20 @@ impl Gui {
     pub(super) fn sidebar(&self) -> Element<'_, Message> {
         let page = &self.app.page;
         let in_library = |id: u64| self.app.library.find(id).is_some();
+        let came_from = |o: Origin| matches!(page, Page::Anime(ap) if ap.origin == o);
         let on_library = match page {
             Page::Home => true,
-            Page::Anime(ap) => ap.from_library || in_library(ap.anime.anilist_id),
+            Page::Anime(ap) => {
+                ap.opened_from_library()
+                    || (ap.origin == Origin::Results && in_library(ap.anime.anilist_id))
+            }
             _ => false,
         };
+        let on_discover = matches!(page, Page::Discover) || came_from(Origin::Discover);
+        let on_calendar = matches!(page, Page::Calendar) || came_from(Origin::Calendar);
         let on_search = match page {
             Page::Results | Page::Files(_) => true,
-            Page::Anime(ap) => !(ap.from_library || in_library(ap.anime.anilist_id)),
+            Page::Anime(ap) => ap.origin == Origin::Results && !in_library(ap.anime.anilist_id),
             _ => false,
         };
         let nav = |icon: &'static str,
@@ -226,6 +232,8 @@ impl Gui {
                 on_library,
                 act(Action::GoLibrary)
             ),
+            nav("✦", "Discover", None, on_discover, act(Action::GoDiscover)),
+            nav("◷", "Calendar", None, on_calendar, act(Action::GoCalendar)),
             nav(
                 "↓",
                 "Downloads",

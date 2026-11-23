@@ -6,9 +6,12 @@
 //! (moving finished downloads into the library, setting default tracks,
 //! reading lists).
 
+mod calendar;
 #[cfg(test)]
 mod demo;
 mod dialogs;
+mod discover;
+mod discussion;
 mod downloads;
 #[cfg(test)]
 mod flows;
@@ -227,6 +230,8 @@ impl Gui {
         a.refresh_library_stats();
         a.request_details();
         a.request_release_files();
+        a.request_browse();
+        a.request_episode_scores();
         a.save_settings();
     }
 
@@ -241,6 +246,17 @@ impl Gui {
     fn act(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::Player(PlayerAction::Play { id, episode }) => self.play(id, episode),
+            Action::OpenDiscussion { id, episode } => {
+                // Reading over the player: it waits.
+                if let Some(p) = &mut self.player
+                    && !p.paused()
+                {
+                    p.update(player::Msg::TogglePause);
+                    self.save_progress();
+                }
+                self.app.perform(Action::OpenDiscussion { id, episode });
+                Task::none()
+            }
             other => {
                 self.app.perform(other);
                 Task::none()
@@ -487,7 +503,7 @@ impl Gui {
         if modifiers.control() || modifiers.alt() {
             return Task::none();
         }
-        if self.player.is_none() {
+        if self.player.is_none() || self.app.discussion.is_some() {
             if key == Key::Named(Named::Escape) {
                 self.app.close_dialogs();
             }
@@ -531,12 +547,16 @@ impl Gui {
 
     fn view(&self) -> Element<'_, Message> {
         if let Some(p) = &self.player {
-            return self.with_note(p.view(
+            let view = p.view(
                 self.neighbour(true),
                 self.neighbour(false),
                 self.fullscreen,
                 &self.app.settings.player,
-            ));
+            );
+            return self.with_note(match &self.app.discussion {
+                Some(d) => self.discussion(view, d),
+                None => view,
+            });
         }
         let page: Element<'_, Message> = match &self.app.page {
             Page::Anime(ap) => self.series_page(ap),
@@ -547,6 +567,8 @@ impl Gui {
             Page::Settings => self.settings_page(),
             Page::Remux(rp) => self.remux_page(rp),
             Page::Playlist(pp) => self.playlist_page(pp),
+            Page::Discover => self.discover_page(),
+            Page::Calendar => self.calendar_page(),
         };
         let body = row![
             self.sidebar(),

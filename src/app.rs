@@ -26,6 +26,8 @@ use crate::seadex::{self, Anime, Release};
 use crate::usenet::indexers::NzbLink;
 
 mod debrid_ui;
+mod discover_ui;
+mod discuss_ui;
 mod drive_ui;
 pub(crate) mod gui;
 mod handover;
@@ -277,6 +279,26 @@ enum Msg {
         id: u64,
         result: Result<Option<seadex::Entry>, String>,
     },
+    Discovered {
+        filter: crate::browse::Filter,
+        result: Result<Vec<crate::browse::Media>, String>,
+    },
+    Schedule {
+        week: chrono::NaiveDate,
+        result: Result<Vec<crate::browse::Airing>, String>,
+    },
+    /// MyAnimeList's episodes of an anime (and its ID there).
+    MalEpisodes {
+        id: u64,
+        result: Result<(Option<u64>, Vec<crate::discuss::MalEpisode>), String>,
+    },
+    Discussion {
+        seq: u64,
+        site: crate::discuss::Site,
+        /// The next page of what's there (else the first).
+        more: bool,
+        result: Result<Option<Box<crate::discuss::Thread>>, String>,
+    },
     UsenetChecked {
         id: u64,
         seq: u64,
@@ -369,6 +391,16 @@ enum Action {
     UsenetCheck(u64),
     GoLibrary,
     GoDownloads,
+    GoDiscover,
+    GoCalendar,
+    /// An anime from Discover or the calendar.
+    OpenMedia(Box<crate::browse::Media>, Origin),
+    /// An episode's discussion on AniList and MyAnimeList.
+    OpenDiscussion {
+        id: u64,
+        episode: u32,
+    },
+    DiscussionMore,
     OpenSeries(u64),
     AddToLibrary,
     RemoveSeries {
@@ -431,6 +463,10 @@ enum Page {
     Playlist(PlaylistPage),
     /// Folders, languages, accounts and services (the iced GUI's page).
     Settings,
+    /// AniList's lists of anime.
+    Discover,
+    /// What's airing, day by day.
+    Calendar,
 }
 
 struct AnimePage {
@@ -439,10 +475,36 @@ struct AnimePage {
     chosen: Option<usize>,
     /// Set when SeaDex has no Nyaa release for this anime.
     nyaa: Option<NyaaSearch>,
-    /// Opened from the library (so Back goes there).
-    from_library: bool,
+    /// Where it was opened from (Back goes there).
+    origin: Origin,
     /// Its SeaDex entry is being looked up.
     entry_loading: bool,
+}
+
+impl AnimePage {
+    fn opened_from_library(&self) -> bool {
+        self.origin == Origin::Library
+    }
+}
+
+/// The page an anime's page was opened from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Origin {
+    Library,
+    Results,
+    Discover,
+    Calendar,
+}
+
+impl Origin {
+    fn name(self) -> &'static str {
+        match self {
+            Origin::Library => "Library",
+            Origin::Results => "Results",
+            Origin::Discover => "Discover",
+            Origin::Calendar => "Calendar",
+        }
+    }
 }
 
 /// The Nyaa fallback: search results ranked by release-group tier.
@@ -705,6 +767,15 @@ pub struct App {
     usenet: UsenetState,
     /// AniList and MyAnimeList accounts, and your lists on them.
     tracking: tracking_ui::TrackingState,
+    /// AniList's lists to discover anime in.
+    discover: discover_ui::DiscoverState,
+    /// What's airing.
+    calendar: discover_ui::CalendarState,
+    /// MyAnimeList's episode scores and discussion topics.
+    episode_scores: discuss_ui::EpisodeScores,
+    /// An episode's discussion, open over its page.
+    discussion: Option<discuss_ui::Discussion>,
+    discussion_seq: u64,
     /// The network the engine runs (or is starting) on.
     engine_net: Option<crate::vpn::Network>,
     /// Bumped by each engine start or stop; a start that finds it changed
@@ -772,6 +843,11 @@ impl App {
             vpn,
             usenet,
             tracking: tracking_ui::TrackingState::load(&state_dir),
+            discover: Default::default(),
+            calendar: Default::default(),
+            episode_scores: Default::default(),
+            discussion: None,
+            discussion_seq: 0,
             engine_net: None,
             engine_seq: Arc::default(),
             engine_lock: Arc::default(),
@@ -874,6 +950,7 @@ impl App {
         self.pages.languages = None;
         self.usenet.dialog = None;
         self.drive.browser = None;
+        self.discussion = None;
     }
 
     /// Write the settings to `settings.json` if they changed.
@@ -1045,6 +1122,15 @@ impl App {
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
+                Msg::Discovered { filter, result } => self.handle_discovered(filter, result),
+                Msg::Schedule { week, result } => self.handle_schedule(week, result),
+                Msg::MalEpisodes { id, result } => self.handle_mal_episodes(id, result),
+                Msg::Discussion {
+                    seq,
+                    site,
+                    more,
+                    result,
+                } => self.handle_discussion(seq, site, more, result),
             }
         }
     }
@@ -1056,7 +1142,7 @@ impl App {
             Action::Search => self.start_search(),
             Action::OpenAnime(i) => {
                 if let Some(anime) = self.results.get(i).cloned() {
-                    self.show_anime(anime, false);
+                    self.show_anime(anime, Origin::Results);
                 }
             }
             Action::SearchNyaa => self.search_nyaa(),
@@ -1064,9 +1150,13 @@ impl App {
                 self.cancel_listing();
                 self.page = match std::mem::replace(&mut self.page, Page::Home) {
                     Page::Files(FilesPage { back: Some(ap), .. }) => Page::Anime(ap),
-                    Page::Anime(AnimePage {
-                        from_library: true, ..
-                    }) => Page::Home,
+                    Page::Anime(AnimePage { origin, .. }) if origin != Origin::Results => {
+                        match origin {
+                            Origin::Discover => Page::Discover,
+                            Origin::Calendar => Page::Calendar,
+                            _ => Page::Home,
+                        }
+                    }
                     Page::Remux(RemuxPage { back: Some(ap), .. }) => Page::Anime(ap),
                     Page::Files(_)
                     | Page::Anime(_)
@@ -1171,6 +1261,17 @@ impl App {
                 self.cancel_listing();
                 self.page = Page::Downloads;
             }
+            Action::GoDiscover => {
+                self.cancel_listing();
+                self.page = Page::Discover;
+            }
+            Action::GoCalendar => {
+                self.cancel_listing();
+                self.page = Page::Calendar;
+            }
+            Action::OpenMedia(media, origin) => self.open_media(*media, origin),
+            Action::OpenDiscussion { id, episode } => self.open_discussion(id, episode),
+            Action::DiscussionMore => self.discussion_more(),
             Action::OpenSeries(id) => self.open_series(id),
             Action::AddToLibrary => self.add_to_library(),
             Action::RemoveSeries { id, delete_files } => self.remove_series(id, delete_files),
@@ -1235,7 +1336,7 @@ impl App {
     }
 
     /// Show an anime's page, with its best release picked.
-    fn show_anime(&mut self, anime: Anime, from_library: bool) {
+    fn show_anime(&mut self, anime: Anime, origin: Origin) {
         let dual = self.prefer_dual_audio(anime.anilist_id);
         let chosen = anime.entry.as_ref().and_then(|e| e.best_nyaa(dual));
         // Nothing on SeaDex to download: find the best release on Nyaa instead.
@@ -1248,7 +1349,7 @@ impl App {
             anime,
             chosen,
             nyaa,
-            from_library,
+            origin,
             entry_loading: false,
         });
         if search_now {

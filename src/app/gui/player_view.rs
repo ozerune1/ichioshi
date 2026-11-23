@@ -285,9 +285,33 @@ impl Player {
             text(episode).size(13).font(MEDIUM).color(DIM),
         ]
         .spacing(2);
-        container(row![back, titles].spacing(14).align_y(Alignment::Center))
-            .padding([22, 28])
-            .into()
+        // The episode's discussion (AniList and MyAnimeList), over the
+        // player (paused).
+        let discuss = button(text("Discuss").size(13).font(SEMI).color(WHITE))
+            .padding([8, 14])
+            .on_press(super::act(crate::app::Action::OpenDiscussion {
+                id: self.series,
+                episode: self.episode,
+            }))
+            .style(|_, status| button::Style {
+                background: Some(fill_color(Color::WHITE.scale_alpha(
+                    if status == button::Status::Hovered {
+                        0.2
+                    } else {
+                        0.1
+                    },
+                ))),
+                text_color: WHITE,
+                border: rounded(999.0),
+                ..button::Style::default()
+            });
+        container(
+            row![back, titles, space::horizontal(), discuss]
+                .spacing(14)
+                .align_y(Alignment::Center),
+        )
+        .padding([22, 28])
+        .into()
     }
 
     /// The floating controls: volume, transport, tools; the timeline.

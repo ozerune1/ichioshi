@@ -52,6 +52,15 @@ pub struct Resp {
 }
 
 impl Resp {
+    /// A web page.
+    pub fn html(status: u16, body: &str) -> Self {
+        Resp {
+            status,
+            headers: vec![("Content-Type".into(), "text/html; charset=utf-8".into())],
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
     /// Raw bytes (a file download).
     pub fn binary(status: u16, body: Vec<u8>) -> Self {
         Resp {

@@ -100,11 +100,7 @@ impl Gui {
                 )),
                 ..Default::default()
             });
-        let back_to = if ap.from_library {
-            "Library"
-        } else {
-            "Results"
-        };
+        let back_to = ap.origin.name();
         let back = iced::widget::button(
             row![text("←").size(14), text(back_to).size(13).font(MEDIUM)].spacing(6),
         )
@@ -494,15 +490,23 @@ impl Gui {
             border: rounded(9.0),
             ..Default::default()
         });
-        let mut middle = column![text(clip(&e.title, 80)).size(14).font(MEDIUM).color(
+        let mal = self.app.episode_scores.episode(id, n);
+        let mut title = row![text(clip(&e.title, 80)).size(14).font(MEDIUM).color(
             if present || e.downloading.is_some() {
                 TEXT
             } else {
                 FAINT
             }
         )]
-        .spacing(5)
-        .width(Fill);
+        .spacing(8)
+        .align_y(Alignment::Center);
+        if mal.is_some_and(|m| m.filler) {
+            title = title.push(badge("Filler", GOLD));
+        }
+        if mal.is_some_and(|m| m.recap) {
+            title = title.push(badge("Recap", MUTED));
+        }
+        let mut middle = column![title].spacing(5).width(Fill);
         if let Some(w) = watch.filter(|w| !w.done && w.position > 0.0 && w.duration > 0.0) {
             middle = middle.push(
                 row![
@@ -584,8 +588,30 @@ impl Gui {
         } else {
             with_tip(small("↓ Download", None), coverage_why(coverage))
         };
+        // MyAnimeList's episode poll (out of 5), and the discussions.
+        let score = with_tip(
+            text(
+                mal.and_then(|m| m.score)
+                    .map(|v| format!("★ {v:.2}"))
+                    .unwrap_or_default(),
+            )
+            .size(12)
+            .font(SEMI)
+            .color(GOLD)
+            .width(56)
+            .into(),
+            "MyAnimeList's episode rating, out of 5".into(),
+        );
+        let discuss: Element<'_, Message> = if e.out {
+            small(
+                "Discuss",
+                Some(act(Action::OpenDiscussion { id, episode: n })),
+            )
+        } else {
+            space().width(0).into()
+        };
         let row = container(
-            row![number, middle, airs, right]
+            row![number, middle, score, airs, discuss, right]
                 .spacing(16)
                 .align_y(Alignment::Center),
         )
@@ -990,10 +1016,11 @@ impl Gui {
                             folder.display()
                         )),
                     ]
-                    .spacing(4),
-                    space::horizontal(),
+                    .spacing(4)
+                    .width(Fill),
                     secondary("+ Add to library", Some(act(Action::AddToLibrary))),
                 ]
+                .spacing(16)
                 .align_y(Alignment::Center),
             );
         };

@@ -50,6 +50,9 @@ impl Gui {
         if let Some((target, name)) = &a.confirm_delete {
             return self.confirm_delete(base, *target, name);
         }
+        if let Some(d) = &a.discussion {
+            return self.discussion(base, d);
+        }
         if let Some(prefs) = &a.pages.languages {
             let content = column![
                 dialog_title(

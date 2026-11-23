@@ -465,7 +465,7 @@ impl App {
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::{AnimePage, Page, ReleaseKind};
+use super::{AnimePage, Origin, Page, ReleaseKind};
 use crate::engine::Listing;
 use crate::library::Details;
 use crate::nyaa::NyaaItem;
@@ -802,12 +802,22 @@ impl App {
             cover_large: series.cover.clone().or(d.and_then(|d| d.cover.clone())),
             entry: None,
         };
+        self.look_up_and_show(anime);
+        if let Page::Anime(ap) = &mut self.page {
+            ap.origin = Origin::Library;
+        }
+    }
+
+    /// An anime's page, while its SeaDex entry is looked up (then its best
+    /// release is picked).
+    pub(super) fn look_up_and_show(&mut self, anime: Anime) {
+        let id = anime.anilist_id;
         self.cancel_listing();
         self.page = Page::Anime(AnimePage {
             anime,
             chosen: None,
             nyaa: None,
-            from_library: true,
+            origin: Origin::Results,
             entry_loading: true,
         });
         let client = self.http.clone();
@@ -837,8 +847,8 @@ impl App {
         match result {
             Ok(entry) => {
                 ap.anime.entry = entry;
-                let anime = ap.anime.clone();
-                self.show_anime(anime, true);
+                let (anime, origin) = (ap.anime.clone(), ap.origin);
+                self.show_anime(anime, origin);
             }
             Err(e) => self.set_error(format!("Couldn't look it up on SeaDex: {e}")),
         }
@@ -883,7 +893,8 @@ impl App {
         if let Some(d) = series.details {
             self.pages.details.insert(id, d);
         }
-        if matches!(&self.page, Page::Anime(ap) if ap.anime.anilist_id == id && ap.from_library) {
+        if matches!(&self.page, Page::Anime(ap) if ap.anime.anilist_id == id && ap.opened_from_library())
+        {
             self.page = Page::Home;
         }
     }
