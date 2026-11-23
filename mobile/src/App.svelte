@@ -52,6 +52,20 @@
   let deeper = $derived(deep.includes(page?.kind) || (page?.kind === "more" && !!app.section));
   let note = $derived(app.note ?? app.view?.note?.text ?? null);
   let noteError = $derived(!app.note && !!app.view?.note?.error);
+  // The app's notes go after a while (errors stay longer).
+  let noteTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const text = app.view?.note?.text;
+    clearTimeout(noteTimer);
+    if (text) {
+      noteTimer = setTimeout(
+        () => {
+          if (app.view?.note?.text === text) dismissNote();
+        },
+        app.view?.note?.error ? 8000 : 4000,
+      );
+    }
+  });
 
   // Each page keeps where it was scrolled to.
   let scroller: HTMLElement | undefined = $state();

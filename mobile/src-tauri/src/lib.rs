@@ -12,6 +12,67 @@ async fn view(bridge: tauri::State<'_, Bridge>) -> Result<serde_json::Value, Str
     bridge.view().await
 }
 
+/// Play a video in the app's player (Android): what the player says when
+/// it's closed (how far it got, what next).
+#[tauri::command]
+async fn play(
+    app: tauri::AppHandle,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "android")]
+    {
+        let player = app.state::<Player>();
+        player
+            .0
+            .run_mobile_plugin_async("play", request)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, request);
+        Err("The player is the phone's".into())
+    }
+}
+
+/// Back from the first page: the app goes to the background (Android).
+#[tauri::command]
+async fn to_background(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let player = app.state::<Player>();
+        player
+            .0
+            .run_mobile_plugin_async::<serde_json::Value>("toBackground", ())
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+/// The phone's player (PlayerPlugin, in the Android project).
+#[cfg(target_os = "android")]
+struct Player(tauri::plugin::PluginHandle<tauri::Wry>);
+
+fn player_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("player")
+        .setup(|_app, _api| {
+            #[cfg(target_os = "android")]
+            {
+                let handle =
+                    _api.register_android_plugin("app.seadex.downloader", "PlayerPlugin")?;
+                _app.manage(Player(handle));
+            }
+            Ok(())
+        })
+        .build()
+}
+
 /// Do something; what the app says back.
 #[tauri::command]
 async fn command(
@@ -25,6 +86,7 @@ async fn command(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(player_plugin())
         .setup(|app| {
             let state_dir = state_dir(app)?;
             let events = app.handle().clone();
@@ -42,7 +104,7 @@ pub fn run() {
             app.manage(bridge);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![view, command])
+        .invoke_handler(tauri::generate_handler![view, command, play, to_background])
         .run(tauri::generate_context!())
         .expect("error while running SeaDex");
 }

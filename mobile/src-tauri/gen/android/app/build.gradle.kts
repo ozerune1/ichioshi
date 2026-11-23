@@ -77,6 +77,10 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    packaging {
+        // libmpv brings its own C++ runtime too.
+        jniLibs.pickFirsts.add("**/libc++_shared.so")
+    }
 }
 
 kotlin {
@@ -90,6 +94,8 @@ rust {
 }
 
 dependencies {
+    // The player: mpv's engine, for Android.
+    implementation("dev.jdtech.mpv:libmpv:1.1.0")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

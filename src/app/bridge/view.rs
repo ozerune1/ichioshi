@@ -35,6 +35,9 @@ pub enum Command {
         episode: u32,
         position: f64,
         duration: f64,
+        /// What next: "next", "prev", "auto" (it ended).
+        #[serde(default)]
+        then: Option<String>,
     },
 }
 
@@ -89,7 +92,8 @@ pub(super) fn command(app: &mut App, core: &mut Core, command: Command) -> Value
             episode,
             position,
             duration,
-        } => play::played(app, id, episode, position, duration),
+            then,
+        } => play::played(app, core, id, episode, position, duration, then.as_deref()),
     }
     Value::Null
 }

@@ -29,7 +29,7 @@ type Command =
   | { do: "tab"; tab: View["tab"] }
   | { do: "back" }
   | { do: "dismiss_note" }
-  | { do: "played"; id: number; episode: number; position: number; duration: number };
+  | { do: "played"; id: number; episode: number; position: number; duration: number; then: string | null };
 
 export function command(c: Command): Promise<any> {
   return invoke("command", { command: c });
@@ -38,7 +38,11 @@ export function command(c: Command): Promise<any> {
 export const press = (id: string) => command({ do: "press", id });
 export const typed = (id: string, value: string) => command({ do: "input", id, value });
 export const goTab = (tab: View["tab"]) => command({ do: "tab", tab });
-export const back = () => command({ do: "back" });
+/** Back: the app's; from its first page, the app goes to the background. */
+export async function back() {
+  const r = await command({ do: "back" });
+  if (r?.exit) await invoke("to_background");
+}
 export const dismissNote = () => command({ do: "dismiss_note" });
 
 export function getView(): Promise<View> {

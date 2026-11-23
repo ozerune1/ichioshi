@@ -47,3 +47,6 @@ input, select, textarea { font: inherit; }
 .faint { color: var(--faint); }
 .small { font-size: 13px; }
 h2 { font-size: 18px; margin: 20px 0 10px; }
+
+/* Long paths and names wrap rather than run off the screen. */
+p, span, b { overflow-wrap: anywhere; }
