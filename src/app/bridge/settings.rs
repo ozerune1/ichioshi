@@ -477,8 +477,8 @@ fn downloading(ui: &mut Ui) -> Vec<Value> {
         items.push(said(
             "Uploading is turned off: nothing is seeded, and each torrent stops as soon as the \
              files you picked are complete. The one exception is a watch party: there, the \
-             episode is shared with members who are downloading it, and only until they have \
-             it.",
+             episode is shared with members who can only download with BitTorrent, and only \
+             until they have it.",
             "muted",
         ));
         return items;

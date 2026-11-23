@@ -37,12 +37,15 @@ For Linux, Windows and Android.</p>
   - Members connect to the host over [iroh](https://iroh.computer), through
     its public relays when a direct connection isn't possible. Only the
     party's own small messages go that way, never video.
-  - A member downloading the episode with BitTorrent can get it from
-    members who already have it (however they got it). This is the one
-    time Ichioshi seeds: only to that member, on a port of its own that
-    nothing announces, and only until they have the episode. From outside
-    your network, it needs your router to allow a port mapping (UPnP,
-    NAT-PMP or PCP); otherwise the member downloads it as usual.
+  - A member whose only way to download is BitTorrent (no debrid service,
+    Usenet or servers set up) can get the episode from members who already
+    have it, however they got it. This is the one time Ichioshi seeds:
+    only to that member, on a port of its own that nothing announces, and
+    only until they have the episode. From outside your network, it needs
+    your router to allow a port mapping (UPnP, NAT-PMP or PCP); otherwise
+    the member downloads it as usual.
+  - Nothing to set up: no server of your own. Parties use iroh's free
+    public relays, and sharing uses your router's port mapping.
 - **Tracks it.** Signs in to AniList and MyAnimeList with one button.
   Status, score and progress update as you watch.
 - **Discovers.** Browse trending and seasonal anime, see an airing calendar,

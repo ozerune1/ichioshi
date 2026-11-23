@@ -2,7 +2,9 @@
 //! (`crate::party_seed`): the one time anything is seeded.
 //!
 //! Someone downloading the episode with BitTorrent tells the party (its
-//! .torrent, which file, and their BitTorrent ID). The host passes that on
+//! .torrent, which file, and their BitTorrent ID), but only if BitTorrent
+//! is all they have: with a debrid service, Usenet or their own servers set
+//! up, they get it that way, and nobody seeds. The host passes that on
 //! to those who have the episode. Each checks their copy against the
 //! torrent, seeds it to that member only, and says where; the member's
 //! engine connects there too. Seeding to a member stops once they have the
@@ -91,6 +93,13 @@ impl App {
         None
     }
 
+    /// Whether BitTorrent is your only way to get episodes (no debrid
+    /// service, Usenet or servers set up): only then do you ask the party
+    /// to seed you the episode.
+    pub(crate) fn torrent_only(&self) -> bool {
+        !self.servers_mode() && !self.debrid.config.active() && !self.usenet.active()
+    }
+
     /// Your copy of the episode, and what the app changed in it (its
     /// default tracks), as it was.
     fn party_file(
@@ -139,6 +148,7 @@ impl App {
             .is_some_and(|(s, ep, _)| (*s, *ep) == (e.series, e.episode));
         if matches!(me, Have::Downloading(_))
             && !asked
+            && self.torrent_only()
             && let (Some((hash, torrent, file)), Some(engine)) =
                 (self.party_torrent(e.series, e.episode), self.engine())
         {

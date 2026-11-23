@@ -1,6 +1,7 @@
 //! Watch parties, end to end: two apps (each its own library and player)
 //! on this machine, one hosting and one joining through the page.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::tests::*;
@@ -280,27 +281,27 @@ fn hosts_for_a_phone() {
     }
 }
 
-/// A member downloading the episode with BitTorrent gets it from the host
-/// (the torrent has no other peers), and the host stops sharing it once
-/// the member has it; then it plays for both.
-#[test]
-#[ignore = "needs GStreamer and ffmpeg"]
-fn the_host_shares_the_episode_with_a_member() {
+/// A party: the host ("Ren") with the episode, and a member ("Mai")
+/// downloading its release with BitTorrent (a torrent with no other peers),
+/// with a debrid service set up too if `debrid`. The member's episode
+/// folder, and the release's bytes.
+fn torrenting_member(base: &Path, debrid: bool) -> Option<(Harness, Harness, PathBuf, Vec<u8>)> {
     if !crate::gst_video::available() {
         eprintln!("skipping: no GStreamer");
-        return;
+        return None;
     }
-    let base = tempfile::tempdir().unwrap();
-    let Some(sample) = crate::gst_video::tests::plain_sample(&base.path().join("sample"), 20)
-    else {
-        return;
-    };
-    let (hb, mb) = (base.path().join("host"), base.path().join("member"));
+    let sample = crate::gst_video::tests::plain_sample(&base.join("sample"), 20)?;
+    let (hb, mb) = (base.join("host"), base.join("member"));
     let mut host = harness(&hb, &one_series(&hb, &[("Show - 01.mkv", &sample)]));
     let mut member = harness(&mb, &one_series(&mb, &[]));
     wait(&mut member, "the member's torrent engine", |g| {
         g.app.engine().is_some()
     });
+    if debrid {
+        let c = &mut member.app.debrid.config;
+        c.enabled = true;
+        c.keys.insert(c.provider, "a key".into());
+    }
 
     send(
         &mut host,
@@ -364,13 +365,25 @@ fn the_host_shares_the_episode_with_a_member() {
         .find_mut(9)
         .unwrap()
         .downloads
-        .insert(hash.clone());
+        .insert(hash);
     let engine = member.app.engine().unwrap();
     member
         ._rt_handle()
         .block_on(engine.download(torrent, None, folder.clone()))
         .unwrap();
+    Some((host, member, folder, bytes))
+}
 
+/// A member whose only way to download is BitTorrent gets the episode from
+/// the host, who stops sharing it once the member has it; then it plays
+/// for both.
+#[test]
+#[ignore = "needs GStreamer and ffmpeg"]
+fn the_host_shares_the_episode_with_a_member() {
+    let base = tempfile::tempdir().unwrap();
+    let Some((mut host, mut member, folder, bytes)) = torrenting_member(base.path(), false) else {
+        return;
+    };
     // The host plays it: it waits for the member, who gets it from the host.
     send(&mut host, [play(9, 1)]);
     assert!(host.player.is_none(), "it waits");
@@ -402,5 +415,38 @@ fn the_host_shares_the_episode_with_a_member() {
     both(&mut host, &mut member, "both to play", |h, m| {
         position(h) > 0.5 && position(m) > 0.5
     });
+    send(&mut host, [act(Action::Party(PartyAction::Leave))]);
+}
+
+/// A member with another way to download (a debrid service here) doesn't
+/// ask the party: nobody seeds, even while they're torrenting it.
+#[test]
+#[ignore = "needs GStreamer and ffmpeg"]
+fn nobody_seeds_to_a_member_with_another_way() {
+    let base = tempfile::tempdir().unwrap();
+    let Some((mut host, mut member, _, _)) = torrenting_member(base.path(), true) else {
+        return;
+    };
+    assert!(!member.app.torrent_only());
+    send(&mut host, [play(9, 1)]);
+    both(
+        &mut host,
+        &mut member,
+        "the host to see the member downloading",
+        |h, _| {
+            h.app
+                .party_people()
+                .iter()
+                .any(|p| p.1 == "Mai" && matches!(p.2, crate::party::Have::Downloading(_)))
+        },
+    );
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = host.update(Message::Tick);
+        let _ = member.update(Message::Tick);
+        assert!(host.app.party.share.seeding.is_empty(), "the host seeded");
+        assert!(member.app.party.share.peers.is_empty());
+    }
     send(&mut host, [act(Action::Party(PartyAction::Leave))]);
 }
