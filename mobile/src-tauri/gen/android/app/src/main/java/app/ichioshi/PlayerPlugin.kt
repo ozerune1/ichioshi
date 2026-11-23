@@ -25,6 +25,21 @@ class PlayArgs {
   var skipEndings: Boolean = false
   var hasNext: Boolean = false
   var hasPrev: Boolean = false
+  /** The series and episode (for the watch party). */
+  var id: Long = 0
+  var episode: Int = 0
+  /** "member": following a watch party's host, who controls playback. */
+  var party: String = ""
+  /** Start paused (the party's player is). */
+  var paused: Boolean = false
+}
+
+/** What the watch party wants the player to do. */
+@InvokeArg
+class ControlArgs {
+  var seek: Double? = null
+  var paused: Boolean? = null
+  var close: Boolean = false
 }
 
 /** A downloaded update, for the system's installer. */
@@ -42,6 +57,8 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun play(invoke: Invoke) {
     val args = invoke.parseArgs(PlayArgs::class.java)
+    // One player at a time: one already open closes (saying how far it got).
+    PlayerActivity.current?.replaced()
     val intent = Intent(activity, PlayerActivity::class.java).apply {
       putExtra("url", args.url)
       putExtra("title", args.title)
@@ -53,6 +70,10 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
       putExtra("skipEndings", args.skipEndings)
       putExtra("hasNext", args.hasNext)
       putExtra("hasPrev", args.hasPrev)
+      putExtra("id", args.id)
+      putExtra("episode", args.episode)
+      putExtra("party", args.party)
+      putExtra("paused", args.paused)
     }
     startActivityForResult(invoke, intent, "played")
   }
@@ -89,6 +110,21 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
     } catch (e: Exception) {
       invoke.reject("Couldn't open the installer: ${e.message}")
     }
+  }
+
+  /** The player, for the watch party: open, what, where, paused, asked. */
+  @Command
+  fun partyState(invoke: Invoke) {
+    val p = PlayerActivity.current
+    invoke.resolve(p?.state() ?: JSObject().apply { put("open", false) })
+  }
+
+  /** Do what the watch party says: seek, pause or play, close. */
+  @Command
+  fun partyControl(invoke: Invoke) {
+    val args = invoke.parseArgs(ControlArgs::class.java)
+    PlayerActivity.current?.control(args.seek, args.paused, args.close)
+    invoke.resolve()
   }
 
   @Command

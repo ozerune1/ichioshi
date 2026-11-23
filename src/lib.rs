@@ -34,6 +34,7 @@ mod mkv;
 mod mock_http;
 mod net;
 mod nyaa;
+mod party;
 mod pick;
 mod player;
 mod playlist;

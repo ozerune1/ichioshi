@@ -74,6 +74,18 @@ pub(super) fn page(ui: &mut Ui) -> Value {
             list_settings(ui),
         ),
         section(
+            "party",
+            "◎",
+            "Watch party",
+            match (app.party_size(), app.party_host_name()) {
+                (Some(n), Some(host)) => format!("In {host}'s party · {n} people"),
+                (Some(1), None) => "Hosting · waiting for friends".to_owned(),
+                (Some(n), None) => format!("Hosting · {n} people"),
+                (None, _) => "Watch an episode together".to_owned(),
+            },
+            party(ui),
+        ),
+        section(
             "player",
             "▶",
             "Player",
@@ -827,4 +839,222 @@ fn player(ui: &mut Ui) -> Vec<Value> {
             |app, on| app.settings.player.autoplay = on,
         ),
     ]
+}
+
+/// The watch party: host one or join one; who's there, whether they have
+/// the episode, and starting it.
+fn party(ui: &mut Ui) -> Vec<Value> {
+    use crate::app::party_ui::{PartyAction as P, Role, have_text};
+    use crate::party::{HOST, Have};
+    let app = ui.app;
+    let go = |a: P| Some(Action::Party(a));
+    let mut items = Vec::new();
+    let people = |ui: &mut Ui| -> Value {
+        let chosen = ui.app.party_episode().is_some();
+        let lines: Vec<Value> = ui
+            .app
+            .party_people()
+            .into_iter()
+            .map(|(id, name, have, you)| {
+                let who = match (you, id == HOST) {
+                    (true, true) => format!("{name} (you, hosting)"),
+                    (true, false) => format!("{name} (you)"),
+                    (false, true) => format!("{name} (hosting)"),
+                    (false, false) => name,
+                };
+                let tone = match have {
+                    Have::Ready => "good",
+                    Have::Downloading(_) => "warn",
+                    Have::Missing => "muted",
+                };
+                if chosen {
+                    said(format!("● {who} · {}", have_text(have)), tone)
+                } else {
+                    text(format!("● {who}"))
+                }
+            })
+            .collect();
+        let mut all = vec![heading(
+            format!("People ({})", ui.app.party_size().unwrap_or(1)),
+            None,
+        )];
+        all.extend(lines);
+        boxed(all)
+    };
+    let watching = |ui: &mut Ui| -> Value {
+        let app = ui.app;
+        let mut box_items = vec![heading("Watching", None)];
+        let host = matches!(app.party.role, Some(Role::Host(_)));
+        let Some(e) = app.party_episode().cloned() else {
+            box_items.push(said(
+                if host {
+                    "Nothing yet: play an episode from your library, and it starts for \
+                     everyone once they all have it."
+                } else {
+                    "Nothing yet: the host chooses."
+                },
+                "muted",
+            ));
+            return boxed(box_items);
+        };
+        box_items.push(text(app.episode_label(&e)));
+        match &app.party.role {
+            Some(Role::Host(h)) => {
+                let waiting = app.party_waiting_for();
+                if h.starting {
+                    box_items.push(said(
+                        format!(
+                            "Starts once {} {} it",
+                            waiting.join(", "),
+                            if waiting.len() == 1 { "has" } else { "have" }
+                        ),
+                        "muted",
+                    ));
+                    box_items.push(buttons(
+                        vec![ui.button("Don't start", go(P::Cancel))],
+                        false,
+                    ));
+                } else {
+                    box_items.push(said(
+                        if waiting.is_empty() {
+                            "Everyone has it.".to_owned()
+                        } else {
+                            format!("Waiting for {}.", waiting.join(", "))
+                        },
+                        "muted",
+                    ));
+                    box_items.push(buttons(
+                        vec![ui.button("Start for everyone", go(P::Start))],
+                        true,
+                    ));
+                }
+            }
+            Some(Role::Member(m)) => match m.me {
+                Have::Ready => box_items.push(said(
+                    if m.host_playing() {
+                        "You have it: it's playing."
+                    } else {
+                        "You have it: it starts when the host starts it."
+                    },
+                    "good",
+                )),
+                Have::Downloading(_) => box_items.push(said(
+                    format!("You're getting it: {}", have_text(m.me).to_lowercase()),
+                    "warn",
+                )),
+                Have::Missing => {
+                    box_items.push(said(
+                        "You don't have it yet: download it from its page.",
+                        "warn",
+                    ));
+                    if app.library.find(e.series).is_some() {
+                        box_items.push(buttons(
+                            vec![ui.button("Open its page", Some(Action::OpenSeries(e.series)))],
+                            false,
+                        ));
+                    }
+                }
+            },
+            None => {}
+        }
+        boxed(box_items)
+    };
+    match &app.party.role {
+        None => {
+            items.push(said(
+                "Watch an episode together, each from your own copy. The host's player \
+                 leads; it starts once everyone has the episode.",
+                "muted",
+            ));
+            items.push(field(
+                ui,
+                "Your name",
+                &app.party_name(),
+                &app.settings.party_name,
+                false,
+                |app, v| app.party_action(P::SetName(v)),
+            ));
+            items.push(boxed(vec![
+                heading("Host a party", None),
+                said(
+                    "You get a code to send your friends. Then play an episode: it starts for \
+                     everyone once they all have it.",
+                    "muted",
+                ),
+                buttons(
+                    vec![ui.button(
+                        if app.party.busy {
+                            "Starting…"
+                        } else {
+                            "Start a party"
+                        },
+                        (!app.party.busy).then_some(Action::Party(P::Host)),
+                    )],
+                    true,
+                ),
+            ]));
+            let code = app.party.code.clone();
+            let busy = app.party.busy;
+            items.push(boxed(vec![
+                heading("Join a party", None),
+                field(
+                    ui,
+                    "Party code",
+                    "Paste the code your friend sent",
+                    &code,
+                    false,
+                    |app, v| app.party_action(P::SetCode(v)),
+                ),
+                buttons(
+                    vec![ui.button(
+                        if busy { "Joining…" } else { "Join" },
+                        (!busy && !code.trim().is_empty()).then_some(Action::Party(P::Join)),
+                    )],
+                    true,
+                ),
+            ]));
+            if let Some(e) = &app.party.error {
+                items.push(said(e.clone(), "error"));
+            }
+        }
+        Some(Role::Host(h)) => {
+            let code = h.code.clone();
+            items.push(boxed(vec![
+                heading("Your party's code", None),
+                said(
+                    "Send it to your friends (anyone with it can join): they paste it under \
+                     More › Watch party.",
+                    "muted",
+                ),
+                copy("Copy the code", code),
+            ]));
+            items.push(watching(ui));
+            items.push(people(ui));
+            items.push(buttons(
+                vec![ui.button("End the party", go(P::Leave))],
+                false,
+            ));
+        }
+        Some(Role::Member(m)) => {
+            let host = app.party_host_name().unwrap_or("the host".into());
+            let follow = !m.following && m.host_playing();
+            items.push(said(
+                format!(
+                    "You're in {host}'s party. {host}'s player leads: yours opens, pauses and \
+                     moves with it, and pausing asks {host} to pause."
+                ),
+                "muted",
+            ));
+            if follow {
+                items.push(buttons(vec![ui.button("Watch along", go(P::Follow))], true));
+            }
+            items.push(watching(ui));
+            items.push(people(ui));
+            items.push(buttons(
+                vec![ui.button("Leave the party", go(P::Leave))],
+                false,
+            ));
+        }
+    }
+    items
 }

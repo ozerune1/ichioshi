@@ -51,6 +51,9 @@ enum Job {
     Read(Looking),
     /// Change it (a command).
     Write(Changing),
+    /// Change it, the view staying as it is (unless background work says
+    /// otherwise): the watch party's poll.
+    Quiet(Changing),
     /// Background work finished.
     Wake,
 }
@@ -109,6 +112,10 @@ impl Bridge {
                                 f(&mut app, &mut core);
                                 app.duties();
                                 changed(&core);
+                            }
+                            Some(Job::Quiet(f)) => {
+                                f(&mut app, &mut core);
+                                app.duties();
                             }
                             Some(Job::Wake) => {
                                 app.duties();
@@ -170,6 +177,19 @@ impl Bridge {
     pub async fn view(&self) -> Result<Value, String> {
         self.read(|app, core| view::view(app, &mut core.handles))
             .await
+    }
+
+    /// The watch party and the phone's player: what the player's doing
+    /// (PlayerPlugin's "partyState"), and what it's to do (see
+    /// `play::party_poll`).
+    pub async fn party(&self, player: Option<Value>) -> Result<Value, String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.jobs
+            .send(Job::Quiet(Box::new(move |app, core| {
+                let _ = tx.send(play::party_poll(app, core, player));
+            })))
+            .map_err(|_| "the app has stopped".to_owned())?;
+        rx.await.map_err(|_| "the app has stopped".to_owned())
     }
 
     /// Do something (press a button, type into a field, go somewhere…).

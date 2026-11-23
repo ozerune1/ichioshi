@@ -22,11 +22,13 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import app.tauri.plugin.JSObject
 import dev.jdtech.mpv.MPVLib
 import java.io.File
 
@@ -37,13 +39,23 @@ import java.io.File
  * the next episode. It says how far it got when it closes.
  */
 class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.Callback {
+  companion object {
+    /** The player open now (the watch party asks it, and tells it). */
+    @Volatile
+    var current: PlayerActivity? = null
+  }
+
   private lateinit var mpv: MPVLib
   private val main = Handler(Looper.getMainLooper())
 
-  private var position = 0.0
+  @Volatile private var position = 0.0
   private var duration = 0.0
-  private var paused = false
-  private var ended = false
+  @Volatile private var paused = false
+  @Volatile private var ended = false
+  /** Following a watch party's host: only the host controls playback. */
+  private var member = false
+  /** What you asked the host to do (pause, play), not yet passed on. */
+  @Volatile private var asked: String? = null
   private var loaded = false
   private var dragging = false
   private var skipOpenings = false
@@ -69,8 +81,10 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
       hide(WindowInsetsCompat.Type.systemBars())
       systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
-    skipOpenings = intent.getBooleanExtra("skipOpenings", false)
-    skipEndings = intent.getBooleanExtra("skipEndings", false)
+    member = intent.getStringExtra("party") == "member"
+    skipOpenings = intent.getBooleanExtra("skipOpenings", false) && !member
+    skipEndings = intent.getBooleanExtra("skipEndings", false) && !member
+    current = this
     buildViews()
 
     mpv = MPVLib.create(this) ?: run {
@@ -100,6 +114,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     if (intent.getStringExtra("slang").isNullOrEmpty()) mpv.setOptionString("sid", "no")
     val start = intent.getDoubleExtra("start", 0.0)
     if (start > 0) mpv.setOptionString("start", start.toString())
+    if (intent.getBooleanExtra("paused", false)) mpv.setOptionString("pause", "yes")
     mpv.init()
     mpv.addObserver(this)
     mpv.observeProperty("time-pos", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)
@@ -187,6 +202,11 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     names.addView(label(intent.getStringExtra("name") ?: "", 13f).apply {
       setTextColor(Color.argb(200, 255, 255, 255)); maxLines = 1
     })
+    if (member) {
+      names.addView(label("Watch party: the host controls playback", 12f).apply {
+        setTextColor(Color.argb(255, 167, 155, 255)); maxLines = 1
+      })
+    }
     top.addView(names, LinearLayout.LayoutParams(0, -2, 1f))
     top.addView(pill("Audio") { pickTrack("audio") })
     top.addView(View(this), LinearLayout.LayoutParams(dp(8), 1))
@@ -202,12 +222,20 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     playButton = label("❚❚", 34f, true).apply {
       gravity = Gravity.CENTER
       background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(150, 139, 124, 255)) }
-      setOnClickListener { mpv.setPropertyBoolean("pause", !paused); poke() }
+      setOnClickListener {
+        if (member) {
+          asked = if (paused) "play" else "pause"
+          Toast.makeText(this@PlayerActivity, if (paused) "Asked the host to play" else "Asked the host to pause", Toast.LENGTH_SHORT).show()
+        } else {
+          mpv.setPropertyBoolean("pause", !paused)
+        }
+        poke()
+      }
     }
     val on10 = label("10 ⟳", 18f, true).apply { setPadding(dp(24), dp(12), dp(24), dp(12)); setOnClickListener { seekBy(10.0) } }
-    middle.addView(back10)
+    if (!member) middle.addView(back10)
     middle.addView(playButton, LinearLayout.LayoutParams(dp(76), dp(76)))
-    middle.addView(on10)
+    if (!member) middle.addView(on10)
     overlay.addView(middle, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
 
     // Bottom: chapter, skip, next; time, the bar, time left.
@@ -223,11 +251,11 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     actions.addView(chapterName, LinearLayout.LayoutParams(0, -2, 1f))
     skipButton = pill("Skip opening ⏭") { skipChapter() }.apply { visibility = View.GONE }
     actions.addView(skipButton)
-    if (intent.getBooleanExtra("hasPrev", false)) {
+    if (intent.getBooleanExtra("hasPrev", false) && !member) {
       actions.addView(View(this), LinearLayout.LayoutParams(dp(8), 1))
       actions.addView(pill("⏮ Previous") { close("prev") })
     }
-    if (intent.getBooleanExtra("hasNext", false)) {
+    if (intent.getBooleanExtra("hasNext", false) && !member) {
       actions.addView(View(this), LinearLayout.LayoutParams(dp(8), 1))
       actions.addView(pill("Next ⏭") { close("next") })
     }
@@ -240,6 +268,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     left = label("-0:00", 13f)
     seek = SeekBar(this).apply {
       max = 1000
+      isEnabled = !member
       setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
         override fun onProgressChanged(s: SeekBar, value: Int, fromUser: Boolean) {
           if (fromUser && duration > 0) time.text = clock(duration * value / 1000)
@@ -265,7 +294,8 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
         showControls(controls.visibility != View.VISIBLE); return true
       }
       override fun onDoubleTap(e: MotionEvent): Boolean {
-        seekBy(if (e.x < root.width / 2f) -10.0 else 10.0); return true
+        if (!member) seekBy(if (e.x < root.width / 2f) -10.0 else 10.0)
+        return true
       }
     })
     surface.setOnTouchListener { _, e -> gestures.onTouchEvent(e); true }
@@ -318,7 +348,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
       skipChapter()
       return
     }
-    skipButton.visibility = if (kind != null) View.VISIBLE else View.GONE
+    skipButton.visibility = if (kind != null && !member) View.VISIBLE else View.GONE
     skipButton.text = if (kind == "ending") "Skip ending ⏭" else "Skip opening ⏭"
   }
 
@@ -394,7 +424,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
         "paused-for-cache" -> spinner.visibility = if (value) View.VISIBLE else View.GONE
         "eof-reached" -> if (value && loaded) {
           ended = true
-          close(if (intent.getBooleanExtra("hasNext", false)) "auto" else null)
+          close(if (intent.getBooleanExtra("hasNext", false) && !member) "auto" else null)
         }
       }
     }
@@ -438,7 +468,39 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     if (!isFinishing) mpv.setPropertyBoolean("pause", true)
   }
 
-  private var closed = false
+  @Volatile private var closed = false
+
+  // ── The watch party ─────────────────────────────────────────────────
+
+  /** What's playing, where, and whether you asked the host for something. */
+  fun state(): JSObject = JSObject().apply {
+    put("open", !closed)
+    put("id", intent.getLongExtra("id", 0))
+    put("episode", intent.getIntExtra("episode", 0))
+    put("position", position)
+    put("paused", paused)
+    put("ended", ended)
+    put("asked", asked)
+    asked = null
+  }
+
+  /** Seek, pause or play, or close: as the party's host's player is. */
+  fun control(seekTo: Double?, pause: Boolean?, quit: Boolean) {
+    main.post {
+      if (closed || !::mpv.isInitialized) return@post
+      if (quit) {
+        close(null)
+        return@post
+      }
+      seekTo?.let { mpv.setPropertyDouble("time-pos", it) }
+      pause?.let { mpv.setPropertyBoolean("pause", it) }
+    }
+  }
+
+  /** Another episode's starting: this one closes. */
+  fun replaced() {
+    main.post { close(null) }
+  }
 
   /** Done: how far it got, and what next. */
   private fun close(then: String?, error: String? = null) {
@@ -456,6 +518,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
   }
 
   override fun onDestroy() {
+    if (current === this) current = null
     main.removeCallbacksAndMessages(null)
     if (::mpv.isInitialized) {
       mpv.removeObserver(this)

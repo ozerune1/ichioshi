@@ -37,6 +37,7 @@ mod import_ui;
 mod library_ui;
 mod manage_ui;
 mod offline_ui;
+mod party_ui;
 mod playlist_page;
 mod remux_page;
 mod servers_ui;
@@ -76,6 +77,8 @@ struct Settings {
     player: crate::player::Settings,
     /// Ask GitHub for a newer Ichioshi when the app starts.
     check_updates: bool,
+    /// Your name in watch parties (empty: your account's).
+    party_name: String,
 }
 
 impl Default for Settings {
@@ -93,6 +96,7 @@ impl Default for Settings {
             migrated: false,
             player: Default::default(),
             check_updates: true,
+            party_name: String::new(),
         }
     }
 }
@@ -179,6 +183,7 @@ enum Msg {
     Offline(offline_ui::OfflineMsg),
     Update(update_ui::UpdateMsg),
     Import(import_ui::ImportMsg),
+    Party(party_ui::PartyMsg),
     /// Episode files' releases, read: by series, path, size.
     Described(Vec<(u64, String, u64, crate::library::EpisodeRelease)>),
     Engine {
@@ -473,6 +478,7 @@ enum Action {
     Offline(offline_ui::OfflineAction),
     Update(update_ui::UpdateAction),
     Import(import_ui::ImportAction),
+    Party(party_ui::PartyAction),
 }
 
 /// A download picked on the Downloads page (to remove several at once).
@@ -534,6 +540,8 @@ enum Page {
     Discover,
     /// What's airing, day by day.
     Calendar,
+    /// Watching together: hosting or joining a party.
+    Party,
 }
 
 struct AnimePage {
@@ -842,6 +850,8 @@ pub struct App {
     offline: offline_ui::OfflineState,
     /// A newer Ichioshi, and getting it.
     update: update_ui::UpdateState,
+    /// A watch party you're hosting or in.
+    party: party_ui::PartyState,
     /// Where releases are looked up (GitHub's API; a mock in tests).
     update_api: String,
     /// Files being imported into Sonarr or Radarr by hand.
@@ -924,6 +934,7 @@ impl App {
             manage: None,
             offline: Default::default(),
             update: Default::default(),
+            party: Default::default(),
             update_api: crate::update::api_base(),
             import: None,
             discover: Default::default(),
@@ -1026,10 +1037,12 @@ impl App {
         self.request_episode_scores();
         self.servers_tick();
         self.manage_tick();
+        self.party_tick();
         self.save_settings();
     }
 
     fn shut_down(&mut self) {
+        self.party_shut_down();
         // Debrid and Usenet downloads resume from their partial files next time.
         self.debrid.manager.stop();
         self.usenet.manager.stop();
@@ -1241,6 +1254,7 @@ impl App {
                 Msg::Described(read) => self.handle_described(read),
                 Msg::Offline(msg) => self.handle_offline_msg(msg),
                 Msg::Update(msg) => self.handle_update_msg(msg),
+                Msg::Party(msg) => self.handle_party_msg(msg),
                 Msg::Import(msg) => self.handle_import_msg(msg),
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
@@ -1467,6 +1481,7 @@ impl App {
             Action::Manage(action) => self.manage_action(action),
             Action::Offline(action) => self.offline_action(action),
             Action::Update(action) => self.update_action(action),
+            Action::Party(action) => self.party_action(action),
             Action::Import(action) => self.import_action(action),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),

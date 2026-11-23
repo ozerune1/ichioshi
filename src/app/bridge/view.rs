@@ -135,7 +135,7 @@ fn tab(app: &App) -> Tab {
             }
         }
         Page::Downloads => Tab::Downloads,
-        Page::Playlist(_) | Page::Settings => Tab::More,
+        Page::Playlist(_) | Page::Settings | Page::Party => Tab::More,
     }
 }
 
@@ -144,7 +144,7 @@ pub(super) fn view(app: &App, handles: &mut Handles) -> Value {
     let page = match &app.page {
         Page::Home => library::page(&mut ui),
         Page::Downloads => downloads::page(&mut ui),
-        Page::Settings => settings::page(&mut ui),
+        Page::Settings | Page::Party => settings::page(&mut ui),
         Page::Discover => browse::discover(&mut ui),
         Page::Calendar => browse::calendar(&mut ui),
         Page::Anime(ap) => series::page(&mut ui, ap),

@@ -103,7 +103,7 @@ impl Gui {
                 }
             }
             Page::Downloads => Tab::Downloads,
-            Page::Playlist(_) | Page::Settings => Tab::More,
+            Page::Playlist(_) | Page::Settings | Page::Party => Tab::More,
         }
     }
 
@@ -121,6 +121,10 @@ impl Gui {
             },
             Page::Playlist(_) => (
                 "Playlist".into(),
+                Some(edit(|g| g.app.page = Page::Settings)),
+            ),
+            Page::Party => (
+                "Watch party".into(),
                 Some(edit(|g| g.app.page = Page::Settings)),
             ),
             Page::Anime(ap) => (ap.anime.title.clone(), Some(act(Action::Back))),

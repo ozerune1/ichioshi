@@ -108,6 +108,16 @@ impl Gui {
                 }),
             ),
             (
+                "◎",
+                "Watch party",
+                self.app.party_size().map(|n| n.to_string()),
+                matches!(page, Page::Party),
+                edit(|g| {
+                    g.app.cancel_listing();
+                    g.app.page = Page::Party;
+                }),
+            ),
+            (
                 "≡",
                 "Playlist",
                 (playlist > 0).then(|| playlist.to_string()),

@@ -2,24 +2,67 @@
 //! or Jellyfin's stream) and where to start, for the UI's player; and how
 //! far it got, saved.
 
-use serde_json::json;
+use std::sync::{Arc, Mutex};
+
+use serde_json::{Value, json};
 
 use super::Core;
 use crate::app::App;
 use crate::app::watching::episode_files;
 
 /// Play episode `episode` of series `id`: the UI gets "play" with where
-/// from (or the app says why it can't).
+/// from (or the app says why it can't). In a watch party, the host's
+/// episode waits until everyone has it.
 pub(super) fn play(app: &mut App, core: &mut Core, id: u64, episode: u32) {
+    if app.party_play(id, episode) {
+        return;
+    }
+    let emit = core.emit.clone();
+    open(
+        app,
+        core,
+        id,
+        episode,
+        None,
+        Arc::new(move |p| emit("play", p)),
+    );
+}
+
+/// What to play goes to the UI's player (or, the party's, straight to the
+/// phone's player: see `party_poll`).
+type Deliver = Arc<dyn Fn(Value) + Send + Sync>;
+
+/// Play it: from where you left it, or (`party`) where the party's player
+/// is, playing or paused.
+fn open(
+    app: &mut App,
+    core: &mut Core,
+    id: u64,
+    episode: u32,
+    party: Option<(Option<f64>, bool)>,
+    deliver: Deliver,
+) {
     let Some(series) = app.library.find(id) else {
         return;
     };
     let title = series.title().to_owned();
-    let start = series
-        .watched
-        .get(&episode)
-        .and_then(crate::library::Watch::resume_at)
-        .unwrap_or(0.0);
+    let start = match party {
+        Some((Some(at), _)) => at,
+        _ => series
+            .watched
+            .get(&episode)
+            .and_then(crate::library::Watch::resume_at)
+            .unwrap_or(0.0),
+    };
+    let paused = party.is_some_and(|(_, playing)| !playing);
+    // Following the host's player, only the host controls it.
+    let role = if party.is_some()
+        && !matches!(app.party.role, Some(crate::app::party_ui::Role::Host(_)))
+    {
+        "member"
+    } else {
+        ""
+    };
     let name = series
         .details
         .as_ref()
@@ -38,11 +81,8 @@ pub(super) fn play(app: &mut App, core: &mut Core, id: u64, episode: u32) {
     let (skip_openings, skip_endings) = (p.skip_openings, p.skip_endings);
     let next = neighbour(app, id, episode, true);
     let prev = neighbour(app, id, episode, false);
-    let emit = core.emit.clone();
     let send = move |url: String, kind: &str| {
-        emit(
-            "play",
-            json!({
+        deliver(json!({
                 "id": id,
                 "episode": episode,
                 "title": title,
@@ -56,8 +96,9 @@ pub(super) fn play(app: &mut App, core: &mut Core, id: u64, episode: u32) {
                 "skipEndings": skip_endings,
                 "hasNext": next.is_some(),
                 "hasPrev": prev.is_some(),
-            }),
-        );
+                "party": role,
+                "paused": paused,
+        }));
     };
     // On the servers: its offline copy, else Jellyfin's stream.
     if app.servers_mode() {
@@ -177,4 +218,65 @@ fn mpv_lang(code: &str) -> String {
     } else {
         format!("{code},{two}")
     }
+}
+
+/// The watch party and the phone's player, a few times a second (from the
+/// phone app, not its web UI, which sleeps while the player's open): what
+/// the player's doing (`player`: from PlayerPlugin's "partyState"), and
+/// what it's to do ("control", for "partyControl"). `active`: there's a
+/// party (else it's asked less often).
+pub(super) fn party_poll(app: &mut App, core: &mut Core, player: Option<Value>) -> Value {
+    use crate::app::party_ui::{PartyAction, PlayerCmd, Watching};
+    let watching = player
+        .as_ref()
+        .filter(|p| p["open"] == true)
+        .map(|p| Watching {
+            series: p["id"].as_u64().unwrap_or(0),
+            episode: p["episode"].as_u64().unwrap_or(0) as u32,
+            position: p["position"].as_f64().unwrap_or(0.0),
+            playing: p["paused"] != true && p["ended"] != true,
+        });
+    // Pausing, following the host: asks the host.
+    if let Some(asked) = player.as_ref().and_then(|p| p["asked"].as_str()) {
+        let ask = if asked == "play" {
+            crate::party::Ask::Play
+        } else {
+            crate::party::Ask::Pause
+        };
+        app.party_action(PartyAction::Ask(ask));
+    }
+    let control = match app.party_player(watching) {
+        Some(PlayerCmd::Open {
+            series,
+            episode,
+            at,
+            playing,
+        }) => {
+            // Straight to the phone's player (the web UI sleeps while one's
+            // open); unless it's only known later, then through the UI.
+            let slot: Arc<Mutex<(bool, Option<Value>)>> = Arc::default();
+            let (s, emit) = (slot.clone(), core.emit.clone());
+            let deliver: Deliver = Arc::new(move |p| {
+                let mut s = s.lock().unwrap();
+                if s.0 {
+                    emit("play", p);
+                } else {
+                    s.1 = Some(p);
+                }
+            });
+            open(app, core, series, episode, Some((at, playing)), deliver);
+            let mut s = slot.lock().unwrap();
+            s.0 = true;
+            if let Some(p) = s.1.take() {
+                return json!({"active": true, "control": Value::Null, "play": p});
+            }
+            Value::Null
+        }
+        Some(PlayerCmd::Seek(to)) => json!({"seek": to}),
+        Some(PlayerCmd::Pause) => json!({"paused": true}),
+        Some(PlayerCmd::Play) => json!({"paused": false}),
+        Some(PlayerCmd::Close) => json!({"close": true}),
+        None => Value::Null,
+    };
+    json!({"active": app.party.role.is_some(), "control": control})
 }

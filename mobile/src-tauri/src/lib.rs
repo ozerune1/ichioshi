@@ -79,6 +79,73 @@ async fn to_background(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// The watch party and the player, a few times a second while there's a
+/// party (else now and then): what the player's doing, to the core; what
+/// the party wants it to do, to the player. Not through the web UI, which
+/// sleeps while the player's open.
+#[cfg(target_os = "android")]
+fn party_poll(app: tauri::AppHandle, bridge: Bridge) {
+    use std::time::Duration;
+    std::thread::Builder::new()
+        .name("party-poll".into())
+        .spawn(move || {
+            let mut active = false;
+            loop {
+                std::thread::sleep(Duration::from_millis(if active { 300 } else { 1500 }));
+                let player = app.state::<Player>();
+                let state = if active {
+                    tauri::async_runtime::block_on(
+                        player
+                            .0
+                            .run_mobile_plugin_async::<serde_json::Value>("partyState", ()),
+                    )
+                    .ok()
+                } else {
+                    None
+                };
+                let Ok(said) = tauri::async_runtime::block_on(bridge.party(state)) else {
+                    continue;
+                };
+                active = said["active"] == true;
+                // The party's episode: the player opens; how far it got goes
+                // to the core when it closes.
+                if said["play"].is_object() {
+                    let (app, bridge, request) =
+                        (app.clone(), bridge.clone(), said["play"].clone());
+                    tauri::async_runtime::spawn(async move {
+                        let player = app.state::<Player>();
+                        let r = player
+                            .0
+                            .run_mobile_plugin_async::<serde_json::Value>("play", request.clone())
+                            .await
+                            .unwrap_or_default();
+                        let played = serde_json::json!({
+                            "do": "played",
+                            "id": request["id"],
+                            "episode": request["episode"],
+                            "position": r["position"].as_f64().unwrap_or(0.0),
+                            "duration": r["duration"].as_f64().unwrap_or(0.0),
+                            "then": r["then"],
+                        });
+                        if let Ok(c) = serde_json::from_value::<Command>(played) {
+                            let _ = bridge.command(c).await;
+                        }
+                    });
+                }
+                let control = &said["control"];
+                if !control.is_null() {
+                    let _ = tauri::async_runtime::block_on(
+                        player.0.run_mobile_plugin_async::<serde_json::Value>(
+                            "partyControl",
+                            control.clone(),
+                        ),
+                    );
+                }
+            }
+        })
+        .expect("failed to start the party's poll");
+}
+
 /// The phone's player (PlayerPlugin, in the Android project).
 #[cfg(target_os = "android")]
 struct Player(tauri::plugin::PluginHandle<tauri::Wry>);
@@ -165,6 +232,8 @@ pub fn run() {
                     let _ = opener.opener().open_url(url, None::<&str>);
                 },
             );
+            #[cfg(target_os = "android")]
+            party_poll(app.handle().clone(), bridge.clone());
             app.manage(bridge);
             Ok(())
         })

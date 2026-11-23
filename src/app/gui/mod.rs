@@ -18,6 +18,9 @@ mod flows;
 mod images;
 mod library;
 mod manage;
+mod party;
+#[cfg(test)]
+mod party_tests;
 mod phone;
 #[cfg(not(target_os = "android"))]
 mod player;
@@ -233,6 +236,9 @@ pub(super) struct Gui {
     copy: Option<String>,
     /// The note in the corner (the app's status), and since when.
     note_since: Option<(String, Instant)>,
+    /// Where the next episode opened starts, and whether it plays (the
+    /// party's player, not where you left it).
+    party_start: Option<(Option<f64>, bool)>,
 }
 
 impl Gui {
@@ -267,6 +273,7 @@ impl Gui {
             picked: Default::default(),
             copy: None,
             note_since: None,
+            party_start: None,
         }
     }
 
@@ -421,6 +428,7 @@ impl Gui {
             // Skip openings and endings, if that's the setting (once each).
             let s = &self.app.settings.player;
             if let Some((i, chapter, _)) = p.current_part()
+                && !self.app.party_locked()
                 && ((chapter.part == crate::player::Part::Opening && s.skip_openings)
                     || (chapter.part == crate::player::Part::Ending && s.skip_endings))
                 && p.skipped.insert(i)
@@ -434,6 +442,19 @@ impl Gui {
             if !p.paused() && p.last_saved.elapsed() > Duration::from_secs(15) {
                 self.save_progress();
             }
+        }
+        // The watch party: what this player's doing, and what it's to do.
+        let watching = self
+            .player
+            .as_ref()
+            .map(|p| crate::app::party_ui::Watching {
+                series: p.series,
+                episode: p.episode,
+                position: p.position(),
+                playing: !p.paused() && !p.ended,
+            });
+        if let Some(cmd) = self.app.party_player(watching) {
+            tasks.push(self.party_command(cmd));
         }
         // Notes go away after a while (errors stay longer).
         match &self.app.status {
@@ -506,6 +527,14 @@ impl Gui {
     }
 
     fn play(&mut self, id: u64, episode: u32) -> Task<Message> {
+        // In a party, the host's episode waits for everyone to have it.
+        if self.app.party_play(id, episode) {
+            return Task::none();
+        }
+        self.play_now(id, episode)
+    }
+
+    fn play_now(&mut self, id: u64, episode: u32) -> Task<Message> {
         if self.app.servers_mode() {
             // Its offline copy, if there's one; else Jellyfin's stream.
             return match self.app.offline_copy(id, episode).cloned() {
@@ -667,7 +696,11 @@ impl Gui {
         let Some(series) = self.app.library.find(id) else {
             return Task::none();
         };
-        let start = series.watched.get(&episode).and_then(Watch::resume_at);
+        let party = self.party_start.take();
+        let start = match party {
+            Some((Some(at), _)) => Some(at),
+            _ => series.watched.get(&episode).and_then(Watch::resume_at),
+        };
         let title = match &self.app.page {
             Page::Anime(ap) if ap.anime.anilist_id == id => ap.anime.title.clone(),
             _ => series.title().to_owned(),
@@ -716,6 +749,41 @@ impl Gui {
 
     fn player_message(&mut self, msg: player::Msg) -> Task<Message> {
         use player::Msg;
+        // Following the host's player: pausing asks the host, and moving
+        // around is the host's.
+        if self.app.party_locked() {
+            let panel = self.player.as_ref().is_some_and(|p| p.panel.is_some());
+            match msg {
+                Msg::TogglePause | Msg::Surface if !(panel && matches!(msg, Msg::Surface)) => {
+                    let paused = self.player.as_ref().is_none_or(|p| p.paused());
+                    let ask = if paused {
+                        crate::party::Ask::Play
+                    } else {
+                        crate::party::Ask::Pause
+                    };
+                    self.app
+                        .perform(Action::Party(crate::app::party_ui::PartyAction::Ask(ask)));
+                    return Task::none();
+                }
+                Msg::Seek(_)
+                | Msg::SeekDone
+                | Msg::SeekBy(_)
+                | Msg::SkipPart
+                | Msg::Next
+                | Msg::Prev => {
+                    self.app.set_info("The host controls playback");
+                    return Task::none();
+                }
+                Msg::Ended => {
+                    if let Some(p) = &mut self.player {
+                        p.update(Msg::Ended);
+                    }
+                    self.save_progress();
+                    return Task::none();
+                }
+                _ => {}
+            }
+        }
         match msg {
             Msg::Back => {
                 self.save_progress();
@@ -814,6 +882,42 @@ impl Gui {
         }
     }
 
+    /// Do what the watch party says with the player.
+    fn party_command(&mut self, cmd: crate::app::party_ui::PlayerCmd) -> Task<Message> {
+        use crate::app::party_ui::PlayerCmd;
+        match cmd {
+            PlayerCmd::Open {
+                series,
+                episode,
+                at,
+                playing,
+            } => {
+                self.party_start = Some((at, playing));
+                let task = self.play_now(series, episode);
+                self.party_start = None;
+                if let Some(p) = &mut self.player
+                    && !playing
+                {
+                    p.set_paused(true);
+                }
+                task
+            }
+            PlayerCmd::Seek(to) => {
+                if let Some(p) = &mut self.player {
+                    p.seek_to(to, true);
+                }
+                Task::none()
+            }
+            PlayerCmd::Pause | PlayerCmd::Play => {
+                if let Some(p) = &mut self.player {
+                    p.set_paused(cmd == PlayerCmd::Pause);
+                }
+                Task::none()
+            }
+            PlayerCmd::Close => self.player_message(player::Msg::Back),
+        }
+    }
+
     fn key(&mut self, key: Key, modifiers: keyboard::Modifiers) -> Task<Message> {
         if modifiers.control() || modifiers.alt() {
             return Task::none();
@@ -894,6 +998,7 @@ impl Gui {
             Page::Playlist(pp) => self.playlist_page(pp),
             Page::Discover => self.discover_page(),
             Page::Calendar => self.calendar_page(),
+            Page::Party => self.party_page(),
         };
         let body: Element<'_, Message> = if style::compact() {
             self.phone_frame(page)
