@@ -16,7 +16,6 @@ use crate::app::{
     nyaa_release_label, release_label,
 };
 use crate::fallback::{NyaaRelease, ReleaseKind};
-use crate::library::Details;
 use crate::prefs::{LANGUAGES, LangPrefs, SubType};
 use crate::remux::language_name;
 use crate::seadex::Entry;
@@ -134,7 +133,7 @@ impl Gui {
             links = links.push(link("releases.moe ↗", Some(open_url(anime.seadex_url()))));
         }
         let facts = match details {
-            Some(d) => facts(d),
+            Some(d) => crate::app::library_ui::facts(d),
             None if self.app.pages.details_loading.contains(&id) => {
                 "Getting details from AniList…".to_owned()
             }
@@ -1445,43 +1444,6 @@ fn missing(episodes: &[Episode], coverage: &Coverage<'_>) -> Vec<u32> {
 
 fn coverage_why(c: &Coverage<'_>) -> String {
     c.why_not()
-}
-
-fn facts(d: &Details) -> String {
-    let mut facts = Vec::new();
-    if let Some(score) = d.score {
-        facts.push(format!("★ {score}%"));
-    }
-    if let (Some(season), Some(year)) = (&d.season, d.year) {
-        facts.push(format!("{} {year}", title_case(season)));
-    } else if let Some(year) = d.year {
-        facts.push(year.to_string());
-    }
-    if let Some(format) = &d.format {
-        facts.push(format.replace('_', " "));
-    }
-    if !d.studios.is_empty() {
-        facts.push(d.studios.join(", "));
-    }
-    if let Some(source) = &d.source {
-        facts.push(format!("from {}", title_case(&source.replace('_', " "))));
-    }
-    if let Some(minutes) = d.duration {
-        facts.push(format!("{minutes} min episodes"));
-    }
-    if let Some(line) = crate::app::library_ui::airing_line(d) {
-        facts.push(line);
-    }
-    facts.join("   ·   ")
-}
-
-fn title_case(s: &str) -> String {
-    let lower = s.to_lowercase();
-    let mut chars = lower.chars();
-    chars
-        .next()
-        .map(|c| c.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
 }
 
 pub(super) fn open_url(url: String) -> Message {

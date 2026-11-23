@@ -1,6 +1,7 @@
 //! SeaDex for phones: the app's core (seadex-downloader, without its
 //! desktop GUI) behind a web UI. The UI asks for the view and sends
-//! commands; the core says when the view has changed ("changed").
+//! commands; the core tells it things as events ("changed": ask for the
+//! view again; "play": a video to play).
 
 use seadex_downloader::{Bridge, Command};
 use tauri::{Emitter, Manager};
@@ -11,9 +12,12 @@ async fn view(bridge: tauri::State<'_, Bridge>) -> Result<serde_json::Value, Str
     bridge.view().await
 }
 
-/// Do something.
+/// Do something; what the app says back.
 #[tauri::command]
-async fn command(bridge: tauri::State<'_, Bridge>, command: Command) -> Result<(), String> {
+async fn command(
+    bridge: tauri::State<'_, Bridge>,
+    command: Command,
+) -> Result<serde_json::Value, String> {
     bridge.command(command).await
 }
 
@@ -23,12 +27,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let state_dir = state_dir(app)?;
-            let changed = app.handle().clone();
+            let events = app.handle().clone();
             let opener = app.handle().clone();
             let bridge = Bridge::start(
                 state_dir,
-                move || {
-                    let _ = changed.emit("changed", ());
+                move |name, payload| {
+                    let _ = events.emit(name, payload);
                 },
                 move |url| {
                     use tauri_plugin_opener::OpenerExt;

@@ -1,38 +1,105 @@
-//! The phone app's view of the core: each page as JSON, and the commands
+//! The phone app's view of the core (each page, as JSON), and the commands
 //! its UI sends.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::app::{Action, App, Page};
+use super::ui::{Handler, Handles, Ui};
+use super::{Core, library, play, settings};
+use crate::app::watching::PlayerAction;
+use crate::app::{Action, App, Origin, Page};
 
 /// What the UI asks the app to do.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "do", rename_all = "snake_case")]
 pub enum Command {
-    GoLibrary,
-    GoDiscover,
-    GoDownloads,
-    GoSettings,
+    /// A button (its handle).
+    Press {
+        id: String,
+    },
+    /// Text typed into a field (its handle).
+    Input {
+        id: String,
+        value: String,
+    },
+    /// One of the tabs along the bottom.
+    Tab {
+        tab: Tab,
+    },
+    /// Android's back button (the UI's own sheets and groups first).
     Back,
-    OpenSeries { id: u64 },
     DismissNote,
+    /// How far the player got: saved, and told to your lists and servers.
+    Played {
+        id: u64,
+        episode: u32,
+        position: f64,
+        duration: f64,
+    },
 }
 
-pub(super) fn command(app: &mut App, command: Command) -> Result<(), String> {
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Tab {
+    Library,
+    Discover,
+    Downloads,
+    More,
+}
+
+pub(super) fn command(app: &mut App, core: &mut Core, command: Command) -> Value {
     match command {
-        Command::GoLibrary => app.perform(Action::GoLibrary),
-        Command::GoDiscover => app.perform(Action::GoDiscover),
-        Command::GoDownloads => app.perform(Action::GoDownloads),
-        Command::GoSettings => {
-            app.cancel_listing();
-            app.page = Page::Settings;
+        Command::Press { id } => match core.handles.get(&id) {
+            Some(Handler::Act(a)) => {
+                let a = a.clone();
+                act(app, core, a);
+            }
+            Some(Handler::Edit(f)) => f(app),
+            Some(Handler::Input(_)) | None => {}
+        },
+        Command::Input { id, value } => {
+            if let Some(Handler::Input(f)) = core.handles.get(&id) {
+                f(app, value);
+            }
         }
-        Command::Back => app.perform(Action::Back),
-        Command::OpenSeries { id } => app.perform(Action::OpenSeries(id)),
+        Command::Tab { tab } => match tab {
+            Tab::Library => app.perform(Action::GoLibrary),
+            Tab::Discover => app.perform(Action::GoDiscover),
+            Tab::Downloads => app.perform(Action::GoDownloads),
+            Tab::More => {
+                app.cancel_listing();
+                app.page = Page::Settings;
+            }
+        },
+        Command::Back => {
+            if app.close_any_dialog() {
+                return Value::Null;
+            }
+            match &app.page {
+                Page::Home => return json!({"exit": true}),
+                Page::Anime(_) | Page::Files(_) | Page::Remux(_) => app.perform(Action::Back),
+                Page::Playlist(_) => app.page = Page::Settings,
+                Page::Calendar => app.perform(Action::GoDiscover),
+                _ => app.perform(Action::GoLibrary),
+            }
+        }
         Command::DismissNote => app.status = None,
+        Command::Played {
+            id,
+            episode,
+            position,
+            duration,
+        } => play::played(app, id, episode, position, duration),
     }
-    Ok(())
+    Value::Null
+}
+
+/// An action, as the desktop GUI does it (playing is the phone app's).
+fn act(app: &mut App, core: &mut Core, action: Action) {
+    match action {
+        Action::Player(PlayerAction::Play { id, episode }) => play::play(app, core, id, episode),
+        other => app.perform(other),
+    }
 }
 
 /// Is something moving on its own (downloads), so the view changes?
@@ -40,23 +107,51 @@ pub(super) fn moving(app: &App) -> bool {
     app.active_downloads() > 0
 }
 
-pub(super) fn view(app: &App) -> Value {
+/// The tab a page is under.
+fn tab(app: &App) -> Tab {
+    let in_library = |id: u64| app.library.find(id).is_some();
+    match &app.page {
+        Page::Home | Page::Remux(_) => Tab::Library,
+        Page::Discover | Page::Calendar | Page::Results | Page::Files(_) => Tab::Discover,
+        Page::Anime(ap) => {
+            let found = matches!(
+                ap.origin,
+                Origin::Discover | Origin::Calendar | Origin::Results
+            );
+            if found && !in_library(ap.anime.anilist_id) {
+                Tab::Discover
+            } else {
+                Tab::Library
+            }
+        }
+        Page::Downloads => Tab::Downloads,
+        Page::Playlist(_) | Page::Settings => Tab::More,
+    }
+}
+
+pub(super) fn view(app: &App, handles: &mut Handles) -> Value {
+    let mut ui = Ui::new(app, handles);
     let page = match &app.page {
-        Page::Home => json!({
-            "kind": "library",
-            "series": app.library.series.iter().map(|s| json!({
-                "id": s.anilist_id,
-                "title": s.title(),
-            })).collect::<Vec<_>>(),
-        }),
+        Page::Home => library::page(&mut ui),
         Page::Downloads => json!({"kind": "downloads"}),
-        Page::Settings => json!({"kind": "settings"}),
+        Page::Settings => settings::page(&mut ui),
         Page::Discover | Page::Calendar => json!({"kind": "discover"}),
         Page::Anime(ap) => json!({"kind": "series", "title": ap.anime.title}),
-        _ => json!({"kind": "other"}),
+        Page::Results => json!({"kind": "search"}),
+        Page::Files(_) => json!({"kind": "files"}),
+        Page::Remux(_) => json!({"kind": "remux"}),
+        Page::Playlist(_) => json!({"kind": "playlist"}),
     };
     json!({
         "page": page,
+        "tab": match tab(app) {
+            Tab::Library => "library",
+            Tab::Discover => "discover",
+            Tab::Downloads => "downloads",
+            Tab::More => "more",
+        },
+        "servers": app.servers_mode(),
+        "downloading": app.active_downloads(),
         "note": app.status.as_ref().map(|s| json!({"text": s.text, "error": s.error})),
     })
 }

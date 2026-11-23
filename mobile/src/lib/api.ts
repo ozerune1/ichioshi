@@ -1,0 +1,42 @@
+// Talking to the app's core (Rust, through Tauri): the view it shows, and
+// commands back. Buttons and fields in the view carry handles (`id`): the
+// core keeps what each one does.
+import { invoke } from "@tauri-apps/api/core";
+
+/** A button: its label, and its handle (null: greyed out, maybe saying why). */
+export type Btn = { label: string; id: string | null; why?: string };
+
+/** A field: its text, and the handle typing into it sets. */
+export type Field = { value: string; id: string };
+
+export type Note = { text: string; error: boolean } | null;
+
+export type View = {
+  page: any;
+  tab: "library" | "discover" | "downloads" | "more";
+  servers: boolean;
+  downloading: number;
+  note: Note;
+};
+
+type Command =
+  | { do: "press"; id: string }
+  | { do: "input"; id: string; value: string }
+  | { do: "tab"; tab: View["tab"] }
+  | { do: "back" }
+  | { do: "dismiss_note" }
+  | { do: "played"; id: number; episode: number; position: number; duration: number };
+
+export function command(c: Command): Promise<any> {
+  return invoke("command", { command: c });
+}
+
+export const press = (id: string) => command({ do: "press", id });
+export const typed = (id: string, value: string) => command({ do: "input", id, value });
+export const goTab = (tab: View["tab"]) => command({ do: "tab", tab });
+export const back = () => command({ do: "back" });
+export const dismissNote = () => command({ do: "dismiss_note" });
+
+export function getView(): Promise<View> {
+  return invoke("view");
+}

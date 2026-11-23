@@ -1,6 +1,49 @@
+@font-face { font-family: Inter; font-weight: 400; src: url("/fonts/Inter-Regular.ttf"); }
+@font-face { font-family: Inter; font-weight: 500; src: url("/fonts/Inter-Medium.ttf"); }
+@font-face { font-family: Inter; font-weight: 600; src: url("/fonts/Inter-SemiBold.ttf"); }
+@font-face { font-family: Inter; font-weight: 700; src: url("/fonts/Inter-Bold.ttf"); }
+
+/* The desktop app's colours. */
 :root {
   color-scheme: dark;
   --bg: #0d0f14;
-  --text: #e8eaf0;
+  --bars: #11141b;
+  --surface: #171b24;
+  --surface2: #1f2430;
+  --line: #272d3b;
+  --text: #e9ecf3;
+  --muted: #8b94a8;
+  --faint: #5a6274;
+  --accent: #8b7cff;
+  --accent-gradient: linear-gradient(135deg, #8b7cff, #5b8cff);
+  --green: #34d399;
+  --blue: #60a5fa;
+  --gold: #fbbf24;
+  --red: #f87171;
+  --watching: #60a5fa;
+  --completed: #34d399;
+  --planning: #c084fc;
+  --rewatching: #22d3ee;
+  --paused: #fbbf24;
+  --dropped: #f87171;
 }
-html, body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.4;
+  overscroll-behavior: none;
+}
+#app { height: 100%; }
+button { cursor: pointer; }
+input, select, textarea { font: inherit; }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.small { font-size: 13px; }
+h2 { font-size: 18px; margin: 20px 0 10px; }

@@ -60,6 +60,15 @@ pub(super) struct EpisodeRow {
 impl App {
     /// Every episode (in the library, downloading, out or not), and the
     /// files in the folder that aren't episodes.
+    /// The series' episode numbers on disk (as the stats last counted them).
+    pub(super) fn on_disk(&self, id: u64) -> std::collections::BTreeSet<u32> {
+        self.pages
+            .stats
+            .get(&id)
+            .map(|s| s.episodes.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
     /// Every episode of the series (in the library, downloading, out or
     /// not), and the files in its folder that aren't episodes.
     pub(super) fn episode_rows(&self, ap: &AnimePage) -> (Vec<EpisodeRow>, Vec<(String, u64)>) {
@@ -1357,4 +1366,33 @@ fn title_case(s: &str) -> String {
         .next()
         .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
         .unwrap_or_default()
+}
+
+/// What AniList says of it, in a line: score, season, format, studio...
+pub(super) fn facts(d: &crate::library::Details) -> String {
+    let mut facts = Vec::new();
+    if let Some(score) = d.score {
+        facts.push(format!("★ {score}%"));
+    }
+    if let (Some(season), Some(year)) = (&d.season, d.year) {
+        facts.push(format!("{} {year}", title_case(season)));
+    } else if let Some(year) = d.year {
+        facts.push(year.to_string());
+    }
+    if let Some(format) = &d.format {
+        facts.push(format.replace('_', " "));
+    }
+    if !d.studios.is_empty() {
+        facts.push(d.studios.join(", "));
+    }
+    if let Some(source) = &d.source {
+        facts.push(format!("from {}", title_case(&source.replace('_', " "))));
+    }
+    if let Some(minutes) = d.duration {
+        facts.push(format!("{minutes} min episodes"));
+    }
+    if let Some(line) = airing_line(d) {
+        facts.push(line);
+    }
+    facts.join("   ·   ")
 }

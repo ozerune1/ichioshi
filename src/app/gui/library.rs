@@ -52,12 +52,7 @@ pub(super) fn change(id: u64, change: Change) -> Message {
 
 /// The series' episode numbers on disk (as the stats last counted them).
 pub(super) fn on_disk(gui: &Gui, id: u64) -> BTreeSet<u32> {
-    gui.app
-        .pages
-        .stats
-        .get(&id)
-        .map(|s| s.episodes.keys().copied().collect())
-        .unwrap_or_default()
+    gui.app.on_disk(id)
 }
 
 impl Gui {

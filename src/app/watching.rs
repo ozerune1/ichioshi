@@ -66,3 +66,37 @@ pub(super) fn up_next(
     };
     on_disk.clone().find(unseen).or_else(|| on_disk.next())
 }
+
+impl super::App {
+    /// How far an episode was watched (`done`: to the end, near enough):
+    /// kept in the library, and told to Jellyfin and your lists.
+    pub(super) fn save_watch(
+        &mut self,
+        id: u64,
+        episode: u32,
+        position: f64,
+        duration: f64,
+        done: bool,
+    ) {
+        let Some(series) = self.library.find_mut(id) else {
+            return;
+        };
+        let before = series.watched.get(&episode).is_some_and(|w| w.done);
+        series.watched.insert(
+            episode,
+            crate::library::Watch {
+                position,
+                duration,
+                done: done || before,
+                at: chrono::Utc::now().timestamp(),
+            },
+        );
+        self.library.save_or_warn();
+        if self.servers_mode() {
+            self.report_watched(id, episode, position, done || before);
+        }
+        if done && !before {
+            self.sync_watched(id, episode);
+        }
+    }
+}

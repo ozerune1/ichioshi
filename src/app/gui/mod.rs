@@ -469,26 +469,7 @@ impl Gui {
         p.last_saved = Instant::now();
         let done = p.watched_enough();
         let (id, episode) = (p.series, p.episode);
-        let Some(series) = self.app.library.find_mut(id) else {
-            return;
-        };
-        let before = series.watched.get(&episode).is_some_and(|w| w.done);
-        series.watched.insert(
-            episode,
-            Watch {
-                position: pos,
-                duration: dur,
-                done: done || before,
-                at: chrono::Utc::now().timestamp(),
-            },
-        );
-        self.app.library.save_or_warn();
-        if self.app.servers_mode() {
-            self.app.report_watched(id, episode, pos, done || before);
-        }
-        if done && !before {
-            self.app.sync_watched(id, episode);
-        }
+        self.app.save_watch(id, episode, pos, dur, done);
     }
 
     /// The next (or previous) episode of the one playing, on disk (or in

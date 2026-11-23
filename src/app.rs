@@ -1039,6 +1039,18 @@ impl App {
     }
 
     /// Close whatever dialog is open (Escape).
+    /// Close whichever dialog is open: was one?
+    pub(super) fn close_any_dialog(&mut self) -> bool {
+        let open = self.confirm_delete.is_some()
+            || self.pages.languages.is_some()
+            || self.usenet.dialog.is_some()
+            || self.drive.browser.is_some()
+            || self.discussion.is_some()
+            || self.import.is_some();
+        self.close_dialogs();
+        open
+    }
+
     fn close_dialogs(&mut self) {
         self.confirm_delete = None;
         self.pages.languages = None;

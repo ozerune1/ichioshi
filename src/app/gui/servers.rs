@@ -19,15 +19,7 @@ fn servers(a: ServersAction) -> Message {
     act(Action::Servers(a))
 }
 
-/// "4 min ago".
-pub(super) fn ago(t: std::time::Instant) -> String {
-    let s = t.elapsed().as_secs();
-    match s {
-        0..60 => "just now".into(),
-        60..3600 => format!("{} min ago", s / 60),
-        _ => format!("{} h ago", s / 3600),
-    }
-}
+pub(super) use crate::app::servers_ui::ago;
 
 impl Gui {
     /// Settings: Jellyfin, Sonarr and Radarr.
