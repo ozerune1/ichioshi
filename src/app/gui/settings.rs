@@ -710,6 +710,23 @@ impl Gui {
             "Player",
             "Also in the player's own settings.",
             column![
+                row![
+                    column![
+                        text("Audio and subtitles")
+                            .size(14)
+                            .font(MEDIUM)
+                            .color(TEXT),
+                        weak(format!(
+                            "{}, as for remuxes; a series' own languages win. Any track can \
+                             still be picked while watching.",
+                            self.app.settings.prefs.summary()
+                        )),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
+                    secondary("Change…", Some(act(Action::OpenLanguages))),
+                ]
+                .align_y(Alignment::Center),
                 check("Skip openings automatically", p.skip_openings, |on| edit(
                     move |g| g.app.settings.player.skip_openings = on
                 )),

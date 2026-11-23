@@ -425,17 +425,22 @@ enum Action {
     },
     /// For the GUI's player.
     Player(watching::PlayerAction),
+    /// Ask before deleting a remuxed copy (or a series' folder of them).
+    AskDeleteRemux(PathBuf),
+    DeleteRemux(PathBuf),
     Tracking(tracking_ui::TrackingAction),
 }
 
 /// What the delete confirmation is about.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum DeleteTarget {
     Torrent(TorrentId),
     Debrid(u64),
     Usenet(u64),
     /// A series' whole folder.
     Series(u64),
+    /// A remuxed copy, or a folder of them.
+    Remux(PathBuf),
 }
 
 enum EngineState {
@@ -1225,6 +1230,18 @@ impl App {
             Action::PlaylistRemove(i) => self.playlist.remove(i),
             Action::PlaylistMove { from, to } => self.playlist.move_item(from, to),
             Action::PlaylistClear => self.playlist.clear(),
+            Action::AskDeleteRemux(path) => {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                self.confirm_delete = Some((DeleteTarget::Remux(path), name));
+            }
+            Action::DeleteRemux(path) => {
+                self.confirm_delete = None;
+                self.delete_remux(&path);
+            }
             Action::PlaylistPickFolder => self.pick_export_folder(),
             Action::StartExport => self.start_export(),
             Action::CancelExport => self.cancel_export(),

@@ -48,7 +48,7 @@ impl Gui {
     pub(super) fn dialogs<'a>(&'a self, base: Element<'a, Message>) -> Element<'a, Message> {
         let a = &self.app;
         if let Some((target, name)) = &a.confirm_delete {
-            return self.confirm_delete(base, *target, name);
+            return self.confirm_delete(base, target.clone(), name);
         }
         if let Some(d) = &a.discussion {
             return self.discussion(base, d);
@@ -127,9 +127,23 @@ impl Gui {
                      with everything in it. It can't be undone."
                 )
             }
+            DeleteTarget::Remux(ref path) if path.is_dir() => format!(
+                "This deletes the remuxed copies of “{name}” ({}). The episodes in your \
+                 library stay. It can't be undone.",
+                path.display()
+            ),
+            DeleteTarget::Remux(_) => format!(
+                "This deletes the remuxed copy “{name}”. The episode in your library stays. It \
+                 can't be undone."
+            ),
             _ => format!(
                 "This removes “{name}” and deletes its files from disk. It can't be undone."
             ),
+        };
+        let title = if matches!(target, DeleteTarget::Remux(_)) {
+            "Delete remuxed copies?"
+        } else {
+            "Delete downloaded files?"
         };
         let confirm = match target {
             DeleteTarget::Torrent(id) => Action::Remove {
@@ -148,10 +162,11 @@ impl Gui {
                 id,
                 delete_files: true,
             },
+            DeleteTarget::Remux(path) => Action::DeleteRemux(path),
         };
         let cancel = edit(|g| g.app.confirm_delete = None);
         let content = column![
-            dialog_title("Delete downloaded files?".into(), Some(note)),
+            dialog_title(title.into(), Some(note)),
             gap(20.0),
             buttons(vec![
                 secondary("Cancel", Some(cancel.clone())),

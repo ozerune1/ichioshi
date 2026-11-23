@@ -395,7 +395,23 @@ impl Gui {
             .map_or(self.app.settings.player.volume, |p| p.volume);
         // The old one stops before the new one starts.
         self.player = None;
-        match player::Player::open(&path, start, (id, episode), title, name, volume) {
+        // Your languages choose the audio and subtitles (the series' own,
+        // else the library's), as they do for remuxes.
+        let prefs = self.app.prefs_for(series);
+        let described = crate::gst_video::describe(&path, Some(&prefs));
+        let opened = crate::gst_video::file_uri(&path).and_then(|uri| {
+            player::Player::open(
+                &uri,
+                &path,
+                described,
+                start,
+                (id, episode),
+                title,
+                name,
+                volume,
+            )
+        });
+        match opened {
             Ok(p) => {
                 self.player = Some(p);
                 self.size_player();

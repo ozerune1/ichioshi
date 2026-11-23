@@ -202,6 +202,7 @@ impl Gui {
             .as_ref()
             .and_then(|r| r.result.as_ref())
             .and_then(|r| r.as_ref().ok());
+        c = c.push(self.remuxes_section(pp));
         c = c.push(card(
             column![
                 text("Google Drive").size(17).font(SEMI).color(TEXT),
@@ -210,5 +211,99 @@ impl Gui {
             .spacing(14),
         ));
         page(c)
+    }
+
+    /// The remuxed copies kept in the library's Remuxed folder: to add to
+    /// the playlist, open, or delete once you're done with them.
+    fn remuxes_section<'a>(&'a self, pp: &'a PlaylistPage) -> Element<'a, Message> {
+        let root = self.app.remux_root();
+        let total: u64 = pp.remuxes.iter().map(|r| r.bytes).sum();
+        let count: usize = pp.remuxes.iter().map(|r| r.files.len()).sum();
+        let mut c = column![
+            row![
+                column![
+                    text("Remuxed copies").size(17).font(SEMI).color(TEXT),
+                    weak(format!(
+                        "{count} episode{} · {} · kept in {} until you delete them (the \
+                         episodes in your library are separate, and stay)",
+                        if count == 1 { "" } else { "s" },
+                        fmt_bytes(total),
+                        root.display()
+                    )),
+                ]
+                .spacing(4)
+                .width(Fill),
+                secondary(
+                    "Open folder",
+                    root.is_dir().then(|| act(Action::OpenFolder(root.clone())))
+                ),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(12);
+        if pp.remuxes.is_empty() {
+            c = c.push(weak(
+                "None yet. “Remux…” on a series page makes copies with just the tracks you \
+                 choose.",
+            ));
+        }
+        for r in &pp.remuxes {
+            let mut files = Column::new().spacing(4);
+            for (path, len) in &r.files {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let listed = self.app.playlist.items.iter().any(|i| &i.path == path);
+                let add: Element<'_, Message> = if listed {
+                    text("In playlist").size(12).color(FAINT).into()
+                } else {
+                    small(
+                        "+ Playlist",
+                        Some(edit({
+                            let path = path.clone();
+                            move |g| g.app.add_files_to_playlist(vec![path.clone()])
+                        })),
+                    )
+                };
+                files = files.push(
+                    row![
+                        text(name.into_owned()).size(13).color(TEXT).width(Fill),
+                        text(fmt_bytes(*len)).size(12).color(FAINT),
+                        add,
+                        small("Delete…", Some(act(Action::AskDeleteRemux(path.clone())))),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                );
+            }
+            c = c.push(
+                container(
+                    column![
+                        row![
+                            text(&r.name).size(14).font(SEMI).color(TEXT),
+                            weak(format!(
+                                "{} episode{} · {}",
+                                r.files.len(),
+                                if r.files.len() == 1 { "" } else { "s" },
+                                fmt_bytes(r.bytes)
+                            )),
+                            space::horizontal(),
+                            small("Open folder", Some(act(Action::OpenFolder(r.dir.clone())))),
+                            small(
+                                "Delete all…",
+                                Some(act(Action::AskDeleteRemux(r.dir.clone())))
+                            ),
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                        files,
+                    ]
+                    .spacing(8),
+                )
+                .padding([10, 14])
+                .width(Fill)
+                .style(|_| card_style(SURFACE)),
+            );
+        }
+        card(c)
     }
 }

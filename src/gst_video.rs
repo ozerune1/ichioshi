@@ -25,11 +25,17 @@ pub enum Frames {
     Nv12,
 }
 
-/// A playbin for `path`, and the appsink its frames arrive at.
-pub fn pipeline(path: &Path, frames: Frames) -> Result<(gst::Pipeline, gst_app::AppSink)> {
+/// A file's address, for playbin.
+pub fn file_uri(path: &Path) -> Result<String> {
+    Ok(url::Url::from_file_path(path)
+        .map_err(|()| anyhow!("{} isn't a full path", path.display()))?
+        .to_string())
+}
+
+/// A playbin for `uri` (a file, or a stream over HTTP), and the appsink its
+/// frames arrive at.
+pub fn pipeline(uri: &str, frames: Frames) -> Result<(gst::Pipeline, gst_app::AppSink)> {
     gst::init()?;
-    let uri = url::Url::from_file_path(path)
-        .map_err(|()| anyhow!("{} isn't a full path", path.display()))?;
     let format = match frames {
         Frames::Nv12 => "NV12",
     };
@@ -47,7 +53,7 @@ pub fn pipeline(path: &Path, frames: Frames) -> Result<(gst::Pipeline, gst_app::
         .downcast::<gst_app::AppSink>()
         .map_err(|_| anyhow!("not an appsink"))?;
     let playbin = gst::ElementFactory::make("playbin")
-        .property("uri", uri.as_str())
+        .property("uri", uri)
         .property("video-sink", &sink)
         .build()
         .context("GStreamer's playbin isn't available")?;
@@ -80,11 +86,21 @@ pub struct Described {
     pub sub_tracks: Vec<(u64, String)>,
 }
 
-/// Tracks and chapters, from the file (Matroska).
-pub fn describe(path: &Path) -> Described {
-    let Ok(info) = crate::mkv::probe(path) else {
-        return Described::default();
-    };
+/// Tracks and chapters, from the file (Matroska); with `prefs`, the audio
+/// and subtitles they choose (as for the library's default tracks and
+/// remuxes), else the file's defaults.
+pub fn describe(path: &Path, prefs: Option<&crate::prefs::LangPrefs>) -> Described {
+    match crate::mkv::probe(path) {
+        Ok(info) => describe_info(&info, prefs),
+        Err(_) => Described::default(),
+    }
+}
+
+/// As [`describe`], from what's known of a file's tracks.
+pub fn describe_info(
+    info: &crate::mkv::MkvInfo,
+    prefs: Option<&crate::prefs::LangPrefs>,
+) -> Described {
     let mut d = Described::default();
     let (mut audio_i, mut sub_i) = (0i64, 0i64);
     for t in &info.tracks {
@@ -124,6 +140,17 @@ pub fn describe(path: &Path) -> Described {
             external: false,
             selected: false,
         });
+    }
+    if let Some(prefs) = prefs {
+        let on = crate::prefs::pick_defaults(&info.tracks, prefs);
+        let of = |kind: crate::mkv::TrackKind| {
+            info.tracks
+                .iter()
+                .filter(|t| t.kind == kind)
+                .position(|t| on.contains(&t.number))
+        };
+        d.audio = of(crate::mkv::TrackKind::Audio).or(d.audio);
+        d.subs = of(crate::mkv::TrackKind::Subtitles);
     }
     if d.audio.is_none() && audio_i > 0 {
         d.audio = Some(0);
@@ -348,7 +375,7 @@ pub(crate) mod tests {
             audio,
             subs,
             sub_tracks,
-        } = describe(&file);
+        } = describe(&file, None);
         assert_eq!(
             sub_tracks
                 .iter()
@@ -367,6 +394,24 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!((audio, subs), (Some(0), Some(0)), "the file's defaults");
+
+        // Your languages choose, whatever the file marks default: the dub
+        // with signs only; Japanese with no subtitles.
+        use crate::prefs::{LangPrefs, SubType};
+        let dub = LangPrefs {
+            audio: "eng".into(),
+            subtitles: Some("eng".into()),
+            sub_type: SubType::Auto,
+        };
+        let d = describe(&file, Some(&dub));
+        assert_eq!((d.audio, d.subs), (Some(1), Some(1)), "English dub, signs");
+        let raw = LangPrefs {
+            audio: "jpn".into(),
+            subtitles: None,
+            sub_type: SubType::Auto,
+        };
+        let d = describe(&file, Some(&raw));
+        assert_eq!((d.audio, d.subs), (Some(0), None), "no subtitles");
         let parts: Vec<_> = chapters.iter().map(|c| (c.start, c.part)).collect();
         assert_eq!(
             parts,

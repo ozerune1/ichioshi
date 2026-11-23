@@ -306,6 +306,37 @@ fn remuxes_and_exports() {
         first,
         std::fs::read(made_dir.join("Frieren: Beyond Journey’s End - 03.mkv")).unwrap()
     );
+
+    // The remuxed copies are listed below; done with them, they're deleted
+    // (after asking), and leave the playlist too.
+    assert!(shows(&h, "Remuxed copies"));
+    assert!(shows(&h, "Frieren: Beyond Journey’s End"));
+    assert_eq!(count(&h, "Delete…"), 3);
+    save(&h, &out, "6-remuxed-copies");
+    click_nth(&mut h, "Delete…", 0);
+    assert!(shows(&h, "Delete remuxed copies?"));
+    save(&h, &out, "7-delete-remux");
+    click(&mut h, "Delete");
+    assert!(
+        !made_dir
+            .join("Frieren: Beyond Journey’s End - 01.mkv")
+            .exists()
+    );
+    assert!(
+        made_dir
+            .join("Frieren: Beyond Journey’s End - 02.mkv")
+            .exists()
+    );
+    assert_eq!(count(&h, "Delete…"), 2);
+    assert_eq!(h.app.playlist.items.len(), 2, "out of the playlist too");
+    click(&mut h, "Delete all…");
+    click(&mut h, "Delete");
+    assert!(!made_dir.exists());
+    assert!(
+        base.join("downloads").join("Remuxed").exists(),
+        "only the series' folder"
+    );
+    assert!(shows_containing(&h, "None yet."));
 }
 
 /// Google Drive on the playlist page: the setup steps, choosing a folder,

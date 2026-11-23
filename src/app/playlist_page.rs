@@ -1,7 +1,7 @@
 //! The playlist page: order episodes and export them as a zip named
 //! after the current date and time, the files numbered `1) <title>`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,6 +14,53 @@ pub(super) struct PlaylistPage {
     pub(super) out_dir: String,
     pub(super) export: Option<ExportRun>,
     pub(super) adding: bool,
+    /// The remuxed copies kept in the library's Remuxed folder.
+    pub(super) remuxes: Vec<Remuxed>,
+}
+
+/// One series' remuxed copies (a folder in `<library>/Remuxed`).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Remuxed {
+    pub(super) name: String,
+    pub(super) dir: PathBuf,
+    /// The episodes, and their sizes.
+    pub(super) files: Vec<(PathBuf, u64)>,
+    pub(super) bytes: u64,
+}
+
+/// What's in `<library>/Remuxed`: a folder a series, sorted by name, and
+/// their files by name.
+pub(super) fn scan_remuxes(root: &Path) -> Vec<Remuxed> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Remuxed> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| {
+            let dir = e.path();
+            let mut files: Vec<(PathBuf, u64)> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|f| f.path())
+                .filter(|p| p.is_file() && crate::remux::is_video(p))
+                .map(|p| {
+                    let len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                    (p, len)
+                })
+                .collect();
+            files.sort();
+            Remuxed {
+                name: e.file_name().to_string_lossy().into_owned(),
+                bytes: files.iter().map(|f| f.1).sum(),
+                dir,
+                files,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
 }
 
 pub(super) struct ExportRun {
@@ -68,7 +115,54 @@ impl App {
             out_dir: self.download_dir().display().to_string(),
             export: None,
             adding: false,
+            remuxes: scan_remuxes(&self.remux_root()),
         });
+    }
+
+    /// Where remuxed copies are kept.
+    pub(super) fn remux_root(&self) -> PathBuf {
+        self.library_dir().join("Remuxed")
+    }
+
+    /// Delete remuxed copies: one file, or a series' folder of them. Only
+    /// ever inside the Remuxed folder.
+    pub(super) fn delete_remux(&mut self, path: &Path) {
+        let root = self.remux_root();
+        let inside = match (path.canonicalize(), root.canonicalize()) {
+            (Ok(p), Ok(r)) => p.starts_with(&r) && p != r,
+            _ => false,
+        };
+        if !inside {
+            self.set_error(format!("{} isn't a remuxed copy", path.display()));
+            return;
+        }
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+        match result {
+            Ok(()) => {
+                // Nothing in the playlist is left pointing at it.
+                let gone: Vec<usize> = self
+                    .playlist
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, i)| i.path.starts_with(path))
+                    .map(|(i, _)| i)
+                    .collect();
+                for i in gone.into_iter().rev() {
+                    self.playlist.remove(i);
+                }
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                self.set_info(format!("Deleted {name}"));
+            }
+            Err(e) => self.set_error(format!("Couldn't delete {}: {e}", path.display())),
+        }
+        if let Page::Playlist(pp) = &mut self.page {
+            pp.remuxes = scan_remuxes(&root);
+        }
     }
 
     pub(super) fn handle_playlist_msg(&mut self, msg: Msg) {
@@ -131,6 +225,12 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Files already here (remuxed copies), to the end of the playlist.
+    pub(super) fn add_files_to_playlist(&mut self, paths: Vec<PathBuf>) {
+        let (items, errors) = items_for(paths);
+        self.handle_playlist_msg(Msg::PlaylistAdd { items, errors });
     }
 
     pub(super) fn add_playlist_files(&mut self) {

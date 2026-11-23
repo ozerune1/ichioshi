@@ -135,22 +135,28 @@ pub fn clock(secs: f64) -> String {
 
 impl Player {
     /// Start playing `path` (from `start` seconds in).
+    /// Start playing `uri` (a file's, or a stream's; `key` names it), whose
+    /// tracks are `described`, from `start` seconds in.
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
-        path: &Path,
+        uri: &str,
+        key: &Path,
+        described: gst_video::Described,
         start: Option<f64>,
         (series, episode): (u64, u32),
         series_title: String,
         name: Option<String>,
         volume: f64,
     ) -> anyhow::Result<Self> {
-        let (pipeline, sink) = gst_video::pipeline(path, Frames::Nv12)?;
+        let path = key;
+        let (pipeline, sink) = gst_video::pipeline(uri, Frames::Nv12)?;
         let gst_video::Described {
             tracks,
             chapters,
             audio,
             subs,
             sub_tracks,
-        } = gst_video::describe(path);
+        } = described;
         let mut video =
             Video::from_gst_pipeline(pipeline, sink, None).map_err(|e| anyhow!("{e}"))?;
         if let Some(a) = audio {
