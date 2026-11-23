@@ -31,6 +31,7 @@ mod discuss_ui;
 mod drive_ui;
 pub(crate) mod gui;
 mod handover;
+mod import_ui;
 mod library_ui;
 mod manage_ui;
 mod offline_ui;
@@ -164,6 +165,7 @@ enum Msg {
     Servers(servers_ui::ServersMsg),
     Manage(manage_ui::ManageMsg),
     Offline(offline_ui::OfflineMsg),
+    Import(import_ui::ImportMsg),
     /// Episode files' releases, read: by series, path, size.
     Described(Vec<(u64, String, u64, crate::library::EpisodeRelease)>),
     Engine {
@@ -449,6 +451,7 @@ enum Action {
     Servers(servers_ui::ServersAction),
     Manage(manage_ui::ManageAction),
     Offline(offline_ui::OfflineAction),
+    Import(import_ui::ImportAction),
 }
 
 /// A download picked on the Downloads page (to remove several at once).
@@ -816,6 +819,8 @@ pub struct App {
     manage: Option<manage_ui::Manage>,
     /// Episodes on Jellyfin being saved here, to watch offline.
     offline: offline_ui::OfflineState,
+    /// Files being imported into Sonarr or Radarr by hand.
+    import: Option<import_ui::Importing>,
     /// AniList's lists to discover anime in.
     discover: discover_ui::DiscoverState,
     /// What's airing.
@@ -896,6 +901,7 @@ impl App {
             servers,
             manage: None,
             offline: Default::default(),
+            import: None,
             discover: Default::default(),
             calendar: Default::default(),
             episode_scores: Default::default(),
@@ -1004,6 +1010,7 @@ impl App {
         self.usenet.dialog = None;
         self.drive.browser = None;
         self.discussion = None;
+        self.import = None;
     }
 
     /// Write the settings to `settings.json` if they changed.
@@ -1176,6 +1183,7 @@ impl App {
                 Msg::Manage(msg) => self.handle_manage_msg(msg),
                 Msg::Described(read) => self.handle_described(read),
                 Msg::Offline(msg) => self.handle_offline_msg(msg),
+                Msg::Import(msg) => self.handle_import_msg(msg),
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
@@ -1398,6 +1406,7 @@ impl App {
             Action::Servers(action) => self.servers_action(action),
             Action::Manage(action) => self.manage_action(action),
             Action::Offline(action) => self.offline_action(action),
+            Action::Import(action) => self.import_action(action),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),

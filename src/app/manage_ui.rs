@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::discover_ui::Loaded;
 use super::{App, Msg, Page};
-use crate::servers::arr::{Arr, Event, FileInfo, Kind, Release, Rename, Scope};
+use crate::servers::arr::{Arr, Event, FileInfo, Kind, Release, Rename, Scope, Tag};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Tab {
@@ -41,6 +41,9 @@ pub(super) struct Edit {
     pub(super) availability: String,
     pub(super) root: String,
     pub(super) move_files: bool,
+    pub(super) tags: Vec<u64>,
+    /// A tag being typed, to make.
+    pub(super) new_tag: String,
 }
 
 /// A series' (or film's) management panel.
@@ -67,6 +70,13 @@ pub(super) struct Manage {
     pub(super) history: Option<Loaded<Vec<Event>>>,
     pub(super) renames: Option<Loaded<Vec<Rename>>>,
     pub(super) busy: bool,
+    /// Its server's tags.
+    pub(super) tags: Option<Loaded<Vec<Tag>>>,
+    /// Deleting it also keeps import lists from adding it back.
+    pub(super) exclude: bool,
+    /// The episode whose details are open (AniList's numbering), and
+    /// Sonarr's record of it.
+    pub(super) episode: Option<(u32, Loaded<Value>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +89,12 @@ pub(super) enum ManageAction {
     SetEpisodesMonitored(Vec<u32>, bool),
     StartEdit,
     ChangeEdit(Edit),
+    /// Make a tag (and give it the series), from the edit form.
+    AddTag,
+    /// Deleting it keeps import lists from adding it back, or not.
+    SetExclude(bool),
+    /// Open (or close) an episode's details.
+    Episode(u32),
     CancelEdit,
     SaveEdit,
     /// Sonarr's (or Radarr's) own search: these episodes, or (empty) all
@@ -108,6 +124,9 @@ pub(super) enum ManageMsg {
     History(u64, Result<Vec<Event>, String>),
     Renames(u64, Result<Vec<Rename>, String>),
     Grabbed(u64, String, Result<(), String>),
+    Tags(u64, Result<Vec<Tag>, String>),
+    Episode(u64, u32, Result<Value, String>),
+    TagAdded(u64, Result<Tag, String>),
     /// Something changed there: what to say; read the servers again.
     Done(u64, Result<String, String>),
     Deleted(u64, Result<String, String>),
@@ -165,8 +184,12 @@ impl App {
             history: None,
             renames: None,
             busy: false,
+            tags: None,
+            exclude: false,
+            episode: None,
         });
         self.load_record();
+        self.load_tags();
     }
 
     fn manage_arr(&self) -> Option<(Arr, u64, &Manage)> {
@@ -318,17 +341,75 @@ impl App {
                         .to_owned(),
                     root,
                     move_files: true,
+                    tags: r["tags"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(serde_json::Value::as_u64)
+                        .collect(),
+                    new_tag: String::new(),
                 });
+                let (no_tags, kind) = (m.tags.is_none(), m.kind);
+                if no_tags {
+                    self.load_tags();
+                }
                 // What it can be changed to.
                 if !matches!(
-                    self.servers.about.get(&m.kind),
+                    self.servers.about.get(&kind),
                     Some(Loaded::Ready(_) | Loaded::Loading)
                 ) {
-                    let kind = m.kind;
                     self.servers_action(super::servers_ui::ServersAction::Check(kind));
                 }
             }
             ManageAction::ChangeEdit(e) => m.edit = Some(e),
+            ManageAction::SetExclude(on) => m.exclude = on,
+            ManageAction::Episode(n) => {
+                if m.episode.as_ref().is_some_and(|(e, _)| *e == n) {
+                    m.episode = None;
+                    return;
+                }
+                m.episode = Some((n, Loaded::Loading));
+                let (need_files, need_history) = (m.files.is_none(), m.history.is_none());
+                let Some(arr_id) = self.arr_episodes(&[n]).first().copied() else {
+                    if let Some(m) = &mut self.manage {
+                        m.episode = Some((n, Loaded::Failed("Sonarr doesn't list it".into())));
+                    }
+                    return;
+                };
+                let Some((arr, id, _)) = self.manage_arr() else {
+                    return;
+                };
+                self.spawn(async move {
+                    Msg::Manage(ManageMsg::Episode(
+                        id,
+                        n,
+                        arr.episode(arr_id).await.map_err(err),
+                    ))
+                });
+                if need_files {
+                    self.load_files();
+                }
+                if need_history {
+                    self.load_history();
+                }
+            }
+            ManageAction::AddTag => {
+                let Some(e) = &mut m.edit else { return };
+                let label = e.new_tag.trim().to_owned();
+                if label.is_empty() {
+                    return;
+                }
+                e.new_tag.clear();
+                let Some((arr, id, _)) = self.manage_arr() else {
+                    return;
+                };
+                self.spawn(async move {
+                    Msg::Manage(ManageMsg::TagAdded(
+                        id,
+                        arr.add_tag(&label).await.map_err(err),
+                    ))
+                });
+            }
             ManageAction::CancelEdit => m.edit = None,
             ManageAction::SaveEdit => {
                 let (Some(e), Loaded::Ready(r)) = (m.edit.take(), &m.record) else {
@@ -358,6 +439,7 @@ impl App {
                     r["path"] = json!(new_path);
                     r["rootFolderPath"] = json!(root);
                 }
+                r["tags"] = json!(e.tags);
                 let move_files = moving && e.move_files;
                 self.manage_do(move |arr, _| async move {
                     arr.save_owner(&r, move_files).await?;
@@ -560,6 +642,16 @@ impl App {
         });
     }
 
+    fn load_tags(&mut self) {
+        let Some((arr, id, _)) = self.manage_arr() else {
+            return;
+        };
+        if let Some(m) = &mut self.manage {
+            m.tags = Some(Loaded::Loading);
+        }
+        self.spawn(async move { Msg::Manage(ManageMsg::Tags(id, arr.tags().await.map_err(err))) });
+    }
+
     fn load_files(&mut self) {
         let Some((arr, id, m)) = self.manage_arr() else {
             return;
@@ -607,6 +699,27 @@ impl App {
             ManageMsg::History(id, r) if for_page(&self.manage, id) => {
                 self.manage.as_mut().unwrap().history = Some(loaded(r));
             }
+            ManageMsg::Episode(id, n, r) if for_page(&self.manage, id) => {
+                let m = self.manage.as_mut().unwrap();
+                if m.episode.as_ref().is_some_and(|(e, _)| *e == n) {
+                    m.episode = Some((n, loaded(r)));
+                }
+            }
+            ManageMsg::Tags(id, r) if for_page(&self.manage, id) => {
+                self.manage.as_mut().unwrap().tags = Some(loaded(r));
+            }
+            ManageMsg::TagAdded(id, r) if for_page(&self.manage, id) => match r {
+                Ok(tag) => {
+                    let m = self.manage.as_mut().unwrap();
+                    if let Some(e) = &mut m.edit {
+                        e.tags.push(tag.id);
+                    }
+                    if let Some(Loaded::Ready(list)) = &mut m.tags {
+                        list.push(tag);
+                    }
+                }
+                Err(e) => self.set_error(format!("Couldn't make the tag: {e}")),
+            },
             ManageMsg::Renames(id, r) if for_page(&self.manage, id) => {
                 self.manage.as_mut().unwrap().renames = Some(loaded(r));
             }

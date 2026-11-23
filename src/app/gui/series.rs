@@ -531,6 +531,9 @@ impl Gui {
         }
         for e in &episodes {
             list = list.push(self.episode_row(id, e, &coverage));
+            if let Some(details) = self.episode_details(e.n) {
+                list = list.push(details);
+            }
         }
         let mut c = column![header];
         if let Some(from) = self.release_runs(id, &episodes) {

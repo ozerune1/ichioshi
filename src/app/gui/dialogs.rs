@@ -53,6 +53,9 @@ impl Gui {
         if let Some(d) = &a.discussion {
             return self.discussion(base, d);
         }
+        if let Some(i) = &a.import {
+            return self.import_dialog(base, i);
+        }
         if let Some(prefs) = &a.pages.languages {
             let content = column![
                 dialog_title(
@@ -200,14 +203,19 @@ impl Gui {
                 );
             }
             note += " Deleting its files too can't be undone.";
+            let exclude = self.app.manage.as_ref().is_some_and(|m| m.exclude);
             let delete = |delete_files| {
                 act(Action::Manage(ManageAction::Delete {
                     delete_files,
-                    exclude: false,
+                    exclude,
                 }))
             };
             let content = column![
                 dialog_title(format!("Delete from {kind}?"), Some(note)),
+                gap(14.0),
+                check("Don't let import lists add it back", exclude, |on| act(
+                    Action::Manage(ManageAction::SetExclude(on))
+                )),
                 gap(20.0),
                 buttons(vec![
                     secondary("Cancel", Some(cancel.clone())),
@@ -324,6 +332,143 @@ impl Gui {
             ]),
         ];
         dialog(base, content.into(), 480.0, cancel)
+    }
+
+    /// Importing files into Sonarr or Radarr by hand.
+    fn import_dialog<'a>(
+        &'a self,
+        base: Element<'a, Message>,
+        i: &'a crate::app::import_ui::Importing,
+    ) -> Element<'a, Message> {
+        use crate::app::discover_ui::Loaded;
+        use crate::app::import_ui::ImportAction;
+        let imp = |a: ImportAction| act(Action::Import(a));
+        let name = i.kind.name();
+        let close = imp(ImportAction::Close);
+        let mut c = column![dialog_title(
+            "Import by hand".into(),
+            Some(match &i.download {
+                Some(_) => format!(
+                    "The download's files, and what {name} takes each for. Pick what to \
+                     import (and, where it couldn't tell, which episode it is)."
+                ),
+                None => format!(
+                    "Files in a folder on the server (as {name} sees it, like \
+                     /downloads/complete/…), and what {name} takes each for."
+                ),
+            })
+        )]
+        .spacing(14);
+        if i.download.is_none() {
+            c = c.push(
+                row![
+                    field("Folder on the server", &i.folder)
+                        .id("import-folder")
+                        .on_input(move |v| imp(ImportAction::Folder(v)))
+                        .on_submit(imp(ImportAction::Scan))
+                        .width(Fill),
+                    secondary(
+                        "Look",
+                        (!i.folder.trim().is_empty()).then(|| imp(ImportAction::Scan))
+                    ),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            );
+        }
+        let choices = self.app.import_choices();
+        match &i.candidates {
+            None => {}
+            Some(Loaded::Loading) => c = c.push(weak(format!("Asking {name} what's there…"))),
+            Some(Loaded::Failed(e)) => c = c.push(error_text(format!("Couldn't look: {e}"))),
+            Some(Loaded::Ready(list)) if list.is_empty() => {
+                c = c.push(weak("Nothing there to import."));
+            }
+            Some(Loaded::Ready(list)) => {
+                let mut rows = Column::new().spacing(8);
+                for (n, cand) in list.iter().enumerate() {
+                    let on = i.picked.contains(&n);
+                    let mut facts = vec![crate::app::fmt_bytes(cand.size)];
+                    facts.extend(cand.quality.clone());
+                    facts.extend(cand.group.clone());
+                    let which: Element<'_, Message> = if i.kind == crate::servers::arr::Kind::Radarr
+                    {
+                        text("The film").size(12).color(MUTED).into()
+                    } else if !cand.labels.is_empty() && !i.assigned.contains_key(&n) {
+                        text(cand.labels.join(", "))
+                            .size(12)
+                            .font(SEMI)
+                            .color(TEXT)
+                            .into()
+                    } else if choices.is_empty() {
+                        text("Which episode isn't known")
+                            .size(12)
+                            .color(GOLD)
+                            .into()
+                    } else {
+                        #[derive(Clone, PartialEq)]
+                        struct Choice(u64, String);
+                        impl std::fmt::Display for Choice {
+                            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                                f.write_str(&self.1)
+                            }
+                        }
+                        let options: Vec<Choice> = choices
+                            .iter()
+                            .map(|(id, l)| Choice(*id, l.clone()))
+                            .collect();
+                        let picked = i
+                            .assigned
+                            .get(&n)
+                            .and_then(|id| options.iter().find(|o| o.0 == *id).cloned());
+                        dropdown(options, picked, move |ch: Choice| {
+                            imp(ImportAction::Assign(n, ch.0))
+                        })
+                    };
+                    let mut info = column![
+                        text(clip(&cand.name, 90)).size(13).color(TEXT),
+                        text(facts.join(" · ")).size(12).color(FAINT),
+                    ]
+                    .spacing(2)
+                    .width(Fill);
+                    if !cand.rejections.is_empty() {
+                        info = info.push(text(cand.rejections.join(" · ")).size(12).color(GOLD));
+                    }
+                    rows = rows.push(
+                        row![
+                            check("", on, move |v| imp(ImportAction::Pick(n, v))),
+                            info,
+                            which
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    );
+                }
+                c = c.push(iced::widget::scrollable(rows).height(iced::Length::Shrink));
+                c = c.push(
+                    row![
+                        chip("Move", !i.copy, Some(imp(ImportAction::Copy(false)))),
+                        chip("Copy", i.copy, Some(imp(ImportAction::Copy(true)))),
+                        weak(if i.copy {
+                            "The files stay where they are too (a copy, or a hard link)."
+                        } else {
+                            "The files move into the series' folder."
+                        }),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
+        }
+        let n = i.picked.len();
+        c = c.push(buttons(vec![
+            secondary("Cancel", Some(close.clone())),
+            primary(
+                format!("Import {n} file{}", if n == 1 { "" } else { "s" }),
+                (n > 0 && !i.busy).then(|| imp(ImportAction::Import)),
+            ),
+        ]));
+        dialog(base, c.into(), 760.0, close)
     }
 
     /// Usenet providers: add, edit, check, order.

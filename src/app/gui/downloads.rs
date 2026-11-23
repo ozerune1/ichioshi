@@ -210,6 +210,24 @@ impl Gui {
                 Some(act(Action::OpenSeries(s.anilist_id))),
             ));
         }
+        // Finished but not imported (or stuck): import it by hand.
+        if let Some(d) = q
+            .download_id
+            .clone()
+            .filter(|_| q.state.starts_with("import") || q.problem.is_some())
+        {
+            buttons = buttons.push(small(
+                "Import…",
+                Some(act(Action::Import(
+                    crate::app::import_ui::ImportAction::Open {
+                        kind,
+                        owner: q.owner,
+                        anilist: series.map(|s| s.anilist_id),
+                        download: Some(d),
+                    },
+                ))),
+            ));
+        }
         buttons = buttons.push(small(
             "Remove…",
             Some(act(Action::Servers(ServersAction::AskRemoveQueued {

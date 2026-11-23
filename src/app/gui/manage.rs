@@ -215,6 +215,22 @@ impl Gui {
             .unwrap_or_else(|| format!("profile {}", profile.unwrap_or(0)));
         let monitored = record["monitored"] == true;
         let mut facts = vec![format!("Quality: {profile_name}")];
+        let tag_ids: Vec<u64> = record["tags"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_u64)
+            .collect();
+        if let (false, Some(Loaded::Ready(list))) = (tag_ids.is_empty(), &m.tags) {
+            let names: Vec<&str> = list
+                .iter()
+                .filter(|t| tag_ids.contains(&t.id))
+                .map(|t| t.label.as_str())
+                .collect();
+            if !names.is_empty() {
+                facts.push(format!("Tags: {}", names.join(", ")));
+            }
+        }
         match m.kind {
             Kind::Sonarr => {
                 facts.push(format!(
@@ -289,6 +305,17 @@ impl Gui {
             .push(small(
                 "Rename files…",
                 idle.then(|| manage(ManageAction::PreviewRenames)),
+            ))
+            .push(small(
+                "Import by hand…",
+                Some(act(Action::Import(
+                    crate::app::import_ui::ImportAction::Open {
+                        kind: m.kind,
+                        owner: m.owner,
+                        anilist: Some(m.anilist),
+                        download: None,
+                    },
+                ))),
             ))
             .push(small(
                 "Edit…",
@@ -399,6 +426,48 @@ impl Gui {
                 manage(ManageAction::ChangeEdit(e))
             }),
         ));
+        // Its tags: the server's, picked; or a new one.
+        let mut tags = Row::new().spacing(6).align_y(Alignment::Center);
+        match &m.tags {
+            Some(Loaded::Ready(list)) => {
+                for t in list {
+                    let on = e.tags.contains(&t.id);
+                    let (e6, id) = (e.clone(), t.id);
+                    tags = tags.push(chip(
+                        t.label.clone(),
+                        on,
+                        Some(manage(ManageAction::ChangeEdit({
+                            let mut e = e6;
+                            if on {
+                                e.tags.retain(|x| *x != id);
+                            } else {
+                                e.tags.push(id);
+                            }
+                            e
+                        }))),
+                    ));
+                }
+            }
+            Some(Loaded::Failed(err)) => tags = tags.push(error_text(err.clone())),
+            _ => tags = tags.push(weak("Reading its tags…")),
+        }
+        let e7 = e.clone();
+        tags = tags.push(
+            field("New tag", &e.new_tag)
+                .id("manage-new-tag")
+                .on_input(move |v| {
+                    let mut e = e7.clone();
+                    e.new_tag = v;
+                    manage(ManageAction::ChangeEdit(e))
+                })
+                .on_submit(manage(ManageAction::AddTag))
+                .width(160),
+        );
+        tags = tags.push(small(
+            "Add",
+            (!e.new_tag.trim().is_empty()).then(|| manage(ManageAction::AddTag)),
+        ));
+        c = c.push(field_row("Tags", tags.wrap().into()));
         let e5 = e.clone();
         c = c.push(check(
             "Move its files to a new root folder",
@@ -707,11 +776,143 @@ impl Gui {
                 "Sonarr doesn't watch for it (tick to)".into()
             },
         );
-        let releases = small(
-            "Releases…",
-            Some(manage(ManageAction::Look(Looking::Episode(n)))),
-        );
+        let open = m.episode.as_ref().is_some_and(|(e, _)| *e == n);
+        let releases = row![
+            small(
+                if open { "Hide details" } else { "Details" },
+                Some(manage(ManageAction::Episode(n)))
+            ),
+            small(
+                "Releases…",
+                Some(manage(ManageAction::Look(Looking::Episode(n)))),
+            ),
+        ]
+        .spacing(6)
+        .into();
         Some((watch, releases))
+    }
+
+    /// An episode's details, under its row: what Sonarr says of it, its
+    /// file, what happened to it, and what to do with it.
+    pub(super) fn episode_details(&self, n: u32) -> Option<Element<'_, Message>> {
+        let m = self.app.manage.as_ref()?;
+        let (open, record) = m.episode.as_ref()?;
+        if *open != n {
+            return None;
+        }
+        let r = self.app.library.find(m.anilist)?.remote.as_ref()?;
+        let e = r.episodes.get(&n)?;
+        let mut c = Column::new().spacing(10);
+        match record {
+            Loaded::Loading => c = c.push(weak("Reading it from Sonarr…")),
+            Loaded::Failed(err) => c = c.push(error_text(format!("Couldn't read it: {err}"))),
+            Loaded::Ready(v) => {
+                let mut head = vec![format!(
+                    "S{:02}E{:02}",
+                    v["seasonNumber"].as_u64().unwrap_or(0),
+                    v["episodeNumber"].as_u64().unwrap_or(0)
+                )];
+                if let Some(t) = v["title"].as_str().filter(|t| !t.is_empty()) {
+                    head.push(t.to_owned());
+                }
+                if let Some(at) = v["airDateUtc"]
+                    .as_str()
+                    .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+                {
+                    head.push(format!("aired {}", when(at.timestamp())));
+                }
+                if let Some(min) = v["runtime"].as_u64().filter(|m| *m > 0) {
+                    head.push(format!("{min} min"));
+                }
+                c = c.push(text(head.join(" · ")).size(13).font(SEMI).color(TEXT));
+                if let Some(o) = v["overview"].as_str().filter(|o| !o.is_empty()) {
+                    c = c.push(
+                        container(text(o.to_owned()).size(13).line_height(1.5).color(MUTED))
+                            .max_width(900),
+                    );
+                }
+            }
+        }
+        // Its file.
+        let file = e.file_id.and_then(|id| match &m.files {
+            Some(Loaded::Ready(list)) => list.iter().find(|f| f.id == id),
+            _ => None,
+        });
+        match (e.file_id, file) {
+            (Some(id), Some(f)) => {
+                let mut facts = vec![fmt_bytes(f.size)];
+                facts.extend(f.quality.clone());
+                facts.extend(f.group.clone());
+                facts.extend(f.resolution.clone());
+                facts.extend(f.video.clone());
+                facts.extend(f.audio.clone());
+                facts.extend(f.audio_languages.as_ref().map(|l| format!("audio: {l}")));
+                facts.extend(f.subtitles.as_ref().map(|s| format!("subtitles: {s}")));
+                c = c.push(
+                    row![
+                        column![
+                            text(f.path.clone()).size(12).color(TEXT),
+                            text(facts.join(" · ")).size(12).color(FAINT),
+                        ]
+                        .spacing(2)
+                        .width(Fill),
+                        small(
+                            "Delete file…",
+                            Some(manage(ManageAction::AskDeleteFiles(vec![id])))
+                        ),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                );
+            }
+            (Some(_), None) => c = c.push(weak("Reading its file…")),
+            (None, _) => c = c.push(weak("No file yet.")),
+        }
+        // What happened to it.
+        if let (Some(Loaded::Ready(list)), Some(arr_id)) = (&m.history, e.arr_id) {
+            let mine: Vec<_> = list.iter().filter(|h| h.episode == Some(arr_id)).collect();
+            for h in mine.iter().take(8) {
+                let mut line = vec![when(h.at)];
+                line.extend(h.quality.clone());
+                line.extend(h.detail.clone());
+                c = c.push(
+                    row![
+                        badge(event_name(&h.kind), MUTED),
+                        text(clip(&h.title, 90)).size(12).color(TEXT),
+                        text(line.join(" · ")).size(12).color(FAINT),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
+            if mine.is_empty() {
+                c = c.push(weak("Nothing's happened to it yet."));
+            }
+        }
+        c = c.push(
+            row![
+                check("Watch for it", e.monitored, move |v| manage(
+                    ManageAction::SetEpisodesMonitored(vec![n], v)
+                )),
+                small(
+                    "⌕ Search for it",
+                    Some(manage(ManageAction::AutoSearch(vec![n])))
+                ),
+                small(
+                    "Releases…",
+                    Some(manage(ManageAction::Look(Looking::Episode(n))))
+                ),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        );
+        Some(
+            container(c)
+                .padding([12, 16])
+                .width(Fill)
+                .style(|_| card_style(SURFACE2))
+                .into(),
+        )
     }
 }
 

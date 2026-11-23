@@ -200,6 +200,8 @@ pub struct Queued {
     pub left: f64,
     /// The release's name.
     pub title: String,
+    /// The download client's ID for it (to import it by hand).
+    pub download_id: Option<String>,
     /// downloading, queued, paused, completed, delay, warning, failed…
     pub status: String,
     /// downloading, importPending, importing, imported, failedPending,
@@ -382,6 +384,7 @@ impl Arr {
                     size: r["size"].as_f64().unwrap_or(0.0),
                     left: r["sizeleft"].as_f64().unwrap_or(0.0),
                     title: r["title"].as_str().unwrap_or_default().to_owned(),
+                    download_id: text(&r["downloadId"]),
                     status: r["status"].as_str().unwrap_or_default().to_lowercase(),
                     state: r["trackedDownloadState"]
                         .as_str()
@@ -609,6 +612,117 @@ impl Arr {
         .map(drop)
     }
 
+    /// An episode, as Sonarr has it (its synopsis, air date, …).
+    pub async fn episode(&self, id: u64) -> Result<Value> {
+        self.get(&format!("episode/{id}")).await
+    }
+
+    /// What could be imported by hand: a download's files, or a folder's
+    /// (on the server), for a series or film.
+    pub async fn import_candidates(&self, from: &ImportFrom, owner: u64) -> Result<Vec<Candidate>> {
+        let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+        let mut query = match from {
+            ImportFrom::Folder(f) => format!("folder={}", enc(f)),
+            ImportFrom::Download(d) => format!("downloadId={}", enc(d)),
+        };
+        query += &match self.kind {
+            Kind::Sonarr => format!("&seriesId={owner}&filterExistingFiles=true"),
+            Kind::Radarr => format!("&movieId={owner}&filterExistingFiles=true"),
+        };
+        let v: Value = self.get(&format!("manualimport?{query}")).await?;
+        let text = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+        Ok(v.as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| Candidate {
+                path: c["path"].as_str().unwrap_or_default().to_owned(),
+                name: text(&c["name"])
+                    .or_else(|| text(&c["relativePath"]))
+                    .unwrap_or_default(),
+                size: c["size"].as_u64().unwrap_or(0),
+                episodes: c["episodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e["id"].as_u64())
+                    .collect(),
+                labels: c["episodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|e| {
+                        format!(
+                            "S{:02}E{:02}",
+                            e["seasonNumber"].as_u64().unwrap_or(0),
+                            e["episodeNumber"].as_u64().unwrap_or(0)
+                        )
+                    })
+                    .collect(),
+                quality: text(&c["quality"]["quality"]["name"]),
+                group: text(&c["releaseGroup"]),
+                rejections: c["rejections"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| text(x).or_else(|| text(&x["reason"])))
+                    .collect(),
+                raw: c.clone(),
+            })
+            .collect())
+    }
+
+    /// Import files by hand: each candidate as the given episodes (Sonarr)
+    /// or as the film; moved, or copied.
+    pub async fn import(
+        &self,
+        owner: u64,
+        files: &[(Candidate, Vec<u64>)],
+        copy: bool,
+    ) -> Result<()> {
+        let files: Vec<Value> = files
+            .iter()
+            .map(|(c, episodes)| {
+                let r = &c.raw;
+                let mut f = json!({
+                    "path": c.path,
+                    "quality": r["quality"],
+                    "languages": r["languages"],
+                    "releaseGroup": r["releaseGroup"],
+                    "indexerFlags": r["indexerFlags"].as_i64().unwrap_or(0),
+                });
+                if let Some(d) = r["downloadId"].as_str() {
+                    f["downloadId"] = json!(d);
+                }
+                match self.kind {
+                    Kind::Sonarr => {
+                        f["seriesId"] = json!(owner);
+                        f["episodeIds"] = json!(episodes);
+                        f["releaseType"] = r["releaseType"].clone();
+                    }
+                    Kind::Radarr => f["movieId"] = json!(owner),
+                }
+                f
+            })
+            .collect();
+        self.command(json!({
+            "name": "ManualImport",
+            "files": files,
+            "importMode": if copy { "copy" } else { "move" },
+        }))
+        .await
+    }
+
+    /// Its tags.
+    pub async fn tags(&self) -> Result<Vec<Tag>> {
+        self.get("tag").await
+    }
+
+    /// Make a tag.
+    pub async fn add_tag(&self, label: &str) -> Result<Tag> {
+        let v = self.post("tag", &json!({ "label": label })).await?;
+        serde_json::from_value(v).context("no tag in the answer")
+    }
+
     /// Run a command ("RefreshSeries", "RenameFiles", …).
     pub async fn command(&self, body: Value) -> Result<()> {
         self.post("command", &body).await.map(drop)
@@ -794,6 +908,40 @@ impl Arr {
         out.sort_by_key(|e| std::cmp::Reverse(e.at));
         Ok(out)
     }
+}
+
+/// Where to import files by hand from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportFrom {
+    /// A folder on the server.
+    Folder(String),
+    /// What the download client downloaded (by its ID).
+    Download(String),
+}
+
+/// A file that could be imported by hand, and what Sonarr made of it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Candidate {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    /// The episodes Sonarr takes it for (their IDs), and as "S01E05".
+    pub episodes: Vec<u64>,
+    pub labels: Vec<String>,
+    pub quality: Option<String>,
+    pub group: Option<String>,
+    /// Why Sonarr wouldn't import it itself.
+    pub rejections: Vec<String>,
+    /// All of it, as Sonarr sent it (sent back to import it).
+    pub raw: Value,
+}
+
+/// A tag (Sonarr's and Radarr's own, for sorting series and choosing
+/// indexers, download clients and the like for them).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Tag {
+    pub id: u64,
+    pub label: String,
 }
 
 /// What to look for releases for.

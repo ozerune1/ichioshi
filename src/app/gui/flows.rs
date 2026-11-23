@@ -1520,6 +1520,23 @@ fn library_on_your_servers() {
                 {"eventType": "grabbed", "sourceTitle": "Some other anime of the series",
                  "date": "2026-11-21T11:00:00Z", "episodeId": 999}]),
             ("DELETE", "/sonarr/api/v3/series/1") => json!({}),
+            ("GET", "/sonarr/api/v3/tag") => json!([{"id": 1, "label": "anime"}]),
+            ("POST", "/sonarr/api/v3/tag") => {
+                let b: Value = serde_json::from_slice(&req.body).unwrap();
+                json!({"id": 2, "label": b["label"]})
+            }
+            ("GET", "/sonarr/api/v3/episode/12") => json!({"id": 12, "seasonNumber": 1,
+                "episodeNumber": 2, "title": "It Didn't Have to Be Magic...", "runtime": 24,
+                "airDateUtc": "2023-09-29T14:00:00Z",
+                "overview": "Frieren and Fern travel to a village to see the sunrise."}),
+            ("GET", "/sonarr/api/v3/manualimport") => json!([
+                {"path": "/downloads/Show - 01.mkv", "name": "Show - 01.mkv", "size": 1000,
+                 "episodes": [{"id": 990, "seasonNumber": 1, "episodeNumber": 1}],
+                 "quality": {"quality": {"name": "WEBDL-1080p"}}, "languages": [{"id": 8}],
+                 "releaseGroup": "Group", "downloadId": "QB123", "releaseType": "singleEpisode"},
+                {"path": "/downloads/Show - NCOP.mkv", "name": "Show - NCOP.mkv", "size": 500,
+                 "episodes": [], "rejections": [{"reason": "Unknown episode"}],
+                 "quality": {"quality": {"name": "WEBDL-1080p"}}}]),
             ("GET", "/sonarr/api/v3/queue") => json!({"records": [
                 {"id": 5, "seriesId": 1, "episodeId": 13, "size": 100.0, "sizeleft": 40.0,
                  "title": "[Group] Frieren - 03 (1080p)", "status": "downloading",
@@ -1528,7 +1545,7 @@ fn library_on_your_servers() {
                  "quality": {"quality": {"name": "WEBDL-1080p"}},
                  "episode": {"seasonNumber": 1, "episodeNumber": 3, "title": "Killing Magic"}},
                 {"id": 6, "seriesId": 99, "episodeId": 990, "size": 50.0, "sizeleft": 0.0,
-                 "title": "Other.Show.S01E01.1080p", "status": "completed",
+                 "title": "Other.Show.S01E01.1080p", "status": "completed", "downloadId": "QB123",
                  "trackedDownloadStatus": "warning", "trackedDownloadState": "importPending",
                  "series": {"title": "Other Show"},
                  "episode": {"seasonNumber": 1, "episodeNumber": 1},
@@ -1759,6 +1776,26 @@ fn library_on_your_servers() {
         removed,
         ["/sonarr/api/v3/queue/5?removeFromClient=true&blocklist=true"]
     );
+    // The download Sonarr didn't import: imported by hand (what Sonarr
+    // can place is picked; the rest isn't).
+    click(&mut h, "Import…");
+    wait(&mut h, "its files", |g| shows(g, "Show - 01.mkv"));
+    assert!(shows(&h, "Import 1 file"));
+    click(&mut h, "Import 1 file");
+    wait_until(&mut h, "imported", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Sonarr is importing 1 file")
+    });
+    let import = sent("POST", "/sonarr/api/v3/command")
+        .into_iter()
+        .rfind(|c| c["name"] == "ManualImport")
+        .unwrap();
+    assert_eq!(import["importMode"], "move");
+    assert_eq!(import["files"][0]["seriesId"], 99);
+    assert_eq!(import["files"][0]["episodeIds"], json!([990]));
+    assert_eq!(import["files"][0]["downloadId"], "QB123");
     // Several at once: picked with their boxes (here, all of them).
     click(&mut h, "Select all");
     assert!(shows(&h, "2 selected"));
@@ -1900,12 +1937,80 @@ fn library_on_your_servers() {
             crate::app::manage_ui::ManageAction::ChangeEdit(changed),
         ))],
     );
+    // A new tag, given to it.
+    wait(&mut h, "its tags", |g| shows(g, "anime"));
+    type_into(&mut h, "manage-new-tag", "favourite", true);
+    wait(&mut h, "the new tag", |g| {
+        g.app
+            .manage
+            .as_ref()
+            .and_then(|m| m.edit.as_ref())
+            .is_some_and(|e| e.tags == [2])
+    });
+    assert_eq!(
+        sent("POST", "/sonarr/api/v3/tag"),
+        [json!({"label": "favourite"})]
+    );
     click(&mut h, "Save");
     wait_until(&mut h, "saved", |g| {
         g.app.status.as_ref().is_some_and(|s| s.text == "Saved")
     });
     let saved = sent("PUT", "/sonarr/api/v3/series/1");
     assert_eq!(saved.last().unwrap()["qualityProfileId"], 6);
+    assert_eq!(saved.last().unwrap()["tags"], json!([2]));
+
+    // An episode's details: what Sonarr says of it.
+    click_nth(&mut h, "Details", 1);
+    wait(&mut h, "episode 2's details", |g| {
+        shows_containing(g, "travel to a village to see the sunrise")
+    });
+    assert!(shows_containing(
+        &h,
+        "S01E02 · It Didn't Have to Be Magic..."
+    ));
+    save(&h, &out, "6g-episode");
+    click(&mut h, "Hide details");
+
+    // Importing by hand from a folder: the file Sonarr can't place is
+    // given an episode.
+    click(&mut h, "Import by hand…");
+    type_into(&mut h, "import-folder", "/downloads", true);
+    wait(&mut h, "the folder's files", |g| {
+        shows(g, "Show - NCOP.mkv")
+    });
+    assert!(shows(&h, "Unknown episode") && shows(&h, "S01E01"));
+    send(
+        &mut h,
+        [act(Action::Import(
+            crate::app::import_ui::ImportAction::Assign(1, 12),
+        ))],
+    );
+    save(&h, &out, "6h-import");
+    click(&mut h, "Copy");
+    click(&mut h, "Import 2 files");
+    wait_until(&mut h, "imported", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Sonarr is importing 2 files")
+    });
+    let import = sent("POST", "/sonarr/api/v3/command")
+        .into_iter()
+        .rfind(|c| c["name"] == "ManualImport")
+        .unwrap();
+    assert_eq!(import["importMode"], "copy");
+    let mut episodes: Vec<Value> = import["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["episodeIds"].clone())
+        .collect();
+    episodes.sort_by_key(|e| e.to_string());
+    assert_eq!(episodes, [json!([12]), json!([990])]);
+    assert!(seen.lock().unwrap().iter().any(|r| {
+        r.target
+            .contains("manualimport?folder=%2Fdownloads&seriesId=1")
+    }));
 
     // Refresh & scan; and deleting it from Sonarr (asking first).
     click(&mut h, "Refresh & scan");
@@ -1921,6 +2026,7 @@ fn library_on_your_servers() {
     click(&mut h, "Delete…");
     assert!(shows(&h, "Delete from Sonarr?"));
     save(&h, &out, "6f-delete");
+    click(&mut h, "Don't let import lists add it back");
     click(&mut h, "Delete, keep files");
     wait_until(&mut h, "deleted from Sonarr", |g| {
         g.app
@@ -1929,7 +2035,7 @@ fn library_on_your_servers() {
             .is_some_and(|s| s.text == "Deleted from Sonarr")
     });
     assert!(seen.lock().unwrap().iter().any(|r| r.method == "DELETE"
-        && r.target == "/sonarr/api/v3/series/1?deleteFiles=false&addImportListExclusion=false"));
+        && r.target == "/sonarr/api/v3/series/1?deleteFiles=false&addImportListExclusion=true"));
 
     // Streaming episode 1 from Jellyfin (the simulator doesn't run tasks:
     // what Jellyfin says about the file is read here).
