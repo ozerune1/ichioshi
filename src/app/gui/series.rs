@@ -79,7 +79,7 @@ impl Gui {
     fn hero<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
         // A phone's: smaller, with the facts under the poster.
         let small = compact();
-        let hero: f32 = if small { 420.0 } else { 380.0 };
+        let hero: f32 = if small { 360.0 } else { 380.0 };
         let anime = &ap.anime;
         let id = anime.anilist_id;
         let details = self.app.details(id);
@@ -175,8 +175,8 @@ impl Gui {
             return stack![
                 backdrop,
                 shade,
+                // (The bar on top has the way back.)
                 column![
-                    back,
                     space::vertical(),
                     row![picture(cover, 100.0, 142.0, 10.0), titles]
                         .spacing(14)
@@ -319,9 +319,7 @@ impl Gui {
             } else {
                 space().into()
             };
-            return row![buttons, space::horizontal(), lists]
-                .align_y(Alignment::Center)
-                .into();
+            return actions_and_lists(buttons, lists);
         }
         let download = match missing.len() {
             0 => "↓  Download series".to_owned(),
@@ -343,9 +341,7 @@ impl Gui {
         } else {
             space().into()
         };
-        row![buttons, space::horizontal(), lists]
-            .align_y(Alignment::Center)
-            .into()
+        actions_and_lists(buttons, lists)
     }
 
     /// Your lists: status, score and episodes watched, and what each list
@@ -385,7 +381,7 @@ impl Gui {
             ))),
         ));
         // What each list says.
-        let mut says = Row::new().spacing(14);
+        let mut says: Vec<Element<'_, Message>> = Vec::new();
         let mut entries = Vec::new();
         for service in t.services() {
             let line = match (t.entry(service, id), t.key(service, id)) {
@@ -405,23 +401,38 @@ impl Gui {
             let saving = t
                 .key(service, id)
                 .is_some_and(|k| t.saving.contains(&(service, k)));
-            says = says.push(
+            says.push(
                 text(format!(
                     "{}: {line}{}",
                     service.name(),
                     if saving { " · saving…" } else { "" }
                 ))
                 .size(12)
-                .color(FAINT),
+                .color(FAINT)
+                .into(),
             );
         }
         if let [a, b] = entries.as_slice()
             && !crate::app::tracking_ui::same(a, b)
         {
-            says = says.push(text("⚠ Not the same on both").size(12).color(GOLD));
+            says.push(text("⚠ Not the same on both").size(12).color(GOLD).into());
         }
+        // A phone's: wrapped, a list a line.
+        let (top, says): (Element<'_, Message>, Element<'_, Message>) = if compact() {
+            (
+                top.wrap().vertical_spacing(8).into(),
+                Column::with_children(says).spacing(4).into(),
+            )
+        } else {
+            (top.into(), Row::with_children(says).spacing(14).into())
+        };
         container(column![top, says].spacing(8))
             .padding([10, 14])
+            .width(if compact() {
+                Fill
+            } else {
+                iced::Length::Shrink
+            })
             .style(|_| card_style(SURFACE))
             .into()
     }
@@ -670,7 +681,20 @@ impl Gui {
         )
         .size(12)
         .color(FAINT)
-        .width(100);
+        .width(if compact() {
+            iced::Length::Shrink
+        } else {
+            100.into()
+        });
+        // A phone's rows leave out sizes and remuxing (the list has
+        // "Remux all…").
+        let size = |len: u64| -> Element<'_, Message> {
+            if compact() {
+                space().width(0).into()
+            } else {
+                text(fmt_bytes(len)).size(12).color(FAINT).into()
+            }
+        };
 
         let right: Element<'_, Message> = if let Some(p) = e.downloading {
             row![
@@ -704,7 +728,7 @@ impl Gui {
             };
             row![
                 self.offline_controls(id, n, on_jellyfin),
-                text(fmt_bytes(*len)).size(12).color(FAINT),
+                size(*len),
                 container(play).width(110).align_x(Alignment::End),
             ]
             .spacing(10)
@@ -732,14 +756,14 @@ impl Gui {
                 text("▶ Play").size(12).font(SEMI).color(ACCENT)
             };
             row![
-                text(fmt_bytes(*len)).size(12).color(FAINT),
-                small(
+                size(*len),
+                desktop_layout(small(
                     "Remux…",
                     Some(act(Action::RemuxLibrary {
                         id,
                         files: vec![path],
                     }))
-                ),
+                )),
                 playlist,
                 container(play).width(80).align_x(Alignment::End),
             ]
@@ -826,17 +850,17 @@ impl Gui {
                 .into()
         };
         let row = container(line)
-        .padding([8, 12])
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(fill_color(if present {
-                SURFACE
-            } else {
-                Color { a: 0.5, ..SURFACE }
-            })),
-            border: rounded(10.0),
-            ..Default::default()
-        });
+            .padding([8, 12])
+            .width(Fill)
+            .style(move |_| container::Style {
+                background: Some(fill_color(if present {
+                    SURFACE
+                } else {
+                    Color { a: 0.5, ..SURFACE }
+                })),
+                border: rounded(10.0),
+                ..Default::default()
+            });
         if present {
             mouse_area(row)
                 .on_press(act(Action::Player(PlayerAction::Play { id, episode: n })))
@@ -1310,35 +1334,37 @@ impl Gui {
                 )
             }));
         }
-        card(
-            column![
-                row![
-                    column![
-                        text("In your library").size(16).font(SEMI).color(GREEN),
-                        weak(folder.display().to_string()),
-                    ]
-                    .spacing(4),
-                    space::horizontal(),
-                    desktop_only(secondary(
-                        "Open folder",
-                        Some(act(Action::OpenFolder(folder.clone())))
-                    )),
-                    secondary(
-                        "Remove",
-                        Some(act(Action::RemoveSeries {
-                            id,
-                            delete_files: false
-                        }))
-                    ),
-                    danger("Delete folder…", Some(act(Action::AskRemoveSeries(id)))),
-                ]
+        let about = column![
+            text("In your library").size(16).font(SEMI).color(GREEN),
+            weak(folder.display().to_string()),
+        ]
+        .spacing(4);
+        let buttons = row![
+            desktop_only(secondary(
+                "Open folder",
+                Some(act(Action::OpenFolder(folder.clone())))
+            )),
+            secondary(
+                "Remove",
+                Some(act(Action::RemoveSeries {
+                    id,
+                    delete_files: false
+                }))
+            ),
+            danger("Delete folder…", Some(act(Action::AskRemoveSeries(id)))),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        // A phone's: the buttons under it.
+        let head: Element<'_, Message> = if compact() {
+            column![about, buttons].spacing(12).into()
+        } else {
+            row![about, space::horizontal(), buttons]
                 .spacing(10)
-                .align_y(Alignment::Center),
-                rule(),
-                languages,
-            ]
-            .spacing(16),
-        )
+                .align_y(Alignment::Center)
+                .into()
+        };
+        card(column![head, rule(), languages,].spacing(16))
     }
 }
 
@@ -1710,4 +1736,20 @@ pub(super) fn lang_editor<'a>(
         c = c.push(weak(prefs.sub_type.help()));
     }
     c.into()
+}
+
+/// The series' buttons, and your lists beside them (a phone's: under them).
+fn actions_and_lists<'a>(
+    buttons: Row<'a, Message>,
+    lists: Element<'a, Message>,
+) -> Element<'a, Message> {
+    if compact() {
+        column![buttons.wrap().vertical_spacing(8), lists]
+            .spacing(14)
+            .into()
+    } else {
+        row![buttons, space::horizontal(), lists]
+            .align_y(Alignment::Center)
+            .into()
+    }
 }

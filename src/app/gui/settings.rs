@@ -24,6 +24,10 @@ fn group<'a>(
     note: &'a str,
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
+    // A phone's group is a page of its own, named in the bar on top.
+    if compact() {
+        return column![weak(note), content.into()].spacing(16).into();
+    }
     card(
         column![
             column![text(title).size(17).font(SEMI).color(TEXT), weak(note)].spacing(4),
@@ -36,6 +40,27 @@ fn group<'a>(
 
 impl Gui {
     pub(super) fn settings_page(&self) -> Element<'_, Message> {
+        // A phone's: More, or one group.
+        if compact() {
+            use super::phone::Section;
+            let Some(section) = self.settings_section else {
+                return self.more_page();
+            };
+            return page(match section {
+                Section::Library => self.library_settings(),
+                Section::Languages => self.language_settings(),
+                Section::Downloading => self.download_settings(),
+                Section::Usenet => self.usenet_settings(),
+                Section::Vpn => self.vpn_settings(),
+                Section::Lists => self.list_settings(),
+                Section::Drive => group(
+                    "Google Drive",
+                    "Upload playlist exports to a folder in your Drive.",
+                    self.drive_section(None),
+                ),
+                Section::Player => self.player_settings(),
+            });
+        }
         let mut c = column![
             page_title(
                 "Settings",
@@ -94,8 +119,13 @@ impl Gui {
         if on_servers {
             return group(
                 "Library",
-                "Your servers keep the library; the one on this computer is kept as it was, \
-                 for when you switch back.",
+                if DESKTOP {
+                    "Your servers keep the library; the one on this computer is kept as it \
+                     was, for when you switch back."
+                } else {
+                    "Your servers keep the library; the one on this phone is kept as it was, \
+                     for when you switch back."
+                },
                 column![mode, self.servers_settings()].spacing(14),
             );
         }
@@ -133,7 +163,11 @@ impl Gui {
         let mut c = column![
             row![
                 chip(
-                    "BitTorrent, on this computer",
+                    if DESKTOP {
+                        "BitTorrent, on this computer"
+                    } else {
+                        "BitTorrent, on this phone"
+                    },
                     !enabled,
                     Some(act(Action::DebridSetEnabled(false)))
                 ),
@@ -227,9 +261,9 @@ impl Gui {
             )
             .push(account)
             .push(weak(format!(
-                "{} fetches each torrent on its servers; this computer then downloads just the \
-                 files you pick, over HTTPS. No BitTorrent traffic comes from here, and it's told \
-                 not to seed.",
+                "{} fetches each torrent on its servers; {HERE} then downloads just the files \
+                 you pick, over HTTPS. No BitTorrent traffic comes from here, and it's told not \
+                 to seed.",
                 provider.name()
             )));
         group("Downloading", "Where releases come from.", c)
@@ -518,7 +552,9 @@ impl Gui {
                     weak(format!("({kind}).")),
                 ]
                 .spacing(4)
-                .align_y(Alignment::Center),
+                .align_y(Alignment::Center)
+                .wrap()
+                .vertical_spacing(4),
             )
             .push(
                 row![
@@ -529,24 +565,25 @@ impl Gui {
                     link("Copy", Some(copy(redirect))),
                 ]
                 .spacing(8)
-                .align_y(Alignment::Center),
+                .align_y(Alignment::Center)
+                .wrap()
+                .vertical_spacing(4),
             )
-            .push(
-                row![
-                    weak("3. Its client ID"),
-                    field("Client ID", &id)
-                        .on_input(move |v| edit(move |g| {
+            .push(line(vec![
+                weak("3. Its client ID").into(),
+                field("Client ID", &id)
+                    .on_input(move |v| {
+                        edit(move |g| {
                             let c = &mut g.app.tracking.config;
                             match service {
                                 Service::AniList => c.anilist.client_id = v.clone(),
                                 Service::Mal => c.mal.client_id = v.clone(),
                             }
-                        }))
-                        .width(320),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
-            );
+                        })
+                    })
+                    .width(w(320.0))
+                    .into(),
+            ]));
         // AniList's code grant needs the secret; MyAnimeList shows one for
         // some kinds of client only.
         let (secret, note) = match service {
@@ -556,27 +593,27 @@ impl Gui {
                 "    and its client secret, if it shows one",
             ),
         };
-        c = c.push(
-            row![
-                weak(note),
-                field("Client secret", secret)
-                    .id(match service {
-                        Service::AniList => "anilist-secret",
-                        Service::Mal => "mal-secret",
-                    })
-                    .secure(true)
-                    .on_input(move |v| edit(move |g| {
+        let note = if compact() { note.trim_start() } else { note };
+        c = c.push(line(vec![
+            weak(note).into(),
+            field("Client secret", secret)
+                .id(match service {
+                    Service::AniList => "anilist-secret",
+                    Service::Mal => "mal-secret",
+                })
+                .secure(true)
+                .on_input(move |v| {
+                    edit(move |g| {
                         let c = &mut g.app.tracking.config;
                         match service {
                             Service::AniList => c.anilist.client_secret = v.clone(),
                             Service::Mal => c.mal.client_secret = v.clone(),
                         }
-                    }))
-                    .width(320),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-        );
+                    })
+                })
+                .width(w(320.0))
+                .into(),
+        ]));
         c.push(primary(
             format!("Sign in with {}", service.name()),
             t.signing_in

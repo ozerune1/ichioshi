@@ -2,8 +2,8 @@
 //! of: buttons, fields, cards, badges, progress bars, dialogs.
 
 use iced::widget::{
-    Space, button, checkbox, column, container, image, mouse_area, opaque, pick_list, progress_bar,
-    row, scrollable, space, stack, text, text_input,
+    Column, Row, Space, button, checkbox, column, container, image, mouse_area, opaque, pick_list,
+    progress_bar, row, scrollable, space, stack, text, text_input,
 };
 use iced::{
     Alignment, Background, Border, Color, ContentFit, Element, Fill, Font, Length, Shadow, Theme,
@@ -106,7 +106,7 @@ pub(super) fn card_style(bg: Color) -> container::Style {
 /// A bordered box around a group of things.
 pub(super) fn card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(content)
-        .padding(18)
+        .padding(if compact() { 14 } else { 18 })
         .width(Fill)
         .style(|_| card_style(SURFACE))
         .into()
@@ -133,6 +133,10 @@ pub(super) fn dot<'a>(color: Color) -> Element<'a, Message> {
 
 /// A page's title and what it's about.
 pub(super) fn page_title<'a>(title: &'a str, note: String) -> Element<'a, Message> {
+    // A phone's has its title in the bar on top.
+    if compact() {
+        return text(note).size(12).color(MUTED).into();
+    }
     column![
         text(title).size(30).font(BOLD).color(TEXT),
         text(note).size(13).color(MUTED),
@@ -487,6 +491,13 @@ pub(super) fn scroll_style(_: &Theme, _: scrollable::Status) -> scrollable::Styl
 /// folders with: what needs them is left out there.
 pub(super) const DESKTOP: bool = !cfg!(target_os = "android");
 
+/// What the app runs on, in words.
+pub(super) const HERE: &str = if DESKTOP {
+    "this computer"
+} else {
+    "this phone"
+};
+
 /// `e` on computers; nothing on Android (see [`DESKTOP`]).
 pub(super) fn desktop_only<'a>(e: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     if DESKTOP {
@@ -496,23 +507,82 @@ pub(super) fn desktop_only<'a>(e: impl Into<Element<'a, Message>>) -> Element<'a
     }
 }
 
-/// Is the window narrow (a phone's)? Then the places are tabs along the
-/// bottom, and pages have less margin.
-static COMPACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// Is the window narrow (a phone's)? Then the app has a phone's layout
+// (gui/phone.rs): a bar on top, tabs along the bottom, pages in one
+// column. Kept for the thread that draws (the app's, or a test's).
+thread_local! {
+    // (Clippy asks for `const` on Android, where it already is.)
+    #[allow(clippy::missing_const_for_thread_local)]
+    static WIDTH: std::cell::Cell<f32> = const { std::cell::Cell::new(1440.0) };
+}
 
 /// How wide a window has to be for the sidebar.
 pub(super) const COMPACT_BELOW: f32 = 720.0;
 
-pub(super) fn compact() -> bool {
-    COMPACT.load(std::sync::atomic::Ordering::Relaxed)
+/// `e` in a computer's layout; nothing in a phone's.
+pub(super) fn desktop_layout<'a>(e: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    if compact() {
+        space().width(0).height(0).into()
+    } else {
+        e.into()
+    }
 }
 
-pub(super) fn set_compact(on: bool) {
-    COMPACT.store(on, std::sync::atomic::Ordering::Relaxed);
+pub(super) fn compact() -> bool {
+    WIDTH.with(std::cell::Cell::get) < COMPACT_BELOW
 }
+
+pub(super) fn window_width() -> f32 {
+    WIDTH.with(std::cell::Cell::get)
+}
+
+/// The window's width (logical pixels), as it changes.
+pub(super) fn set_width(width: f32) {
+    WIDTH.with(|w| w.set(width));
+}
+
+/// The page's side margin.
+pub(super) fn side() -> f32 {
+    if compact() { 16.0 } else { 36.0 }
+}
+
+/// `px` wide on computers; as wide as there is on a phone (fields and
+/// pickers in forms).
+pub(super) fn w(px: f32) -> iced::Length {
+    if compact() {
+        Fill
+    } else {
+        iced::Length::Fixed(px)
+    }
+}
+
+/// Things side by side on computers; one under another on a phone.
+pub(super) fn line<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    if compact() {
+        Column::with_children(items).spacing(8).width(Fill).into()
+    } else {
+        Row::with_children(items)
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into()
+    }
+}
+
+/// A poster's size: `desktop`'s on computers; on a phone, three to a row.
+pub(super) fn poster_size(desktop: (f32, f32)) -> (f32, f32) {
+    if !compact() {
+        return desktop;
+    }
+    let width = WIDTH.with(std::cell::Cell::get);
+    let w = ((width - 2.0 * side() - 2.0 * POSTER_GAP) / 3.0).floor();
+    (w, (w * desktop.1 / desktop.0).round())
+}
+
+/// The gap between posters on a phone.
+pub(super) const POSTER_GAP: f32 = 10.0;
 
 pub(super) fn page<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    let margin = if compact() { [16, 14] } else { [28, 36] };
+    let margin = if compact() { [14, 16] } else { [28, 36] };
     scrollable(container(content).padding(margin).width(Fill))
         .height(Fill)
         .style(scroll_style)
@@ -581,6 +651,9 @@ pub(super) fn dialog<'a>(
     width: f32,
     dismiss: Message,
 ) -> Element<'a, Message> {
+    if compact() {
+        return sheet(base, content, dismiss);
+    }
     let panel = container(scrollable(content).style(scroll_style))
         .padding(24)
         .max_width(width)
@@ -613,6 +686,68 @@ pub(super) fn dialog<'a>(
     .into()
 }
 
+/// A phone's dialog: a sheet from the bottom, as wide as the screen.
+fn sheet<'a>(
+    base: Element<'a, Message>,
+    content: Element<'a, Message>,
+    dismiss: Message,
+) -> Element<'a, Message> {
+    let handle = container(space().width(36).height(4))
+        .style(|_| pill(Color::WHITE.scale_alpha(0.25)))
+        .center_x(Fill);
+    let panel = container(
+        column![
+            handle,
+            scrollable(container(content).padding([4, 18]).width(Fill)).style(scroll_style)
+        ]
+        .spacing(12),
+    )
+    .padding(iced::Padding {
+        top: 10.0,
+        right: 0.0,
+        bottom: 18.0,
+        left: 0.0,
+    })
+    .width(Fill)
+    .style(|_| container::Style {
+        background: Some(fill_color(SURFACE)),
+        border: Border {
+            color: LINE,
+            width: 1.0,
+            radius: iced::border::Radius {
+                top_left: 20.0,
+                top_right: 20.0,
+                bottom_right: 0.0,
+                bottom_left: 0.0,
+            },
+        },
+        ..Default::default()
+    });
+    // The dimmed page above the sheet closes it.
+    let above = mouse_area(
+        container(space())
+            .width(Fill)
+            .height(iced::Length::FillPortion(1)),
+    )
+    .on_press(dismiss);
+    stack![
+        base,
+        opaque(
+            container(
+                // (A tall sheet still leaves a strip of the page showing.)
+                column![above, opaque(panel)]
+                    .height(Fill)
+                    .padding(iced::Padding {
+                        top: 56.0,
+                        ..iced::Padding::ZERO
+                    })
+            )
+            .style(|_| fill(Color::BLACK.scale_alpha(0.55)))
+        )
+    ]
+    .into()
+}
+
 /// A dialog's heading and what it's about.
 pub(super) fn dialog_title<'a>(title: String, note: Option<String>) -> Element<'a, Message> {
     let mut c = column![text(title).size(20).font(BOLD).color(TEXT)].spacing(6);
@@ -624,4 +759,28 @@ pub(super) fn dialog_title<'a>(title: String, note: Option<String>) -> Element<'
 
 pub(super) fn gap<'a>(h: f32) -> Element<'a, Message> {
     Space::new().height(h).into()
+}
+
+/// A field with its name beside it (a phone's: above it), and what goes
+/// after it.
+pub(super) fn labelled<'a>(
+    name: &'a str,
+    input: Element<'a, Message>,
+    after: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let name = text(name).size(14).color(MUTED);
+    if compact() {
+        let mut c = column![name, input].spacing(6);
+        if let Some(a) = after {
+            c = c.push(a);
+        }
+        return c.into();
+    }
+    let mut r = row![name.width(80), input]
+        .spacing(10)
+        .align_y(Alignment::Center);
+    if let Some(a) = after {
+        r = r.push(a);
+    }
+    r.into()
 }

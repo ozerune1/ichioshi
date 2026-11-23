@@ -52,7 +52,7 @@ impl Gui {
             ));
         }
         let mut c = column![
-            link("← Back", (!locked).then(|| act(Action::Back))),
+            desktop_layout(link("← Back", (!locked).then(|| act(Action::Back)))),
             page_title("Remux", format!("{} · {summary}", rp.series.name)),
             weak(
                 "Copies keep only the audio and subtitles you pick; video and chapters are kept. \
@@ -68,8 +68,8 @@ impl Gui {
         let note = rp.title_note.trim_end_matches('.').to_owned();
         let naming = card(
             column![
-                row![
-                    text("Title").size(14).color(MUTED).width(80),
+                labelled(
+                    "Title",
                     field("English title", &rp.title)
                         .on_input_maybe((!locked).then_some(|t: String| edit(move |g| {
                             let dir = g.app.library_dir();
@@ -80,32 +80,31 @@ impl Gui {
                                 }
                             }
                         })))
-                        .width(Fill),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
+                        .width(Fill)
+                        .into(),
+                    None,
+                ),
                 row![
-                    space().width(80),
+                    desktop_layout(space().width(80)),
                     weak(format!(
                         "{note}. Files are named “<title> - 01.mkv” and titled the same."
                     ))
                 ]
                 .spacing(10),
-                row![
-                    text("Save to").size(14).color(MUTED).width(80),
+                labelled(
+                    "Save to",
                     field("Folder", &rp.out_dir)
                         .on_input_maybe((!locked).then_some(|t: String| on_remux(move |rp| {
                             rp.out_dir = t.clone();
                             rp.out_dir_edited = true;
                         })))
-                        .width(Fill),
-                    desktop_only(secondary(
+                        .width(Fill)
+                        .into(),
+                    Some(desktop_only(secondary(
                         "Browse…",
                         (!locked).then(|| act(Action::PickRemuxFolder))
-                    )),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
+                    ))),
+                ),
             ]
             .spacing(10),
         );
@@ -352,7 +351,7 @@ fn remux_controls<'a>(rp: &'a RemuxPage, plan: &[PlannedFile]) -> Element<'a, Me
                 .sum::<f32>()
                 / runnable.max(1) as f32;
             row![
-                bar(progress, ACCENT, 8.0).length(320),
+                bar(progress, ACCENT, 8.0).length(if compact() { 150 } else { 320 }),
                 text(format!("{:.0}%", progress * 100.0))
                     .size(13)
                     .font(SEMI)
@@ -395,7 +394,7 @@ fn remux_controls<'a>(rp: &'a RemuxPage, plan: &[PlannedFile]) -> Element<'a, Me
             if rp.title.trim().is_empty() {
                 r = r.push(weak("Enter a title first."));
             }
-            r.into()
+            r.wrap().vertical_spacing(8).into()
         }
     }
 }
@@ -407,9 +406,11 @@ fn episode_table<'a>(rp: &'a RemuxPage, plan: &[PlannedFile]) -> Element<'a, Mes
         Length::FillPortion(2),
         Length::Fixed(220.0),
     ];
-    let mut rows = Column::new()
-        .spacing(2)
-        .push(header_row(&["New file", "Audio", "Subtitles", ""], &widths));
+    let small = compact();
+    let mut rows = Column::new().spacing(2).push(desktop_layout(header_row(
+        &["New file", "Audio", "Subtitles", ""],
+        &widths,
+    )));
     for (i, item) in plan.iter().enumerate() {
         let name = item
             .output
@@ -442,32 +443,41 @@ fn episode_table<'a>(rp: &'a RemuxPage, plan: &[PlannedFile]) -> Element<'a, Mes
                 None => space().into(),
             },
         };
+        let audio = item
+            .audio
+            .as_ref()
+            .map_or("—".to_owned(), |t| t.short_label());
+        let subtitles = item
+            .subtitles
+            .as_ref()
+            .map_or("None".to_owned(), |t| t.short_label());
+        // A phone's: the file, then its tracks, then how it went.
+        if small {
+            rows = rows.push(
+                container(
+                    column![
+                        text(name).size(13).color(TEXT),
+                        text(format!("Audio {audio} · subtitles {subtitles}"))
+                            .size(12)
+                            .color(MUTED),
+                        state,
+                    ]
+                    .spacing(4),
+                )
+                .padding([8, 12])
+                .width(Fill)
+                .style(|_| fill(SURFACE.scale_alpha(0.6))),
+            );
+            continue;
+        }
         let cells = row![
             container(with_tip(
                 text(name).size(13).color(TEXT).into(),
                 format!("From {}", item.input.display())
             ))
             .width(widths[0]),
-            container(
-                text(
-                    item.audio
-                        .as_ref()
-                        .map_or("—".to_owned(), |t| t.short_label())
-                )
-                .size(12)
-                .color(MUTED)
-            )
-            .width(widths[1]),
-            container(
-                text(
-                    item.subtitles
-                        .as_ref()
-                        .map_or("None".to_owned(), |t| t.short_label())
-                )
-                .size(12)
-                .color(MUTED)
-            )
-            .width(widths[2]),
+            container(text(audio).size(12).color(MUTED)).width(widths[1]),
+            container(text(subtitles).size(12).color(MUTED)).width(widths[2]),
             container(state).width(widths[3]),
         ]
         .spacing(12)

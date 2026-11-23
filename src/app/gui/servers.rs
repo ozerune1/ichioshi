@@ -100,7 +100,7 @@ impl Gui {
                     ))
                     .size(13)
                     .color(TEXT),
-                    weak(crate::servers::base(&j.url)),
+                    desktop_layout(weak(crate::servers::base(&j.url))),
                     space::horizontal(),
                     small("Sign out", Some(servers(ServersAction::SignOut))),
                 ]
@@ -112,21 +112,24 @@ impl Gui {
         }
         let mut c = column![
             head,
-            row![
+            line(vec![
                 field("Address, like http://nas:8096", &j.url)
                     .id("jellyfin-url")
                     .on_input(|v| edit(move |g| g.app.servers.config.jellyfin.url = v.clone()))
-                    .width(Fill),
+                    .width(Fill)
+                    .into(),
                 field("Username", &j.username)
                     .id("jellyfin-user")
                     .on_input(|v| edit(move |g| g.app.servers.config.jellyfin.username = v.clone()))
-                    .width(200),
+                    .width(w(200.0))
+                    .into(),
                 field("Password", &s.password)
                     .id("jellyfin-password")
                     .secure(true)
                     .on_input(|v| edit(move |g| g.app.servers.password = v.clone()))
                     .on_submit(servers(ServersAction::SignIn))
-                    .width(200),
+                    .width(w(200.0))
+                    .into(),
                 primary(
                     if s.signing_in {
                         "Signing in…"
@@ -135,9 +138,7 @@ impl Gui {
                     },
                     (!s.signing_in).then(|| servers(ServersAction::SignIn)),
                 ),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
+            ]),
             weak("The password isn't kept: Jellyfin gives the app a sign-in of its own."),
         ]
         .spacing(10);
@@ -165,17 +166,19 @@ impl Gui {
                 weak(what)
             ]
             .spacing(2),
-            row![
+            line(vec![
                 field(&format!("Address, like http://nas:{port}"), &account.url)
                     .id(id("url"))
                     .on_input(move |v| edit(move |g| account_mut(g, kind).url = v.clone()))
-                    .width(Fill),
+                    .width(Fill)
+                    .into(),
                 field("API key (its Settings → General)", &account.api_key)
                     .id(id("key"))
                     .secure(true)
                     .on_input(move |v| edit(move |g| account_mut(g, kind).api_key = v.clone()))
                     .on_submit(servers(ServersAction::Check(kind)))
-                    .width(300),
+                    .width(w(300.0))
+                    .into(),
                 secondary(
                     if matches!(about, Some(Loaded::Loading)) {
                         "Checking…"
@@ -185,9 +188,7 @@ impl Gui {
                     (!matches!(about, Some(Loaded::Loading)))
                         .then(|| servers(ServersAction::Check(kind))),
                 ),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
+            ]),
         ]
         .spacing(10);
         match about {
@@ -203,25 +204,44 @@ impl Gui {
                     .iter()
                     .find(|f| Some(&f.path) == account.root_folder.as_ref())
                     .cloned();
-                c = c.push(
+                let version = row![
+                    dot(GREEN),
+                    text(format!("{} {}", kind.name(), about.version))
+                        .size(13)
+                        .color(TEXT),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center);
+                let profile = dropdown(about.profiles.clone(), profile, move |p: Profile| {
+                    edit(move |g| set_profile(g, kind, p.id))
+                });
+                let folder = dropdown(about.folders.clone(), folder, move |f: RootFolder| {
+                    edit(move |g| set_folder(g, kind, f.path.clone()))
+                });
+                c = c.push(if compact() {
+                    Element::from(
+                        column![
+                            version,
+                            weak("Anime are added with"),
+                            profile,
+                            weak("into"),
+                            folder,
+                        ]
+                        .spacing(6),
+                    )
+                } else {
                     row![
-                        dot(GREEN),
-                        text(format!("{} {}", kind.name(), about.version))
-                            .size(13)
-                            .color(TEXT),
+                        version,
                         space::horizontal(),
                         weak("Anime are added with"),
-                        dropdown(about.profiles.clone(), profile, move |p: Profile| {
-                            edit(move |g| set_profile(g, kind, p.id))
-                        }),
+                        profile,
                         weak("into"),
-                        dropdown(about.folders.clone(), folder, move |f: RootFolder| {
-                            edit(move |g| set_folder(g, kind, f.path.clone()))
-                        }),
+                        folder,
                     ]
                     .spacing(10)
-                    .align_y(Alignment::Center),
-                );
+                    .align_y(Alignment::Center)
+                    .into()
+                });
             }
             _ if account.is_set() => {
                 let chosen = account.quality_profile.is_some() && account.root_folder.is_some();

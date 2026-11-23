@@ -132,47 +132,6 @@ impl Gui {
         ]
     }
 
-    /// A phone's: the places as tabs along the bottom.
-    pub(super) fn tab_bar(&self) -> Element<'_, Message> {
-        let tabs = self
-            .places()
-            .into_iter()
-            .map(|(icon, name, badge, active, to)| {
-                let color = if active { ACCENT } else { MUTED };
-                let mut top = row![text(icon).size(17).color(color)]
-                    .spacing(3)
-                    .align_y(Alignment::Center);
-                if let Some(b) = badge.filter(|_| name != "Library") {
-                    top = top.push(text(b).size(9).font(SEMI).color(TEXT));
-                }
-                button(
-                    column![
-                        top,
-                        text(name)
-                            .size(9)
-                            .font(if active { SEMI } else { MEDIUM })
-                            .color(if active { TEXT } else { MUTED }),
-                    ]
-                    .spacing(2)
-                    .align_x(Alignment::Center),
-                )
-                .width(Fill)
-                .padding([8, 0])
-                .on_press(to)
-                .style(|_, _| button::Style {
-                    background: None,
-                    text_color: TEXT,
-                    ..button::Style::default()
-                })
-                .into()
-            });
-        container(Row::with_children(tabs).align_y(Alignment::Center))
-            .width(Fill)
-            .padding([2, 4])
-            .style(|_| fill(SIDEBAR))
-            .into()
-    }
-
     pub(super) fn sidebar(&self) -> Element<'_, Message> {
         let nav = |icon: &'static str,
                    label: &'static str,
@@ -231,6 +190,35 @@ impl Gui {
         .spacing(10)
         .align_y(Alignment::Center);
 
+        let (accounts, status) = self.status_box();
+
+        let content =
+            column![
+                logo,
+                space().height(22),
+                label("Browse"),
+                space().height(4),
+                Column::with_children(self.places().into_iter().map(
+                    |(icon, name, badge, active, to)| nav(icon, name, badge, active, to).into()
+                ))
+                .spacing(2),
+                space::vertical(),
+                accounts,
+                space().height(14),
+                status,
+            ]
+            .spacing(2)
+            .padding([20, 16]);
+        container(content)
+            .width(236)
+            .height(Fill)
+            .style(|_| fill(SIDEBAR))
+            .into()
+    }
+
+    /// The lists you're signed in to, and how downloading is (the torrent
+    /// engine, the VPN, a Drive upload, the library's size).
+    pub(super) fn status_box(&self) -> (Element<'_, Message>, Element<'_, Message>) {
         let mut accounts = Column::new().spacing(6);
         let names = signed_in_as(&self.app.tracking.config);
         if !names.is_empty() {
@@ -298,29 +286,7 @@ impl Gui {
             .padding(12)
             .width(Fill)
             .style(|_| card_style(SURFACE));
-
-        let content =
-            column![
-                logo,
-                space().height(22),
-                label("Browse"),
-                space().height(4),
-                Column::with_children(self.places().into_iter().map(
-                    |(icon, name, badge, active, to)| nav(icon, name, badge, active, to).into()
-                ))
-                .spacing(2),
-                space::vertical(),
-                accounts,
-                space().height(14),
-                status,
-            ]
-            .spacing(2)
-            .padding([20, 16]);
-        container(content)
-            .width(236)
-            .height(Fill)
-            .style(|_| fill(SIDEBAR))
-            .into()
+        (accounts.into(), status.into())
     }
 
     /// How downloading is: the torrent engine, the VPN, a debrid service.
@@ -485,9 +451,9 @@ impl Gui {
             .filter(|s| search.is_empty() || s.title().to_lowercase().contains(&search))
             .map(|s| self.cover_card(s));
         let grid = Row::with_children(cards)
-            .spacing(24)
+            .spacing(if compact() { POSTER_GAP } else { 24.0 })
             .wrap()
-            .vertical_spacing(28);
+            .vertical_spacing(if compact() { 18 } else { 28 });
 
         let mut body = column![header, gap(24.0)];
         if shelved > 0 {
@@ -501,7 +467,7 @@ impl Gui {
             body = body.push(gap(26.0));
         }
         if a.tracking.any() {
-            body = body.push(chips).push(gap(18.0));
+            body = body.push(chips.wrap().vertical_spacing(8)).push(gap(18.0));
         }
         page(body.push(grid))
     }
@@ -509,8 +475,8 @@ impl Gui {
     /// A poster: list status, how much is watched, downloading; with the
     /// status and score to change under it.
     fn cover_card<'a>(&'a self, s: &'a Series) -> Element<'a, Message> {
-        const W: f32 = 176.0;
-        const H: f32 = 250.0;
+        let (w, h) = poster_size((176.0, 250.0));
+        let small = compact();
         let a = &self.app;
         let id = s.anilist_id;
         let details = s.details.as_ref();
@@ -530,7 +496,7 @@ impl Gui {
             _ => 0.0,
         };
 
-        let mut over = column![].padding(10).width(W).height(H);
+        let mut over = column![].padding(10).width(w).height(h);
         if let Some(e) = entry {
             let color = status_color(e.status);
             over = over.push(
@@ -575,16 +541,16 @@ impl Gui {
                 }),
             )
             .padding(iced::Padding {
-                top: H - 10.0,
+                top: h - 10.0,
                 right: 12.0,
                 bottom: 6.0,
                 left: 12.0,
             })
-            .width(W);
+            .width(w);
         let poster: Element<'_, Message> = if watched > 0.0 {
-            stack![picture(cover, W, H, 12.0), over, watched_bar].into()
+            stack![picture(cover, w, h, 12.0), over, watched_bar].into()
         } else {
-            stack![picture(cover, W, H, 12.0), over].into()
+            stack![picture(cover, w, h, 12.0), over].into()
         };
         let meta = match (have, total) {
             (0, _) => "No episodes yet".to_owned(),
@@ -606,20 +572,22 @@ impl Gui {
             mouse_area(column![
                 poster,
                 space().height(10),
-                text(clip(s.title(), 34))
-                    .size(14)
+                text(clip(s.title(), if small { 28 } else { 34 }))
+                    .size(if small { 13 } else { 14 })
                     .font(SEMI)
                     .color(TEXT)
-                    .height(38),
-                text(meta).size(12).color(MUTED),
+                    .height(if small { 34 } else { 38 }),
+                text(meta).size(if small { 11 } else { 12 }).color(MUTED),
                 state,
             ])
             .on_press(act(Action::OpenSeries(id)))
             .interaction(iced::mouse::Interaction::Pointer),
         ]
-        .width(W)
+        .width(w)
         .spacing(6);
-        if a.tracking.any() {
+        // (A phone's are on the series' page: three posters to a row
+        // leave no room for them.)
+        if a.tracking.any() && !small {
             card = card.push(self.list_pickers(id, true));
         }
         card.into()
@@ -682,16 +650,23 @@ impl Gui {
     fn continue_card<'a>(&'a self, s: &'a Series, next: u32) -> Element<'a, Message> {
         let id = s.anilist_id;
         let details = s.details.as_ref();
+        // A phone's: as wide as the screen allows.
+        let cw = if compact() {
+            (window_width() - 2.0 * side() - 24.0).min(360.0)
+        } else {
+            360.0
+        };
+        let ch = (cw * 170.0 / 360.0).round();
         let art = self.images.get(
             details
                 .and_then(|d| d.banner.as_deref())
                 .or(s.cover.as_deref())
                 .or(details.and_then(|d| d.cover.as_deref())),
         );
-        let picture = picture(art, 360.0, 170.0, 14.0);
+        let picture = picture(art, cw, ch, 14.0);
         let shade = container(space())
-            .width(360)
-            .height(170)
+            .width(cw)
+            .height(ch)
             .style(|_| container::Style {
                 background: Some(Background::Gradient(
                     gradient::Linear::new(std::f32::consts::PI)
@@ -728,8 +703,8 @@ impl Gui {
         ]
         .spacing(2)
         .padding(16)
-        .width(360)
-        .height(170);
+        .width(cw)
+        .height(ch);
         if progress > 0.0 {
             caption = caption
                 .push(space().height(6))
@@ -773,7 +748,7 @@ impl Gui {
 }
 
 /// "AniList · jake", "MyAnimeList · jake": the lists signed in to.
-fn signed_in_as(tracking: &crate::tracking::Config) -> Vec<String> {
+pub(super) fn signed_in_as(tracking: &crate::tracking::Config) -> Vec<String> {
     let mut accounts = Vec::new();
     if let Some(u) = &tracking.anilist.user {
         accounts.push(format!("AniList · {}", u.name));

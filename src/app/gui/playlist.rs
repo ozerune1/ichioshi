@@ -77,33 +77,39 @@ impl Gui {
                 None => text("File missing").size(12).color(RED).into(),
             };
             let enabled = !exporting;
-            list = list.push(
-                container(
-                    row![
-                        with_tip(
-                            text(shown).size(14).color(TEXT).into(),
-                            item.path.display().to_string()
-                        ),
-                        space::horizontal(),
-                        size,
-                        small(
-                            "↑",
-                            (enabled && i > 0)
-                                .then(|| act(Action::PlaylistMove { from: i, to: i - 1 }))
-                        ),
-                        small(
-                            "↓",
-                            (enabled && i + 1 < items.len())
-                                .then(|| act(Action::PlaylistMove { from: i, to: i + 1 }))
-                        ),
-                        small("Remove", enabled.then(|| act(Action::PlaylistRemove(i)))),
-                    ]
+            let name = with_tip(
+                text(shown).size(14).color(TEXT).into(),
+                item.path.display().to_string(),
+            );
+            let tools = row![
+                size,
+                small(
+                    "↑",
+                    (enabled && i > 0).then(|| act(Action::PlaylistMove { from: i, to: i - 1 }))
+                ),
+                small(
+                    "↓",
+                    (enabled && i + 1 < items.len())
+                        .then(|| act(Action::PlaylistMove { from: i, to: i + 1 }))
+                ),
+                small("Remove", enabled.then(|| act(Action::PlaylistRemove(i)))),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center);
+            // A phone's: the episode, then its size and buttons.
+            let entry: Element<'_, Message> = if compact() {
+                column![name, tools].spacing(6).into()
+            } else {
+                row![name, space::horizontal(), tools]
                     .spacing(10)
-                    .align_y(Alignment::Center),
-                )
-                .padding([8, 14])
-                .width(Fill)
-                .style(|_| card_style(SURFACE)),
+                    .align_y(Alignment::Center)
+                    .into()
+            };
+            list = list.push(
+                container(entry)
+                    .padding([8, 14])
+                    .width(Fill)
+                    .style(|_| card_style(SURFACE)),
             );
         }
         c = c.push(list);
@@ -112,22 +118,21 @@ impl Gui {
         if !items.is_empty() {
             let name = playlist::export_name(&Local::now());
             let mut export = column![
-                row![
-                    text("Export to").size(14).color(MUTED).width(80),
+                labelled(
+                    "Export to",
                     field("Folder", &pp.out_dir)
                         .on_input(|t| edit(move |g| {
                             if let Page::Playlist(pp) = &mut g.app.page {
                                 pp.out_dir = t.clone();
                             }
                         }))
-                        .width(Fill),
-                    desktop_only(secondary(
+                        .width(Fill)
+                        .into(),
+                    Some(desktop_only(secondary(
                         "Browse…",
                         (!exporting).then(|| act(Action::PlaylistPickFolder))
-                    )),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
+                    ))),
+                ),
                 weak(format!(
                     "Creates “{name}.zip” ({}) with a “{name}” folder inside; the time is taken \
                      when you export.",
@@ -137,7 +142,7 @@ impl Gui {
             .spacing(10);
             let run: Element<'_, Message> = match &pp.export {
                 Some(run) if run.running() => row![
-                    bar(run.progress, ACCENT, 8.0).length(300),
+                    bar(run.progress, ACCENT, 8.0).length(if compact() { 150 } else { 300 }),
                     text(format!("{:.0}%", run.progress * 100.0))
                         .size(13)
                         .font(SEMI)
@@ -189,7 +194,7 @@ impl Gui {
                         }
                         _ => {}
                     }
-                    r.into()
+                    r.wrap().vertical_spacing(8).into()
                 }
             };
             export = export.push(run);
@@ -266,29 +271,39 @@ impl Gui {
                         })),
                     )
                 };
-                files = files.push(
-                    row![
-                        text(name.into_owned()).size(13).color(TEXT).width(Fill),
-                        text(fmt_bytes(*len)).size(12).color(FAINT),
-                        add,
-                        small("Delete…", Some(act(Action::AskDeleteRemux(path.clone())))),
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
-                );
+                let name = text(name.into_owned()).size(13).color(TEXT).width(Fill);
+                let tools = row![
+                    text(fmt_bytes(*len)).size(12).color(FAINT),
+                    add,
+                    small("Delete…", Some(act(Action::AskDeleteRemux(path.clone())))),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center);
+                // A phone's: the file, then its size and buttons.
+                files = files.push(if compact() {
+                    Element::from(column![name, tools].spacing(4))
+                } else {
+                    row![name, tools]
+                        .spacing(10)
+                        .align_y(Alignment::Center)
+                        .into()
+                });
             }
             c = c.push(
                 container(
                     column![
                         row![
-                            text(&r.name).size(14).font(SEMI).color(TEXT),
-                            weak(format!(
-                                "{} episode{} · {}",
-                                r.files.len(),
-                                if r.files.len() == 1 { "" } else { "s" },
-                                fmt_bytes(r.bytes)
-                            )),
-                            space::horizontal(),
+                            column![
+                                text(&r.name).size(14).font(SEMI).color(TEXT),
+                                weak(format!(
+                                    "{} episode{} · {}",
+                                    r.files.len(),
+                                    if r.files.len() == 1 { "" } else { "s" },
+                                    fmt_bytes(r.bytes)
+                                )),
+                            ]
+                            .spacing(2)
+                            .width(Fill),
                             desktop_only(small(
                                 "Open folder",
                                 Some(act(Action::OpenFolder(r.dir.clone())))

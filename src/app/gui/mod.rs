@@ -18,6 +18,7 @@ mod flows;
 mod images;
 mod library;
 mod manage;
+mod phone;
 #[cfg(not(target_os = "android"))]
 mod player;
 #[cfg(target_os = "android")]
@@ -205,6 +206,10 @@ pub(super) struct Gui {
     /// How much of the window's bottom the system covers (Android's
     /// gesture bar, the keyboard): kept clear.
     bottom_clear: f32,
+    /// A phone's: the settings' group open (a page of its own), and the
+    /// calendar's day.
+    settings_section: Option<phone::Section>,
+    cal_day: Option<chrono::NaiveDate>,
     /// The library page's search and filter.
     lib_search: String,
     filter: Filter,
@@ -242,6 +247,8 @@ impl Gui {
             window: iced::Size::new(1440.0, 900.0),
             scale: 1.0,
             bottom_clear: 0.0,
+            settings_section: None,
+            cal_day: None,
             lib_search: String::new(),
             filter: Filter::All,
             release_open: None,
@@ -284,7 +291,7 @@ impl Gui {
             Message::Key(key, modifiers) => self.key(key, modifiers),
             Message::Resized(size) => {
                 self.window = size;
-                style::set_compact(size.width < style::COMPACT_BELOW);
+                style::set_width(size.width);
                 self.size_player();
                 Task::none()
             }
@@ -798,6 +805,10 @@ impl Gui {
         if modifiers.control() || modifiers.alt() {
             return Task::none();
         }
+        // Android's back button (and back gesture).
+        if key == Key::Named(Named::BrowserBack) && self.player.is_none() {
+            return self.go_back();
+        }
         if self.player.is_none() || self.app.discussion.is_some() {
             if key == Key::Named(Named::Escape) {
                 self.app.close_dialogs();
@@ -871,17 +882,10 @@ impl Gui {
             Page::Discover => self.discover_page(),
             Page::Calendar => self.calendar_page(),
         };
-        let page = container(page).width(Fill).height(Fill).style(|_| fill(BG));
         let body: Element<'_, Message> = if style::compact() {
-            iced::widget::column![
-                page,
-                self.tab_bar(),
-                container(iced::widget::space().height(self.bottom_clear))
-                    .width(Fill)
-                    .style(|_| fill(SIDEBAR)),
-            ]
-            .into()
+            self.phone_frame(page)
         } else {
+            let page = container(page).width(Fill).height(Fill).style(|_| fill(BG));
             row![self.sidebar(), page].into()
         };
         let page = self.dialogs(body);
@@ -911,6 +915,24 @@ impl Gui {
             },
             ..button::Style::default()
         });
+        // A phone's: under the bar on top, clear of the tabs and of the
+        // buttons at a sheet's foot.
+        if style::compact() {
+            return stack![
+                page,
+                container(toast.width(Fill))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_y(Alignment::Start)
+                    .padding(iced::Padding {
+                        top: 60.0,
+                        right: 12.0,
+                        bottom: 0.0,
+                        left: 12.0,
+                    })
+            ]
+            .into();
+        }
         stack![
             page,
             container(container(toast).max_width(560))

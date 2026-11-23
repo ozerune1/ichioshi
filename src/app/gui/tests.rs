@@ -76,6 +76,9 @@ thread_local! {
     static SIZE: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((1440.0, 900.0)) };
 }
 
+/// A phone's window (a Pixel 7's width; tall, for whole pages).
+const PHONE: (f32, f32) = (412.0, 1500.0);
+
 pub(super) fn set_size(w: f32, h: f32) {
     SIZE.with(|s| s.set((w, h)));
 }
@@ -208,6 +211,23 @@ pub(super) fn snapshot(gui: &Gui, path: &Path) {
 /// A screenshot after `tries` draws, a tenth of a second apart (large
 /// images take a while to decode, and have no size until then).
 pub(super) fn snapshot_after(gui: &Gui, path: &Path, tries: usize) {
+    // PHONE_SHOTS=1: the same, as a phone shows it, beside it ("-phone").
+    if std::env::var_os("PHONE_SHOTS").is_some() {
+        let size = SIZE.with(std::cell::Cell::get);
+        set_size(PHONE.0, PHONE.1);
+        super::style::set_width(PHONE.0);
+        let mut ui = simulator(gui);
+        for _ in 0..tries {
+            let _ = ui.snapshot(&Theme::Dark).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let mut name = path.file_name().unwrap_or_default().to_owned();
+        name.push("-phone");
+        let shot = ui.snapshot(&Theme::Dark).unwrap();
+        let _ = shot.matches_image(path.with_file_name(name));
+        set_size(size.0, size.1);
+        super::style::set_width(size.0);
+    }
     let mut ui = simulator(gui);
     for _ in 0..tries {
         let _ = ui.snapshot(&Theme::Dark).unwrap();
@@ -617,4 +637,56 @@ fn player_screens() {
         "frames don't count as activity"
     );
     snapshot(&h, &out.join("4-playing"));
+}
+
+/// A phone's settings: More, each group, the library on servers, and the
+/// sheets (screenshots in `$LIVE_TEST_DIR/phone-settings`).
+#[test]
+#[ignore = "screenshots"]
+fn phone_settings() {
+    use super::phone::Section;
+    let _net = crate::mock_http::mocked();
+    let base = tempfile::tempdir().unwrap();
+    let out = screens_dir(base.path(), "phone-settings");
+    let mut h = harness(base.path(), &base.path().join("state"));
+    set_size(PHONE.0, PHONE.1);
+    super::style::set_width(PHONE.0);
+    h.app.page = Page::Settings;
+    snapshot(&h, &out.join("0-more"));
+    for (i, s) in [
+        Section::Library,
+        Section::Languages,
+        Section::Downloading,
+        Section::Usenet,
+        Section::Vpn,
+        Section::Lists,
+        Section::Drive,
+        Section::Player,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        h.settings_section = Some(s);
+        snapshot(&h, &out.join(format!("{}-{}", i + 1, s.name())));
+    }
+    // The library on servers: Jellyfin to sign in to, Sonarr set up.
+    h.app.servers.config.mode = crate::servers::LibraryMode::Servers;
+    h.app.servers.config.sonarr.url = "http://nas:8989".into();
+    h.app.servers.config.sonarr.api_key = "key".into();
+    h.settings_section = Some(Section::Library);
+    snapshot(&h, &out.join("9-servers"));
+    h.app.servers.config.mode = crate::servers::LibraryMode::Local;
+    // The sheets.
+    send(&mut h, [act(Action::OpenLanguages)]);
+    snapshot(&h, &out.join("10-languages-sheet"));
+    send(
+        &mut h,
+        [
+            edit(|g| g.app.pages.languages = None),
+            act(Action::UsenetOpenProviders),
+        ],
+    );
+    snapshot(&h, &out.join("11-usenet-sheet"));
+    set_size(1440.0, 900.0);
+    super::style::set_width(1440.0);
 }

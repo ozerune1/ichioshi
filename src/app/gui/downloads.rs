@@ -130,7 +130,16 @@ impl Gui {
             + self.app.engine().map_or(0, |e| e.torrents().len());
         if own > 0 {
             page_c = page_c
-                .push(text("On this computer").size(17).font(SEMI).color(TEXT))
+                .push(
+                    text(if DESKTOP {
+                        "On this computer"
+                    } else {
+                        "On this phone"
+                    })
+                    .size(17)
+                    .font(SEMI)
+                    .color(TEXT),
+                )
                 .push(gap(12.0))
                 .push(self.own_downloads(false));
         }
@@ -182,14 +191,23 @@ impl Gui {
                 p => format!("{client} ({p})"),
             });
         }
+        let head = row![
+            badge(kind.name(), color),
+            text(clip(&title, 90)).size(15).font(SEMI).color(TEXT),
+            desktop_layout(text(which.clone()).size(13).color(MUTED)),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        // A phone's: the episode on a line of its own.
+        let head: Element<'_, Message> = if compact() {
+            column![head, text(which).size(13).color(MUTED)]
+                .spacing(4)
+                .into()
+        } else {
+            head.into()
+        };
         let mut info = column![
-            row![
-                badge(kind.name(), color),
-                text(clip(&title, 90)).size(15).font(SEMI).color(TEXT),
-                text(which).size(13).color(MUTED),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
+            head,
             bar(q.fraction(), color, 8.0),
             text(detail.join(" · ")).size(12).color(MUTED),
             text(clip(&q.title, 140)).size(12).color(FAINT),

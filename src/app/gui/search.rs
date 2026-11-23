@@ -119,13 +119,18 @@ impl Gui {
 
     pub(super) fn files_page<'a>(&'a self, fp: &'a FilesPage) -> Element<'a, Message> {
         let a = &self.app;
+        let small_screen = compact();
+        let side = side();
+        // (A phone's bar on top has the way back and the page's name.)
         let mut head = column![
-            row![
-                link("← Back", Some(act(Action::Back))),
-                text("Choose episodes").size(26).font(BOLD).color(TEXT),
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center),
+            desktop_layout(
+                row![
+                    link("← Back", Some(act(Action::Back))),
+                    text("Choose episodes").size(26).font(BOLD).color(TEXT),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center)
+            ),
             text(fp.title().to_owned()).size(15).font(SEMI).color(TEXT),
         ]
         .spacing(6);
@@ -203,14 +208,19 @@ impl Gui {
                 "Select video files and deselect everything else".into(),
             ));
         }
-        tools = tools.push(space().width(12)).push(
-            field("Filter, e.g. S01E0 or NCOP", &fp.filter)
-                .id("filter")
-                .on_input(|f| on_files(move |fp| fp.filter = f.clone()))
-                .width(260)
-                .padding([7, 12])
-                .size(13),
-        );
+        let filter = field("Filter, e.g. S01E0 or NCOP", &fp.filter)
+            .id("filter")
+            .on_input(|f| on_files(move |fp| fp.filter = f.clone()))
+            .width(w(260.0))
+            .padding([7, 12])
+            .size(13);
+        // A phone's filter has a line of its own (under the buttons).
+        let mut filter_line = None;
+        if small_screen {
+            filter_line = Some(filter);
+        } else {
+            tools = tools.push(space().width(12)).push(filter);
+        }
         if !fp.filter.trim().is_empty() {
             let shown = visible.clone();
             let hide = visible.clone();
@@ -256,6 +266,42 @@ impl Gui {
         for &i in &visible {
             let r = &fp.rows[i];
             let on = fp.checked[i];
+            // A phone's: the name, and under it its size and the rest.
+            if small_screen {
+                let mut meta = row![text(fmt_bytes(r.len)).size(12).color(MUTED)]
+                    .spacing(10)
+                    .align_y(Alignment::Center);
+                if seeders && let Some(n) = r.seeders {
+                    meta = meta.push(text(format!("{n} seeders")).size(12).color(MUTED));
+                }
+                if let Some(hashes) = &usenet_hashes {
+                    meta = meta.push(self.nzb_cell(&hashes[i]));
+                }
+                rows = rows.push(
+                    container(
+                        column![
+                            check(r.label.clone(), on, move |v| on_files(move |fp| {
+                                fp.checked[i] = v
+                            })),
+                            container(meta).padding(iced::Padding {
+                                left: 26.0,
+                                ..iced::Padding::ZERO
+                            }),
+                        ]
+                        .spacing(4),
+                    )
+                    .padding([8, 10])
+                    .width(Fill)
+                    .style(move |_| {
+                        fill(if on {
+                            ACCENT.scale_alpha(0.08)
+                        } else {
+                            SURFACE.scale_alpha(0.6)
+                        })
+                    }),
+                );
+                continue;
+            }
             let mut cells = row![
                 container(check(r.label.clone(), on, move |v| on_files(move |fp| {
                     fp.checked[i] = v
@@ -324,52 +370,78 @@ impl Gui {
             None => "↓  Download".to_owned(),
         };
         let folder = fp.output_folder(&a.library_dir()).display().to_string();
-        let mut footer = row![
-            column![
-                text(format!(
-                    "{count} of {} {} · {}",
-                    fp.rows.len(),
-                    fp.unit(),
-                    fmt_bytes(size)
-                ))
-                .size(14)
-                .font(SEMI)
-                .color(TEXT),
-                row![
-                    weak(format!("Saves to {folder}")),
-                    desktop_only(link(
-                        "Change…",
-                        (!existing).then(|| act(Action::PickFolder))
-                    )),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center),
+        let summary = column![
+            text(format!(
+                "{count} of {} {} · {}",
+                fp.rows.len(),
+                fp.unit(),
+                fmt_bytes(size)
+            ))
+            .size(14)
+            .font(SEMI)
+            .color(TEXT),
+            row![
+                weak(format!("Saves to {folder}")),
+                desktop_only(link(
+                    "Change…",
+                    (!existing).then(|| act(Action::PickFolder))
+                )),
             ]
-            .spacing(2)
-            .width(Fill),
+            .spacing(6)
+            .align_y(Alignment::Center),
         ]
-        .spacing(12)
-        .align_y(Alignment::Center);
-        if !ready && let Err(why) = a.download_ready() {
-            footer = footer.push(weak(why));
-        }
-        footer = footer.push(primary(
+        .spacing(2)
+        .width(Fill);
+        let why = if ready {
+            None
+        } else {
+            a.download_ready().err()
+        };
+        let go = primary(
             if a.starting_download {
                 "Starting…".to_owned()
             } else {
                 label
             },
             (count > 0 && ready && !a.starting_download).then(|| act(Action::StartDownload)),
-        ));
+        );
+        // A phone's: one under another.
+        let footer: Element<'_, Message> = if small_screen {
+            let mut c = column![summary].spacing(10);
+            if let Some(why) = why {
+                c = c.push(weak(why));
+            }
+            c.push(go).into()
+        } else {
+            let mut r = row![summary].spacing(12).align_y(Alignment::Center);
+            if let Some(why) = why {
+                r = r.push(weak(why));
+            }
+            r.push(go).into()
+        };
+        let mut top = column![head, gap(12.0), tools.wrap().vertical_spacing(6)];
+        if let Some(f) = filter_line {
+            top = top.push(gap(8.0)).push(f);
+        }
+        let list: Element<'_, Message> = if small_screen {
+            rows.into()
+        } else {
+            column![header_row(&headers, &widths), rows]
+                .spacing(4)
+                .into()
+        };
+        let pad = if small_screen {
+            [14.0, side]
+        } else {
+            [24.0, side]
+        };
         column![
-            container(column![head, gap(12.0), tools].spacing(0)).padding([24, 36]),
-            iced::widget::scrollable(
-                container(column![header_row(&headers, &widths), rows].spacing(4)).padding([0, 36])
-            )
-            .height(Fill)
-            .style(scroll_style),
+            container(top).padding(pad),
+            iced::widget::scrollable(container(list).padding([0.0, side]))
+                .height(Fill)
+                .style(scroll_style),
             container(footer)
-                .padding([16, 36])
+                .padding([if small_screen { 12.0 } else { 16.0 }, side])
                 .width(Fill)
                 .style(|_| container::Style {
                     background: Some(fill_color(SIDEBAR)),

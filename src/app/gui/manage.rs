@@ -259,7 +259,9 @@ impl Gui {
                 weak(facts.join(" · ")),
             ]
             .spacing(16)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Center)
+            .wrap()
+            .vertical_spacing(6),
             text(record["path"].as_str().unwrap_or_default().to_owned())
                 .size(12)
                 .color(FAINT),
@@ -320,10 +322,17 @@ impl Gui {
             .push(small(
                 "Edit…",
                 (m.edit.is_none()).then(|| manage(ManageAction::StartEdit)),
-            ))
-            .push(space::horizontal())
-            .push(danger("Delete…", Some(manage(ManageAction::AskDelete))));
-        c = c.push(buttons);
+            ));
+        // (Wrapped: a phone's are a few to a line.)
+        if !compact() {
+            buttons = buttons.push(space::horizontal());
+        }
+        buttons = buttons.push(danger("Delete…", Some(manage(ManageAction::AskDelete))));
+        c = c.push(if compact() {
+            Element::from(buttons.wrap().vertical_spacing(8))
+        } else {
+            buttons.into()
+        });
         if let Some(e) = &m.edit {
             c = c.push(self.manage_edit(m, e));
         }

@@ -50,6 +50,24 @@ impl std::io::Write for Logcat {
     }
 }
 
+/// Send the app to the background, as back does on Android's home screens.
+pub fn to_background() {
+    use jni::objects::{JObject, JValue};
+    let ctx = ndk_context::android_context();
+    // SAFETY: the VM and activity android-activity set up for this app.
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return;
+    };
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let _ = env.call_method(&activity, "moveTaskToBack", "(Z)Z", &[JValue::Bool(1)]);
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+}
+
 /// Logs (and panics) go to logcat.
 pub fn start_logging() {
     let _ = tracing_subscriber::fmt()
@@ -128,7 +146,10 @@ fn media_link(path: &std::path::Path) -> Option<String> {
         }
         let mut id = None;
         if env.call_method(&cursor, "moveToFirst", "()Z", &[])?.z()? {
-            id = Some(env.call_method(&cursor, "getLong", "(I)J", &[JValue::Int(0)])?.j()?);
+            id = Some(
+                env.call_method(&cursor, "getLong", "(I)J", &[JValue::Int(0)])?
+                    .j()?,
+            );
         }
         env.call_method(&cursor, "close", "()V", &[])?;
         let Some(id) = id else { return Ok(None) };

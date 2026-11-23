@@ -2,7 +2,7 @@
 //! anime on your lists except dropped ones, or everything.
 
 use chrono::{Days, Local};
-use iced::widget::{Column, Row, column, container, mouse_area, row, text};
+use iced::widget::{Column, Row, column, container, mouse_area, row, space, text};
 use iced::{Alignment, Color, Element, Fill, Length};
 
 use super::discover::when;
@@ -67,6 +67,9 @@ impl Gui {
         ]
         .spacing(16);
 
+        if compact() {
+            return self.calendar_phone(range, whose);
+        }
         let body: Element<'_, Message> = match c.weeks.get(&week).map(|(l, _)| l) {
             None | Some(Loaded::Loading) => weak("Reading AniList's schedule…").into(),
             Some(Loaded::Failed(e)) => column![
@@ -114,6 +117,166 @@ impl Gui {
             }
         };
         page(column![head, gap(20.0), body])
+    }
+
+    /// A phone's calendar: the week's days in a strip, one day's episodes
+    /// under it.
+    fn calendar_phone(&self, range: String, whose: &str) -> Element<'_, Message> {
+        let c = &self.app.calendar;
+        let today = Local::now().date_naive();
+        let week = c.week;
+        let last = week + Days::new(6);
+        let day = self.cal_day.filter(|d| *d >= week && *d <= last).unwrap_or(
+            if today >= week && today <= last {
+                today
+            } else {
+                week
+            },
+        );
+        let weeks = row![
+            small(
+                "‹",
+                Some(edit(|g| {
+                    g.app.calendar.week = g.app.calendar.week - Days::new(7);
+                    g.cal_day = None;
+                }))
+            ),
+            text(range)
+                .size(14)
+                .font(SEMI)
+                .color(TEXT)
+                .width(Fill)
+                .center(),
+            small(
+                "›",
+                Some(edit(|g| {
+                    g.app.calendar.week = g.app.calendar.week + Days::new(7);
+                    g.cal_day = None;
+                }))
+            ),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        let mut options = row![check("Everything airing", c.full, |on| edit(move |g| g
+            .app
+            .calendar
+            .full =
+            on))]
+        .spacing(12)
+        .align_y(Alignment::Center);
+        if week != monday_of(today) {
+            options = options.push(space::horizontal()).push(link(
+                "This week",
+                Some(edit(|g| {
+                    g.app.calendar.week = monday_of(Local::now().date_naive());
+                    g.cal_day = None;
+                })),
+            ));
+        }
+        let shown: Vec<&Airing> = match c.weeks.get(&week).map(|(l, _)| l) {
+            Some(Loaded::Ready(airing)) => airing
+                .iter()
+                .filter(|a| c.full || self.app.on_your_lists(&a.media))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let on = |d: chrono::NaiveDate| {
+            let (from, to) = (midnight(d), midnight(d + Days::new(1)));
+            shown
+                .iter()
+                .copied()
+                .filter(move |a| a.at >= from && a.at < to)
+        };
+        let strip = Row::with_children((0..7).map(|i| {
+            let d = week + Days::new(i);
+            let picked = d == day;
+            let busy = on(d).next().is_some();
+            let color = if d == today { ACCENT } else { TEXT };
+            iced::widget::button(
+                column![
+                    text(d.format("%a").to_string()).size(11).color(MUTED),
+                    text(d.format("%-d").to_string())
+                        .size(16)
+                        .font(SEMI)
+                        .color(color),
+                    container(space().width(5).height(5)).style(move |_| {
+                        if busy {
+                            pill(ACCENT)
+                        } else {
+                            container::Style::default()
+                        }
+                    }),
+                ]
+                .spacing(3)
+                .align_x(Alignment::Center),
+            )
+            .width(Fill)
+            .padding([8, 0])
+            .on_press(edit(move |g| g.cal_day = Some(d)))
+            .style(move |_, _| iced::widget::button::Style {
+                background: picked.then(|| fill_color(ACCENT.scale_alpha(0.18))),
+                text_color: TEXT,
+                border: iced::Border {
+                    color: if picked {
+                        ACCENT.scale_alpha(0.5)
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                    width: 1.0,
+                    radius: 10.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+        }))
+        .spacing(4);
+        let body: Element<'_, Message> = match c.weeks.get(&week).map(|(l, _)| l) {
+            None | Some(Loaded::Loading) => weak("Reading AniList's schedule…").into(),
+            Some(Loaded::Failed(e)) => column![
+                error_text(format!("Couldn't read the schedule: {e}")),
+                secondary(
+                    "Try again",
+                    Some(edit(move |g| {
+                        g.app.calendar.weeks.remove(&week);
+                    }))
+                ),
+            ]
+            .spacing(10)
+            .into(),
+            Some(Loaded::Ready(_)) => {
+                let now = chrono::Utc::now().timestamp();
+                let list: Vec<Element<'_, Message>> =
+                    on(day).map(|a| self.airing_card(a, a.at < now)).collect();
+                if list.is_empty() {
+                    weak(if c.full {
+                        "Nothing airs that day."
+                    } else {
+                        "Nothing of yours airs that day."
+                    })
+                    .into()
+                } else {
+                    Column::with_children(list).spacing(8).into()
+                }
+            }
+        };
+        page(column![
+            self.discover_switch(true),
+            gap(14.0),
+            weeks,
+            gap(10.0),
+            strip,
+            gap(10.0),
+            options,
+            gap(4.0),
+            text(format!("Showing {whose}")).size(11).color(FAINT),
+            gap(14.0),
+            text(day.format("%A %-d %B").to_string())
+                .size(16)
+                .font(SEMI)
+                .color(TEXT),
+            gap(8.0),
+            body,
+        ])
     }
 
     fn day_column<'a>(

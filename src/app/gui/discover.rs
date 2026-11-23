@@ -117,12 +117,31 @@ impl Gui {
             }
             Some(Loaded::Ready(list)) => {
                 Row::with_children(list.iter().map(|m| self.media_card(m, Origin::Discover)))
-                    .spacing(24)
+                    .spacing(if compact() { POSTER_GAP } else { 24.0 })
                     .wrap()
-                    .vertical_spacing(28)
+                    .vertical_spacing(if compact() { 18 } else { 28 })
                     .into()
             }
         };
+        // A phone's: Browse or Calendar on top, the shelves a strip to
+        // scroll sideways.
+        if compact() {
+            return page(column![
+                self.discover_switch(false),
+                gap(14.0),
+                iced::widget::scrollable(shelves).direction(
+                    iced::widget::scrollable::Direction::Horizontal(
+                        iced::widget::scrollable::Scrollbar::new()
+                            .width(0)
+                            .scroller_width(0)
+                    )
+                ),
+                gap(10.0),
+                filters,
+                gap(16.0),
+                body,
+            ]);
+        }
         page(column![
             page_title(
                 "Discover",
@@ -140,9 +159,14 @@ impl Gui {
     /// A poster: AniList's score, format, genres, what's airing; whether
     /// it's on your lists or in the library.
     pub(super) fn media_card<'a>(&'a self, m: &'a Media, origin: Origin) -> Element<'a, Message> {
-        const W: f32 = 176.0;
-        const H: f32 = 250.0;
-        let mut badges = Column::new().spacing(6).padding(10).width(W).height(H);
+        let (w, h) = poster_size((176.0, 250.0));
+        let small = compact();
+        let note = if small { 11 } else { 12 };
+        let mut badges = Column::new()
+            .spacing(6)
+            .padding(if small { 6 } else { 10 })
+            .width(w)
+            .height(h);
         if let Some(status) = self.list_status(m) {
             let color = status_color(status);
             badges = badges.push(
@@ -166,7 +190,7 @@ impl Gui {
             );
         }
         let poster = stack![
-            picture(self.images.get(m.cover.as_deref()), W, H, 12.0),
+            picture(self.images.get(m.cover.as_deref()), w, h, 12.0),
             badges
         ];
         let mut facts = Vec::new();
@@ -181,23 +205,24 @@ impl Gui {
         }
         let mut c = column![
             poster,
-            space().height(10),
-            text(clip(m.title(), 34))
-                .size(14)
+            space().height(if small { 6 } else { 10 }),
+            text(clip(m.title(), if small { 28 } else { 34 }))
+                .size(if small { 13 } else { 14 })
                 .font(SEMI)
                 .color(TEXT)
-                .height(38),
-            text(facts.join(" · ")).size(12).color(MUTED),
+                .height(if small { 34 } else { 38 }),
+            text(facts.join(" · ")).size(note).color(MUTED),
         ]
-        .width(W)
+        .width(w)
         .spacing(2);
         if let Some((ep, at)) = m.next_airing {
             c = c.push(
-                text(format!(
-                    "Episode {ep} airs {}",
-                    when(at, "%a %-d %b, %H:%M")
-                ))
-                .size(12)
+                text(if small {
+                    format!("Ep {ep} · {}", when(at, "%a %-d %b"))
+                } else {
+                    format!("Episode {ep} airs {}", when(at, "%a %-d %b, %H:%M"))
+                })
+                .size(note)
                 .color(ACCENT),
             );
         } else if !m.genres.is_empty() {
@@ -210,7 +235,7 @@ impl Gui {
                         .collect::<Vec<_>>()
                         .join(" · "),
                 )
-                .size(12)
+                .size(note)
                 .color(FAINT),
             );
         }

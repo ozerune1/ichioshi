@@ -36,6 +36,14 @@ fn on_providers(f: impl Fn(&mut Vec<Provider>) + Send + Sync + 'static) -> Messa
 }
 
 fn buttons<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    // A phone's sheet: as many to a line as fit.
+    if compact() {
+        return Row::with_children(items)
+            .spacing(10)
+            .wrap()
+            .vertical_spacing(8)
+            .into();
+    }
     let mut r = Row::new().spacing(10).push(space::horizontal());
     for i in items {
         r = r.push(i);
