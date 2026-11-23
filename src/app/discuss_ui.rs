@@ -37,6 +37,10 @@ pub(super) struct Discussion {
     /// Posts whose spoilers are shown (by site and post).
     pub(super) shown: HashSet<(Site, u64)>,
     seq: u64,
+    /// A comment being written (on AniList), and the post it answers.
+    pub(super) draft: String,
+    pub(super) reply_to: Option<(u64, String)>,
+    pub(super) posting: bool,
 }
 
 impl App {
@@ -142,6 +146,9 @@ impl App {
             more: HashSet::new(),
             shown: HashSet::new(),
             seq,
+            draft: String::new(),
+            reply_to: None,
+            posting: false,
         });
         let client = self.http.clone();
         self.spawn(async move {
@@ -204,6 +211,63 @@ impl App {
                 result,
             }
         });
+    }
+
+    /// Post the comment being written to the AniList thread (as a reply to
+    /// a post, if one's chosen); then read the thread again.
+    pub(super) fn discussion_post(&mut self) {
+        let Some(session) = self.tracking.anilist.clone() else {
+            self.set_error("Sign in to AniList in Settings to comment");
+            return;
+        };
+        let Some(d) = &mut self.discussion else {
+            return;
+        };
+        let text = d.draft.trim().to_owned();
+        if text.is_empty() || d.posting {
+            return;
+        }
+        let Some(Loaded::Ready(Some(thread))) = d.threads.get(&Site::AniList) else {
+            return;
+        };
+        let Some(thread_id) = thread
+            .url
+            .rsplit(['/', '='])
+            .find_map(|part| part.parse::<u64>().ok())
+        else {
+            return;
+        };
+        let parent = d.reply_to.as_ref().map(|(id, _)| *id);
+        d.posting = true;
+        let seq = d.seq;
+        self.spawn(async move {
+            let result = session
+                .comment(thread_id, parent, &text)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            Msg::DiscussionPosted { seq, result }
+        });
+    }
+
+    pub(super) fn handle_discussion_posted(&mut self, seq: u64, result: Result<u64, String>) {
+        let Some(d) = &mut self.discussion else {
+            return;
+        };
+        if d.seq != seq {
+            return;
+        }
+        d.posting = false;
+        match result {
+            Ok(_) => {
+                d.draft.clear();
+                d.reply_to = None;
+                let (id, episode) = (d.anilist_id, d.episode);
+                self.set_info("Posted to AniList");
+                // Read it again, to show it.
+                self.open_discussion(id, episode);
+            }
+            Err(e) => self.set_error(format!("Couldn't post it: {e}")),
+        }
     }
 
     /// The next page of the thread showing.

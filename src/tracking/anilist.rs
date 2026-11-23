@@ -187,6 +187,22 @@ impl Session {
         graphql(&self.http, &self.api, Some(&self.token), query, variables).await
     }
 
+    /// Comment on a forum thread (replying to a comment, if `parent`): the
+    /// new comment's ID.
+    pub async fn comment(&self, thread: u64, parent: Option<u64>, text: &str) -> Result<u64> {
+        let v: Value = self
+            .graphql(
+                "mutation ($thread: Int, $parent: Int, $comment: String) { \
+                 SaveThreadComment(threadId: $thread, parentCommentId: $parent, \
+                 comment: $comment) { id } }",
+                json!({ "thread": thread, "parent": parent, "comment": text }),
+            )
+            .await?;
+        v["SaveThreadComment"]["id"]
+            .as_u64()
+            .context("AniList didn't say it saved it")
+    }
+
     pub async fn viewer(&self) -> Result<User> {
         #[derive(Deserialize)]
         struct Data {

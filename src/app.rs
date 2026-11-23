@@ -314,6 +314,11 @@ enum Msg {
         seq: u64,
         result: Result<(), String>,
     },
+    /// A comment posted to AniList (its ID).
+    DiscussionPosted {
+        seq: u64,
+        result: Result<u64, String>,
+    },
     Info(String),
     Error(String),
 }
@@ -411,6 +416,8 @@ enum Action {
         episode: u32,
     },
     DiscussionMore,
+    /// Post the comment being written (AniList).
+    DiscussionPost,
     OpenSeries(u64),
     AddToLibrary,
     RemoveSeries {
@@ -1196,6 +1203,7 @@ impl App {
                     more,
                     result,
                 } => self.handle_discussion(seq, site, more, result),
+                Msg::DiscussionPosted { seq, result } => self.handle_discussion_posted(seq, result),
             }
         }
     }
@@ -1380,6 +1388,7 @@ impl App {
             Action::OpenMedia(media, origin) => self.open_media(*media, origin),
             Action::OpenDiscussion { id, episode } => self.open_discussion(id, episode),
             Action::DiscussionMore => self.discussion_more(),
+            Action::DiscussionPost => self.discussion_post(),
             Action::OpenSeries(id) => self.open_series(id),
             Action::AddToLibrary if self.servers_mode() => {
                 self.servers_action(servers_ui::ServersAction::Add)

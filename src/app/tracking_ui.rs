@@ -25,7 +25,7 @@ pub(super) struct TrackingState {
     pub(super) config: Config,
     file: PathBuf,
     pub(super) endpoints: Endpoints,
-    anilist: Option<Arc<anilist::Session>>,
+    pub(super) anilist: Option<Arc<anilist::Session>>,
     mal: Option<Arc<mal::Session>>,
     /// The lists: AniList's by AniList ID, MyAnimeList's by its own.
     pub(super) lists: HashMap<Service, HashMap<u64, Entry>>,

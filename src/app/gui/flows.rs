@@ -3431,6 +3431,10 @@ fn discovers_schedules_and_discusses() {
                     "Page": {"pageInfo": {"hasNextPage": page == 1}, "threadComments": comments}}}),
             );
         }
+        if q.contains("SaveThreadComment") {
+            assert_eq!(req.headers["authorization"], "Bearer tok", "your AniList sign-in");
+            return reply(200, json!({"data": {"SaveThreadComment": {"id": 999}}}));
+        }
         if q.contains("Media(id") {
             return reply(
                 200,
@@ -3445,6 +3449,7 @@ fn discovers_schedules_and_discusses() {
     *crate::seadex::SEADEX_BASE.lock().unwrap() = Some(format!("{server}/seadex"));
     *crate::seadex::KITSU_BASE.lock().unwrap() = Some(format!("{server}/kitsu"));
     *crate::discuss::MAL_BASE.lock().unwrap() = Some(server.clone());
+    let server_for_session = server.clone();
     let _reset = Reset;
 
     let mut h = app_harness(base);
@@ -3526,6 +3531,32 @@ fn discovers_schedules_and_discusses() {
     assert!(shows(&h, "the twist"));
     click(&mut h, "Load more");
     wait_for(&mut h, "Late to this.");
+    // Commenting on AniList, signed in: a reply to a post.
+    h.app.tracking.anilist = Some(Arc::new(crate::tracking::anilist::Session::new(
+        h.app.http.clone(),
+        server_for_session.clone(),
+        "tok".into(),
+        1,
+    )));
+    click_nth(&mut h, "Reply", 0);
+    assert!(shows(&h, "Replying to fan"));
+    type_into(&mut h, "discussion-draft", "Same here!", false);
+    save(&h, &out, "5b-reply");
+    click(&mut h, "Post");
+    wait_until(&mut h, "posted", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Posted to AniList")
+    });
+    assert!(
+        asked
+            .lock()
+            .unwrap()
+            .contains(&json!({"thread": 500, "parent": 11, "comment": "Same here!"}))
+    );
+    wait_for(&mut h, "Great");
+    assert!(!shows(&h, "Replying to fan"), "done with");
     // ...and MyAnimeList's topic.
     click_with(&mut h, "MyAnimeList tab", || {
         containing("MyAnimeList · 791".into())

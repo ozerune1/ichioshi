@@ -89,6 +89,63 @@ impl Gui {
         dialog(base, column![head, gap(16.0), body].into(), 980.0, close)
     }
 
+    /// Writing a comment on AniList (or a reply to a post), with your
+    /// AniList sign-in.
+    fn composer<'a>(&'a self, d: &'a Discussion) -> Element<'a, Message> {
+        if self.app.tracking.anilist.is_none() {
+            return weak("Sign in to AniList in Settings to comment here.").into();
+        }
+        let mut c = Column::new().spacing(8);
+        if let Some((_, who)) = &d.reply_to {
+            c = c.push(
+                row![
+                    text(format!("Replying to {who}"))
+                        .size(12)
+                        .font(SEMI)
+                        .color(ACCENT),
+                    link(
+                        "Cancel",
+                        Some(edit(|g| {
+                            if let Some(d) = &mut g.app.discussion {
+                                d.reply_to = None;
+                            }
+                        }))
+                    ),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            );
+        }
+        let can = !d.draft.trim().is_empty() && !d.posting;
+        c = c.push(
+            row![
+                field(
+                    if d.reply_to.is_some() {
+                        "Your reply (Markdown works; ~!spoilers!~ hide spoilers)"
+                    } else {
+                        "Add a comment (Markdown works; ~!spoilers!~ hide spoilers)"
+                    },
+                    &d.draft
+                )
+                .id("discussion-draft")
+                .on_input(|v| edit(move |g| {
+                    if let Some(d) = &mut g.app.discussion {
+                        d.draft = v.clone();
+                    }
+                }))
+                .on_submit(act(Action::DiscussionPost))
+                .width(Fill),
+                primary(
+                    if d.posting { "Posting…" } else { "Post" },
+                    can.then(|| act(Action::DiscussionPost))
+                ),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        );
+        c.into()
+    }
+
     fn thread<'a>(&'a self, d: &'a Discussion, t: &'a Thread) -> Element<'a, Message> {
         let mut c = Column::new().spacing(12).push(
             row![
@@ -105,8 +162,11 @@ impl Gui {
             .spacing(12)
             .align_y(Alignment::Center),
         );
+        if t.site == Site::AniList {
+            c = c.push(self.composer(d));
+        }
         for p in &t.posts {
-            c = c.push(post(&self.images, d, t.site, p, 0));
+            c = c.push(post(&self.images, d, t, p, 0));
         }
         if t.next.is_some() {
             c = c.push(secondary(
@@ -127,10 +187,18 @@ impl Gui {
 fn post<'a>(
     images: &'a super::images::Images,
     d: &'a Discussion,
-    site: Site,
+    t: &'a Thread,
     p: &'a Post,
     depth: u16,
 ) -> Element<'a, Message> {
+    let site = t.site;
+    // The thread's own post (its ID is the thread's) is commented on with
+    // the box above; comments can be answered.
+    let opening = t
+        .url
+        .rsplit(['/', '='])
+        .find_map(|part| part.parse::<u64>().ok())
+        == Some(p.id);
     let shown = d.shown.contains(&(site, p.id));
     let mut meta = row![
         text(p.author.clone()).size(13).font(SEMI).color(TEXT),
@@ -140,6 +208,18 @@ fn post<'a>(
     .align_y(Alignment::Center);
     if let Some(likes) = p.likes.filter(|n| *n > 0) {
         meta = meta.push(text(format!("♥ {likes}")).size(12).color(MUTED));
+    }
+    // AniList's comments can be answered here.
+    if site == Site::AniList && !opening {
+        let (pid, who) = (p.id, p.author.clone());
+        meta = meta.push(space::horizontal()).push(small(
+            "Reply",
+            Some(edit(move |g| {
+                if let Some(d) = &mut g.app.discussion {
+                    d.reply_to = Some((pid, who.clone()));
+                }
+            })),
+        ));
     }
     let mut c = column![meta].spacing(8);
     let id = p.id;
@@ -222,7 +302,7 @@ fn post<'a>(
     for r in &p.replies {
         all = all.push(row![
             space().width(indent),
-            post(images, d, site, r, depth + 1)
+            post(images, d, t, r, depth + 1)
         ]);
     }
     all.into()
