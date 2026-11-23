@@ -54,7 +54,7 @@ impl Track {
     pub fn label(&self) -> String {
         let mut parts = Vec::new();
         match self.lang.as_deref() {
-            // mpv gives "es" as often as "spa".
+            // Players give "es" as often as "spa".
             Some(code) if !code.is_empty() && code != "und" => parts.push(
                 crate::remux::language_name(&crate::remux::normalize_language(code)),
             ),

@@ -4,7 +4,7 @@
 //! Background work reports to the app through its channel and wakes the
 //! GUI with a `Waker`; after every message, the app's regular duties run
 //! (moving finished downloads into the library, setting default tracks,
-//! reading lists), as egui ran them every frame.
+//! reading lists).
 
 #[cfg(test)]
 mod demo;
@@ -214,7 +214,7 @@ impl Gui {
         Task::batch([task, self.images.fetch(&self.app.http)])
     }
 
-    /// What egui did every frame: take in background results, and keep the
+    /// After every message: take in background results, and keep the
     /// library, downloads and lists going.
     fn duties(&mut self) {
         let a = &mut self.app;

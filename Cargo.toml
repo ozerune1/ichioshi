@@ -47,7 +47,6 @@ gstreamer-video = "0.23"
 
 [dev-dependencies]
 iced_test = "0.14"
-# A headless OpenGL context for testing the player's video output.
 rcgen = "0.14"
 tokio = { version = "1", features = ["test-util"] }
 tokio-rustls = "0.26"
