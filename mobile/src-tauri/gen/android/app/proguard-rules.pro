@@ -19,3 +19,7 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# The player: found by name (Tauri loads the plugin; libmpv calls back into
+# its class from native code).
+-keep class app.seadex.downloader.** { *; }
+-keep class dev.jdtech.mpv.** { *; }

@@ -176,6 +176,10 @@ fn state_dir(app: &tauri::App) -> Result<std::path::PathBuf, Box<dyn std::error:
         }
     }
     let dir = app.path().app_data_dir()?;
+    // Android: in the app's files folder, where the earlier app (iced)
+    // kept its settings and library, so they carry over.
+    #[cfg(target_os = "android")]
+    let dir = dir.join("files");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

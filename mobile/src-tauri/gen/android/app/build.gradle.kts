@@ -80,6 +80,9 @@ android {
     packaging {
         // libmpv brings its own C++ runtime too.
         jniLibs.pickFirsts.add("**/libc++_shared.so")
+        // The native libraries compressed in the APK (half its size; the
+        // phone unpacks them when installing).
+        jniLibs.useLegacyPackaging = true
     }
 }
 

@@ -86,6 +86,11 @@ rcgen = "0.14"
 tokio = { version = "1", features = ["test-util"] }
 tokio-rustls = "0.26"
 
+# Release builds without their symbol tables (the phone app's library is
+# a third the size).
+[profile.release]
+strip = true
+
 # Optimize dependencies even in debug builds: librqbit hashes every piece it
 # downloads, and unoptimized SHA-1 would cap download speed.
 [profile.dev.package."*"]
