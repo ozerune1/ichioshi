@@ -18,6 +18,8 @@ pub struct Built {
     pub series: Vec<Series>,
     /// Episodes downloading, how far along (0–1), by AniList ID.
     pub progress: HashMap<u64, BTreeMap<u32, f32>>,
+    /// Sonarr's and Radarr's queues.
+    pub queue: Vec<(Kind, arr::Queued)>,
     /// What couldn't be read ("Radarr: couldn't reach …").
     pub problems: Vec<String>,
 }
@@ -127,6 +129,77 @@ pub async fn build(
         None => Vec::new(),
     };
 
+    // Which anime each season's episodes are: as the mapping places them;
+    // a season longer than the last anime placed in it goes on with that
+    // anime's sequel (one the mapping doesn't place yet), and so on.
+    let mut plans: Vec<Vec<(u64, u32, u32)>> = anime_shows
+        .iter()
+        .map(|s| mapping.seasons_of(s.tvdb_id).to_vec())
+        .collect();
+    let mut parts: HashMap<u64, crate::browse::Part> = HashMap::new();
+    for _ in 0..4 {
+        let mut open = Vec::new();
+        for (i, (plan, got)) in plans.iter().zip(&details).enumerate() {
+            let Ok((eps, _)) = got else { continue };
+            let seasons: std::collections::BTreeSet<u32> = plan.iter().map(|p| p.1).collect();
+            for season in seasons {
+                let Some(last) = plan.iter().filter(|p| p.1 == season).max_by_key(|p| p.2) else {
+                    continue;
+                };
+                let top = eps
+                    .iter()
+                    .filter(|e| e.season_number == season)
+                    .map(|e| e.episode_number)
+                    .max()
+                    .unwrap_or(0);
+                if top > last.2 {
+                    open.push((i, *last, top));
+                }
+            }
+        }
+        let wanted: Vec<u64> = open
+            .iter()
+            .map(|(_, (id, _, _), _)| *id)
+            .filter(|id| !parts.contains_key(id))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !wanted.is_empty() {
+            match crate::browse::parts(client, &wanted).await {
+                Ok(p) => parts.extend(p),
+                Err(e) => {
+                    built.problems.push(format!("AniList: {e:#}"));
+                    break;
+                }
+            }
+        }
+        let placed = |id: u64| mapping.place(id).is_some_and(|p| p.tvdb.is_some());
+        let mut grew = false;
+        for (i, (anilist, season, offset), top) in open {
+            let Some(part) = parts.get(&anilist) else {
+                continue;
+            };
+            let Some(count) = part.episodes.filter(|n| *n > 0) else {
+                continue;
+            };
+            let end = offset + count;
+            let next = part
+                .sequels
+                .iter()
+                .copied()
+                .find(|s| !placed(*s) && !plans[i].iter().any(|p| p.0 == *s));
+            if top > end
+                && let Some(next) = next
+            {
+                plans[i].push((next, season, end));
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+
     // Jellyfin's series (by TVDB ID, or by folder name) and their episodes.
     let folder_of = |path: &str| file_name(path.trim_end_matches(['/', '\\'])).to_owned();
     let jelly_show = |show: &arr::Show| -> Option<&jellyfin::Item> {
@@ -162,7 +235,7 @@ pub async fn build(
     };
 
     let mut problem = |what: &str, e: anyhow::Error| built.problems.push(format!("{what}: {e:#}"));
-    for (show, got) in anime_shows.iter().zip(details) {
+    for ((show, got), seasons) in anime_shows.iter().zip(details).zip(&plans) {
         let (episodes, files) = match got {
             Ok(x) => x,
             Err(e) => {
@@ -173,7 +246,6 @@ pub async fn build(
         let files: HashMap<u64, &arr::File> = files.iter().map(|f| (f.id, f)).collect();
         let jitem = jelly_show(show);
         let jeps = jitem.and_then(|i| jelly_eps.get(&i.id));
-        let seasons = mapping.seasons_of(show.tvdb_id);
         for &(anilist, season, offset) in seasons {
             // Up to where the next part of the same season starts.
             let until = seasons
@@ -225,17 +297,6 @@ pub async fn build(
                     .seasons
                     .iter()
                     .any(|s| s.season_number == season && s.monitored);
-            let mut progress = BTreeMap::new();
-            for q in sonarr_queue.iter().filter(|q| q.owner == show.id) {
-                if let Some((n, _)) = eps.iter().find(|(_, e)| e.arr_id == q.episode)
-                    && q.size > 0.0
-                {
-                    progress.insert(*n, ((q.size - q.left) / q.size).clamp(0.0, 1.0) as f32);
-                }
-            }
-            if !progress.is_empty() {
-                built.progress.insert(anilist, progress);
-            }
             built.series.push(remote_series(
                 anilist,
                 show.title.clone(),
@@ -276,16 +337,6 @@ pub async fn build(
         let mut watched = BTreeMap::new();
         if let Some(w) = jitem.and_then(|i| i.watched) {
             add_watch(&mut watched, 1, w);
-        }
-        let mut progress = BTreeMap::new();
-        for q in radarr_queue
-            .iter()
-            .filter(|q| q.owner == m.id && q.size > 0.0)
-        {
-            progress.insert(1, ((q.size - q.left) / q.size).clamp(0.0, 1.0) as f32);
-        }
-        if !progress.is_empty() {
-            built.progress.insert(*anilist, progress);
         }
         built.series.push(remote_series(
             *anilist,
@@ -344,7 +395,51 @@ pub async fn build(
             Err(e) => built.problems.push(format!("AniList: {e:#}")),
         }
     }
+    built.queue = sonarr_queue
+        .into_iter()
+        .map(|q| (Kind::Sonarr, q))
+        .chain(radarr_queue.into_iter().map(|q| (Kind::Radarr, q)))
+        .collect();
+    built.progress = progress(&built.series, &built.queue);
     built
+}
+
+/// Which anime and episode (AniList's numbering) a queue item is, if it's
+/// one in the library.
+pub fn queued_episode<'a>(
+    series: &'a [Series],
+    kind: Kind,
+    q: &arr::Queued,
+) -> Option<(&'a Series, u32)> {
+    series.iter().find_map(|s| {
+        let r = s.remote.as_ref()?;
+        match (r.arr, kind) {
+            (ArrRef::Sonarr { id, .. }, Kind::Sonarr) if id == q.owner => {
+                let n = r
+                    .episodes
+                    .iter()
+                    .find(|(_, e)| e.arr_id.is_some() && e.arr_id == q.episode)?
+                    .0;
+                Some((s, *n))
+            }
+            (ArrRef::Radarr { id, .. }, Kind::Radarr) if id == q.owner => Some((s, 1)),
+            _ => None,
+        }
+    })
+}
+
+/// How far along each episode in the queues is, by AniList ID.
+pub fn progress(
+    series: &[Series],
+    queue: &[(Kind, arr::Queued)],
+) -> HashMap<u64, BTreeMap<u32, f32>> {
+    let mut out: HashMap<u64, BTreeMap<u32, f32>> = HashMap::new();
+    for (kind, q) in queue.iter().filter(|(_, q)| q.size > 0.0) {
+        if let Some((s, n)) = queued_episode(series, *kind, q) {
+            out.entry(s.anilist_id).or_default().insert(n, q.fraction());
+        }
+    }
+    out
 }
 
 fn add_watch(watched: &mut BTreeMap<u32, Watch>, n: u32, w: jellyfin::Watched) {
@@ -415,6 +510,14 @@ pub fn merge(old: &[Series], mut new: Vec<Series>, have_jellyfin: bool) -> Vec<S
         s.details = o.details.clone();
         s.prefs = o.prefs.clone();
         for (n, w) in &o.watched {
+            // Episodes it no longer has (they turned out to be another
+            // anime's: a sequel's, say) take their marks with them.
+            if s.remote
+                .as_ref()
+                .is_some_and(|r| !r.episodes.contains_key(n))
+            {
+                continue;
+            }
             let jellyfin_knows = have_jellyfin
                 && s.remote
                     .as_ref()
@@ -453,8 +556,18 @@ mod tests {
                  "seasons": [{"seasonNumber": 1, "monitored": true}, {"seasonNumber": 2, "monitored": false}]},
                 {"id": 2, "title": "Split", "tvdbId": 9000, "path": "/tv/Split", "monitored": true,
                  "seasons": [{"seasonNumber": 1, "monitored": true}]},
-                {"id": 3, "title": "Not Anime", "tvdbId": 1, "path": "/tv/Not Anime"}]),
+                {"id": 3, "title": "Not Anime", "tvdbId": 1, "path": "/tv/Not Anime"},
+                {"id": 4, "title": "JoJo's Bizarre Adventure", "tvdbId": 262954,
+                 "path": "/tv/JoJo", "monitored": true,
+                 "seasons": [{"seasonNumber": 6, "monitored": true}]}]),
             "/sonarr/api/v3/episode" => match q["seriesId"].as_str() {
+                // Season 6: Steel Ball Run, its 1st STAGE (one long episode)
+                // then 2nd & 3rd STAGE (11).
+                "4" => json!(
+                    (1..=12)
+                        .map(|n| ep(40 + u64::from(n), 6, n, 0))
+                        .collect::<Vec<_>>()
+                ),
                 "1" => json!([
                     ep(10, 1, 1, 100),
                     ep(11, 1, 2, 0),
@@ -496,6 +609,24 @@ mod tests {
             "/anilist" => {
                 let body: Value = serde_json::from_slice(&req.body).unwrap();
                 let ids = body["variables"]["ids"].as_array().unwrap().clone();
+                // Lengths and sequels (AniList's, for Steel Ball Run).
+                if body["query"].as_str().unwrap().contains("relations") {
+                    let part = |id: &Value| match id.as_u64() {
+                        Some(190327) => {
+                            json!({"id": 190327, "episodes": 1, "relations": {"edges": [
+                            {"relationType": "PREQUEL", "node": {"id": 146722, "type": "ANIME", "format": "ONA"}},
+                            {"relationType": "SEQUEL", "node": {"id": 210482, "type": "ANIME", "format": "ONA"}}]}})
+                        }
+                        Some(210482) => {
+                            json!({"id": 210482, "episodes": 11, "relations": {"edges": []}})
+                        }
+                        _ => json!({"id": id, "episodes": null, "relations": {"edges": []}}),
+                    };
+                    return reply(
+                        200,
+                        json!({"data": {"Page": {"media": ids.iter().map(part).collect::<Vec<_>>()}}}),
+                    );
+                }
                 json!({"data": {"Page": {"media": ids.iter().map(|id| json!({
                     "id": id, "title": {"romaji": format!("Anime {id}")},
                     "coverImage": {"large": format!("cover{id}")}, "format": "TV"})).collect::<Vec<_>>()}}})
@@ -513,7 +644,9 @@ mod tests {
             {"type": "TV", "anilist_id": 501, "tvdb_id": 9000, "season": {"tvdb": 1}},
             {"type": "TV", "anilist_id": 502, "tvdb_id": 9000, "season": {"tvdb": 1},
              "episode_offset": {"tvdb": 12}},
-            {"type": "MOVIE", "anilist_id": 112151, "themoviedb_id": {"movie": [635302]}}
+            {"type": "MOVIE", "anilist_id": 112151, "themoviedb_id": {"movie": [635302]}},
+            {"type": "ONA", "anilist_id": 190327, "tvdb_id": 262954, "season": {"tvdb": 6}},
+            {"type": "ONA", "anilist_id": 210482}
         ]"#,
         )
         .unwrap()
@@ -550,7 +683,35 @@ mod tests {
         *crate::seadex::ANILIST_BASE.lock().unwrap() = None;
         assert!(built.problems.is_empty(), "{:?}", built.problems);
         let ids: Vec<u64> = built.series.iter().map(|s| s.anilist_id).collect();
-        assert_eq!(ids, [161645, 176301, 501, 502, 112151], "not the non-anime");
+        assert_eq!(
+            ids,
+            [161645, 176301, 501, 502, 190327, 210482, 112151],
+            "not the non-anime"
+        );
+        // Steel Ball Run: 1st STAGE is season 6's first episode; the rest
+        // is its sequel, 2nd & 3rd STAGE, which the mapping doesn't place.
+        let stage = |id: u64| {
+            let s = built.series.iter().find(|s| s.anilist_id == id).unwrap();
+            let r = s.remote.as_ref().unwrap();
+            let eps: Vec<(u32, Option<u64>)> =
+                r.episodes.iter().map(|(n, e)| (*n, e.arr_id)).collect();
+            (r.arr, eps)
+        };
+        let (_, first) = stage(190327);
+        assert_eq!(first, [(1, Some(41))]);
+        let (arr, second) = stage(210482);
+        assert_eq!(
+            arr,
+            ArrRef::Sonarr {
+                id: 4,
+                tvdb: 262954,
+                season: 6,
+                offset: 1
+            }
+        );
+        assert_eq!(second.len(), 11);
+        assert_eq!(second[0], (1, Some(42)), "its episode 1 is S06E02");
+        assert_eq!(second[10], (11, Some(52)));
         let get = |id| built.series.iter().find(|s| s.anilist_id == id).unwrap();
         let s1 = get(161645);
         assert_eq!(s1.romaji.as_deref(), Some("Anime 161645"));
@@ -621,7 +782,20 @@ mod tests {
         fresh[0].romaji = None;
         fresh[0].cover = None;
         fresh[0].english = Some("Sonarr's title".into());
+        old[0].watched.insert(
+            9,
+            Watch {
+                position: 1.0,
+                duration: 2.0,
+                done: true,
+                at: 5,
+            },
+        );
         let merged = merge(&old, fresh, true);
+        assert!(
+            !merged[0].watched.contains_key(&9),
+            "not one of its episodes now"
+        );
         assert_eq!(merged[0].romaji.as_deref(), Some("Anime 161645"));
         assert!(merged[0].details.is_some());
         assert_eq!(

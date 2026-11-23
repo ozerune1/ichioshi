@@ -1458,7 +1458,20 @@ fn library_on_your_servers() {
             ("GET", "/sonarr/api/v3/episodefile") => json!([{"id": 100,
                 "relativePath": "Season 01/Frieren - S01E01.mkv", "size": video_bytes.len()}]),
             ("GET", "/sonarr/api/v3/queue") => json!({"records": [
-                {"seriesId": 1, "episodeId": 13, "size": 100.0, "sizeleft": 40.0}]}),
+                {"id": 5, "seriesId": 1, "episodeId": 13, "size": 100.0, "sizeleft": 40.0,
+                 "title": "[Group] Frieren - 03 (1080p)", "status": "downloading",
+                 "trackedDownloadStatus": "ok", "trackedDownloadState": "downloading",
+                 "timeleft": "00:02:10", "downloadClient": "qBittorrent", "protocol": "torrent",
+                 "quality": {"quality": {"name": "WEBDL-1080p"}},
+                 "episode": {"seasonNumber": 1, "episodeNumber": 3, "title": "Killing Magic"}},
+                {"id": 6, "seriesId": 99, "episodeId": 990, "size": 50.0, "sizeleft": 0.0,
+                 "title": "Other.Show.S01E01.1080p", "status": "completed",
+                 "trackedDownloadStatus": "warning", "trackedDownloadState": "importPending",
+                 "series": {"title": "Other Show"},
+                 "episode": {"seasonNumber": 1, "episodeNumber": 1},
+                 "statusMessages": [{"title": "Other.Show.S01E01.1080p.mkv",
+                    "messages": ["Not an upgrade for existing episode file(s)"]}]}]}),
+            ("DELETE", "/sonarr/api/v3/queue/5") => json!({}),
             ("GET", "/radarr/api/v3/movie") => json!([]),
             ("GET", "/radarr/api/v3/queue") => json!({"records": []}),
             ("PUT", "/sonarr/api/v3/episode/monitor") => json!([]),
@@ -1636,6 +1649,44 @@ fn library_on_your_servers() {
         pushed["downloadUrl"],
         format!("{server}/download/777.torrent")
     );
+
+    // Downloads: Sonarr's queue, and Radarr's (empty).
+    click(&mut h, "Downloads");
+    wait(&mut h, "the queue", |g| shows_containing(g, "Killing Magic"));
+    assert!(shows_containing(&h, "Episode 3"));
+    assert!(shows_containing(&h, "60% · Downloading · 3 min left"));
+    assert!(shows_containing(&h, "WEBDL-1080p · qBittorrent (torrent)"));
+    assert!(
+        shows(&h, "Other Show"),
+        "not in the library: as Sonarr calls it"
+    );
+    assert!(shows(&h, "Not an upgrade for existing episode file(s)"));
+    assert!(shows(&h, "Nothing in Radarr's queue."));
+    save(&h, &out, "3b-downloads");
+    click_nth(&mut h, "Remove…", 0);
+    assert!(shows(&h, "Remove from Sonarr's queue?"));
+    save(&h, &out, "3c-remove");
+    click(&mut h, "Remove and blocklist");
+    wait_until(&mut h, "removed", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text.contains("blocklisted"))
+    });
+    let removed: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.method == "DELETE")
+        .map(|r| r.target.clone())
+        .collect();
+    assert_eq!(
+        removed,
+        ["/sonarr/api/v3/queue/5?removeFromClient=true&blocklist=true"]
+    );
+    click(&mut h, "Library");
+    click(&mut h, "Frieren: Beyond Journey’s End");
+    wait_until(&mut h, "its page again", has_release);
 
     // Streaming episode 1 from Jellyfin (the simulator doesn't run tasks:
     // what Jellyfin says about the file is read here).

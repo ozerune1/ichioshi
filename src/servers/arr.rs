@@ -141,14 +141,46 @@ pub struct Movie {
     pub movie_file: Option<File>,
 }
 
-/// Something downloading: for which series' episode (Sonarr) or film
-/// (Radarr), and how far along.
-#[derive(Clone, Debug, PartialEq)]
+/// Something in the queue (what Sonarr's and Radarr's Queue tab shows):
+/// for which series' episode (Sonarr) or film (Radarr), and how far along.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Queued {
+    /// The queue item (to remove it by).
+    pub id: u64,
     pub owner: u64,
     pub episode: Option<u64>,
     pub size: f64,
     pub left: f64,
+    /// The release's name.
+    pub title: String,
+    /// downloading, queued, paused, completed, delay, warning, failed…
+    pub status: String,
+    /// downloading, importPending, importing, imported, failedPending,
+    /// failed…
+    pub state: String,
+    /// What's wrong, when something is (import problems, failures).
+    pub problem: Option<String>,
+    /// "00:12:34".
+    pub time_left: Option<String>,
+    pub client: Option<String>,
+    /// torrent or usenet.
+    pub protocol: String,
+    pub quality: Option<String>,
+    /// The series' or film's title there.
+    pub show: Option<String>,
+    pub season: Option<u32>,
+    pub number: Option<u32>,
+    pub episode_title: Option<String>,
+}
+
+impl Queued {
+    pub fn fraction(&self) -> f32 {
+        if self.size > 0.0 {
+            ((self.size - self.left) / self.size).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        }
+    }
 }
 
 /// What became of a release handed over.
@@ -255,24 +287,84 @@ impl Arr {
 
     /// What's downloading.
     pub async fn queue(&self) -> Result<Vec<Queued>> {
-        let v: Value = self.get("queue?page=1&pageSize=500").await?;
-        let owner_key = match self.kind {
-            Kind::Sonarr => "seriesId",
-            Kind::Radarr => "movieId",
+        let (owner_key, what) = match self.kind {
+            Kind::Sonarr => ("seriesId", "series"),
+            Kind::Radarr => ("movieId", "movie"),
         };
+        let v: Value = self
+            .get(
+                "queue?page=1&pageSize=500&includeSeries=true&includeEpisode=true\
+                 &includeMovie=true",
+            )
+            .await?;
+        let text = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
         Ok(v["records"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|r| {
+                // What's wrong: their own messages say it best ("Not an
+                // upgrade for existing episode file(s)", …).
+                let messages: Vec<String> = r["statusMessages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|m| {
+                        let list: Vec<String> = m["messages"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(text)
+                            .collect();
+                        if list.is_empty() {
+                            text(&m["title"]).into_iter().collect()
+                        } else {
+                            list
+                        }
+                    })
+                    .collect();
+                let ok = r["trackedDownloadStatus"]
+                    .as_str()
+                    .is_none_or(|s| s == "ok");
+                let problem = text(&r["errorMessage"])
+                    .or_else(|| (!ok && !messages.is_empty()).then(|| messages.join(" · ")));
                 Some(Queued {
+                    id: r["id"].as_u64().unwrap_or(0),
                     owner: r[owner_key].as_u64()?,
                     episode: r["episodeId"].as_u64(),
                     size: r["size"].as_f64().unwrap_or(0.0),
                     left: r["sizeleft"].as_f64().unwrap_or(0.0),
+                    title: r["title"].as_str().unwrap_or_default().to_owned(),
+                    status: r["status"].as_str().unwrap_or_default().to_lowercase(),
+                    state: r["trackedDownloadState"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    problem,
+                    time_left: text(&r["timeleft"]),
+                    client: text(&r["downloadClient"]),
+                    protocol: r["protocol"].as_str().unwrap_or_default().to_owned(),
+                    quality: text(&r["quality"]["quality"]["name"]),
+                    show: text(&r[what]["title"]),
+                    season: r["seasonNumber"]
+                        .as_u64()
+                        .or_else(|| r["episode"]["seasonNumber"].as_u64())
+                        .map(|n| n as u32),
+                    number: r["episode"]["episodeNumber"].as_u64().map(|n| n as u32),
+                    episode_title: text(&r["episode"]["title"]),
                 })
             })
             .collect())
+    }
+
+    /// Take something out of the queue (and the download client); with
+    /// `blocklist`, its release isn't grabbed again.
+    pub async fn remove_queued(&self, id: u64, blocklist: bool) -> Result<()> {
+        self.send(self.client.delete(self.url(&format!(
+            "queue/{id}?removeFromClient=true&blocklist={blocklist}"
+        ))))
+        .await
+        .map(drop)
     }
 
     /// Add a show (by TheTVDB ID) as anime, watching for `season` only.
@@ -455,11 +547,22 @@ mod tests {
                     "titleSlug": "frieren", "path": "/tv/anime/Frieren", "monitored": true,
                     "seasons": [{"seasonNumber": 1, "monitored": true}]}]),
                 ),
-                "/api/v3/queue?page=1&pageSize=500" => reply(
-                    200,
-                    json!({"records": [
-                    {"seriesId": 1, "episodeId": 11, "size": 100.0, "sizeleft": 25.0}]}),
-                ),
+                p if p.starts_with("/api/v3/queue?") => {
+                    assert!(p.contains("includeEpisode=true"), "{p}");
+                    reply(200, json!({"records": [
+                        {"id": 7, "seriesId": 1, "episodeId": 11, "size": 100.0, "sizeleft": 25.0,
+                         "title": "[SubsPlease] Frieren - 05 (1080p)", "status": "downloading",
+                         "trackedDownloadStatus": "ok", "trackedDownloadState": "downloading",
+                         "timeleft": "00:01:30", "downloadClient": "qBittorrent", "protocol": "torrent",
+                         "quality": {"quality": {"name": "WEBDL-1080p"}},
+                         "series": {"title": "Frieren"},
+                         "episode": {"seasonNumber": 1, "episodeNumber": 5, "title": "Phantoms of the Dead"}},
+                        {"id": 8, "seriesId": 1, "episodeId": 12, "size": 10.0, "sizeleft": 0.0,
+                         "title": "Frieren - 06", "status": "completed",
+                         "trackedDownloadStatus": "warning", "trackedDownloadState": "importPending",
+                         "statusMessages": [{"title": "Frieren - 06.mkv",
+                            "messages": ["Not an upgrade for existing episode file(s)"]}]}]}))
+                }
                 other => reply(404, json!({"message": format!("no {other}")})),
             }
         }));
@@ -474,6 +577,16 @@ mod tests {
         );
         let q = rt.block_on(sonarr.queue()).unwrap();
         assert_eq!((q[0].owner, q[0].episode, q[0].left), (1, Some(11), 25.0));
+        assert_eq!(q[0].fraction(), 0.75);
+        assert_eq!((q[0].id, q[0].quality.as_deref()), (7, Some("WEBDL-1080p")));
+        assert_eq!((q[0].season, q[0].number), (Some(1), Some(5)));
+        assert_eq!(q[0].episode_title.as_deref(), Some("Phantoms of the Dead"));
+        assert_eq!(q[0].problem, None);
+        assert_eq!(q[1].state, "importPending");
+        assert_eq!(
+            q[1].problem.as_deref(),
+            Some("Not an upgrade for existing episode file(s)")
+        );
         // Radarr's address given as Sonarr's.
         let radarr = Arr::new(Kind::Radarr, &account(&base), &reqwest::Client::new());
         let e = rt.block_on(radarr.about()).unwrap_err().to_string();

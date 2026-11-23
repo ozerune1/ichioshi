@@ -114,6 +114,36 @@ impl Gui {
         target: DeleteTarget,
         name: &str,
     ) -> Element<'a, Message> {
+        let cancel = edit(|g| g.app.confirm_delete = None);
+        // Sonarr's or Radarr's queue: removing it, maybe for good.
+        if let DeleteTarget::Queued(kind, id) = target {
+            use crate::app::servers_ui::ServersAction;
+            let n = kind.name();
+            let remove = |blocklist| {
+                act(Action::Servers(ServersAction::RemoveQueued {
+                    kind,
+                    id,
+                    blocklist,
+                }))
+            };
+            let content = column![
+                dialog_title(
+                    format!("Remove from {n}'s queue?"),
+                    Some(format!(
+                        "This stops downloading “{name}” and takes it out of {n}'s download \
+                         client, with what it's downloaded so far. Blocklisting the release \
+                         as well keeps {n} from grabbing it again (it looks for another)."
+                    ))
+                ),
+                gap(20.0),
+                buttons(vec![
+                    secondary("Cancel", Some(cancel.clone())),
+                    secondary("Remove and blocklist", Some(remove(true))),
+                    danger("Remove", Some(remove(false))),
+                ]),
+            ];
+            return dialog(base, content.into(), 520.0, cancel);
+        }
         let note = match target {
             DeleteTarget::Series(id) => {
                 let folder = self
@@ -163,8 +193,8 @@ impl Gui {
                 delete_files: true,
             },
             DeleteTarget::Remux(path) => Action::DeleteRemux(path),
+            DeleteTarget::Queued(..) => unreachable!("asked above"),
         };
-        let cancel = edit(|g| g.app.confirm_delete = None);
         let content = column![
             dialog_title(title.into(), Some(note)),
             gap(20.0),

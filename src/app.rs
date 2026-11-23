@@ -444,6 +444,8 @@ enum DeleteTarget {
     Series(u64),
     /// A remuxed copy, or a folder of them.
     Remux(PathBuf),
+    /// Something in Sonarr's or Radarr's queue.
+    Queued(crate::servers::arr::Kind, u64),
 }
 
 enum EngineState {
@@ -1847,7 +1849,13 @@ impl App {
             .iter()
             .filter(|v| v.live.active() || v.live.phase == crate::usenet::jobs::Phase::Queued)
             .count();
-        torrents + debrid + usenet
+        // On the servers: what's in Sonarr's and Radarr's queues too.
+        let queued = if self.servers_mode() {
+            self.servers.queue.len()
+        } else {
+            0
+        };
+        torrents + debrid + usenet + queued
     }
 }
 

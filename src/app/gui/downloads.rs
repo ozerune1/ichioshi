@@ -6,8 +6,10 @@ use iced::{Alignment, Color, Element, Fill};
 use librqbit::TorrentStatsState;
 
 use super::{Gui, Message, act, edit};
+use crate::app::servers_ui::ServersAction;
 use crate::app::{Action, EngineState, fmt_bytes, fmt_duration, fmt_speed};
 use crate::engine::TorrentHandle;
+use crate::servers::arr::{Kind, Queued};
 
 use super::style::*;
 
@@ -30,6 +32,179 @@ struct Card<'a> {
 
 impl Gui {
     pub(super) fn downloads_page(&self) -> Element<'_, Message> {
+        if self.app.servers_mode() {
+            return self.server_queues();
+        }
+        self.own_downloads(true)
+    }
+
+    /// The servers' queues (what Sonarr's and Radarr's Queue tabs show),
+    /// then whatever this computer is downloading itself.
+    fn server_queues(&self) -> Element<'_, Message> {
+        let s = &self.app.servers;
+        let c = &s.config;
+        let read = match s.queue_read {
+            Some(t) => format!("read {}", super::servers::ago(t)),
+            None => "reading…".into(),
+        };
+        let mut page_c = column![
+            page_title(
+                "Downloads",
+                format!("{} in your servers' queues · {read}", s.queue.len())
+            ),
+            gap(18.0)
+        ];
+        for kind in [Kind::Sonarr, Kind::Radarr] {
+            let set = match kind {
+                Kind::Sonarr => c.sonarr.is_set(),
+                Kind::Radarr => c.radarr.is_set(),
+            };
+            if !set {
+                continue;
+            }
+            let items: Vec<&Queued> = s
+                .queue
+                .iter()
+                .filter(|(k, _)| *k == kind)
+                .map(|(_, q)| q)
+                .collect();
+            let mut list = Column::new().spacing(10);
+            if items.is_empty() {
+                list = list.push(weak(format!("Nothing in {}'s queue.", kind.name())));
+            }
+            for q in items.iter().copied() {
+                list = list.push(self.queued_card(kind, q));
+            }
+            page_c = page_c.push(
+                column![
+                    row![
+                        text(kind.name()).size(17).font(SEMI).color(TEXT),
+                        weak(match items.len() {
+                            1 => "1 in its queue".to_owned(),
+                            n => format!("{n} in its queue"),
+                        }),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                    list
+                ]
+                .spacing(12),
+            );
+            page_c = page_c.push(gap(24.0));
+        }
+        if !c.any() {
+            page_c = page_c.push(weak(
+                "Set up Sonarr or Radarr in Settings to see their queues.",
+            ));
+        }
+        let own = self.app.debrid.manager.views().len()
+            + self.app.usenet.manager.views().len()
+            + self.app.engine().map_or(0, |e| e.torrents().len());
+        if own > 0 {
+            page_c = page_c
+                .push(text("On this computer").size(17).font(SEMI).color(TEXT))
+                .push(gap(12.0))
+                .push(self.own_downloads(false));
+        }
+        page(page_c)
+    }
+
+    /// Something in Sonarr's or Radarr's queue: the anime and episode, how
+    /// far along, and what's wrong if something is.
+    fn queued_card<'a>(&'a self, kind: Kind, q: &'a Queued) -> Element<'a, Message> {
+        let found = crate::servers::build::queued_episode(&self.app.library.series, kind, q);
+        let series = found.map(|(s, _)| s);
+        let cover = self.images.get(series.and_then(|s| {
+            s.cover
+                .as_deref()
+                .or(s.details.as_ref().and_then(|d| d.cover.as_deref()))
+        }));
+        let title = series
+            .map(|s| s.title().to_owned())
+            .or_else(|| q.show.clone())
+            .unwrap_or_else(|| q.title.clone());
+        let which = match (found, kind) {
+            (_, Kind::Radarr) => "Film".to_owned(),
+            (Some((_, n)), _) => format!("Episode {n}"),
+            (None, _) => match (q.season, q.number) {
+                (Some(s), Some(e)) => format!("S{s:02}E{e:02}"),
+                _ => "Episode".to_owned(),
+            },
+        };
+        let which = match &q.episode_title {
+            Some(t) if kind == Kind::Sonarr => format!("{which} · {t}"),
+            _ => which,
+        };
+        let (status, color) = queue_status(q);
+        let mut detail = vec![format!("{:.0}%", q.fraction() * 100.0), status.clone()];
+        if let Some(t) = q.time_left.as_deref().and_then(time_left)
+            && q.left > 0.0
+        {
+            detail.push(t);
+        }
+        if q.size > 0.0 {
+            detail.push(fmt_bytes(q.size as u64));
+        }
+        if let Some(quality) = &q.quality {
+            detail.push(quality.clone());
+        }
+        if let Some(client) = &q.client {
+            detail.push(match q.protocol.as_str() {
+                "" => client.clone(),
+                p => format!("{client} ({p})"),
+            });
+        }
+        let mut info = column![
+            row![
+                badge(kind.name(), color),
+                text(clip(&title, 90)).size(15).font(SEMI).color(TEXT),
+                text(which).size(13).color(MUTED),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            bar(q.fraction(), color, 8.0),
+            text(detail.join(" · ")).size(12).color(MUTED),
+            text(clip(&q.title, 140)).size(12).color(FAINT),
+        ]
+        .spacing(8)
+        .width(Fill);
+        if let Some(p) = &q.problem {
+            info = info.push(
+                text(p.clone())
+                    .size(13)
+                    .color(if color == RED { RED } else { GOLD }),
+            );
+        }
+        let mut buttons = Row::new().spacing(6).align_y(Alignment::Center);
+        if let Some(s) = series {
+            buttons = buttons.push(small(
+                "Open series",
+                Some(act(Action::OpenSeries(s.anilist_id))),
+            ));
+        }
+        buttons = buttons.push(small(
+            "Remove…",
+            Some(act(Action::Servers(ServersAction::AskRemoveQueued {
+                kind,
+                id: q.id,
+                title: q.title.clone(),
+            }))),
+        ));
+        info = info.push(buttons);
+        container(
+            row![picture(cover, 54.0, 76.0, 8.0), info]
+                .spacing(16)
+                .align_y(Alignment::Start),
+        )
+        .padding(16)
+        .width(Fill)
+        .style(|_| card_style(SURFACE))
+        .into()
+    }
+
+    /// What this computer is downloading itself (with the page's title,
+    /// unless it's under the servers' queues).
+    fn own_downloads(&self, titled: bool) -> Element<'_, Message> {
         let a = &self.app;
         let jobs = a.debrid.manager.views();
         let usenet_jobs = a.usenet.manager.views();
@@ -41,10 +216,14 @@ impl Gui {
             (false, Some(s)) => format!("through {s}"),
             (false, None) => "as torrents · nothing is ever seeded".to_owned(),
         };
-        let mut c = column![
-            page_title("Downloads", format!("{active} active · {order}")),
-            gap(18.0)
-        ]
+        let mut c = if titled {
+            column![
+                page_title("Downloads", format!("{active} active · {order}")),
+                gap(18.0)
+            ]
+        } else {
+            column![]
+        }
         .spacing(0);
 
         match &a.engine {
@@ -82,7 +261,7 @@ impl Gui {
                     .padding([100, 0]),
                 );
             }
-            return page(c);
+            return if titled { page(c) } else { c.into() };
         }
         let mut list = Column::new().spacing(12);
         for v in &usenet_jobs {
@@ -94,7 +273,8 @@ impl Gui {
         for (id, handle) in torrents.iter().rev() {
             list = list.push(self.download_card(torrent_card(*id, handle)));
         }
-        page(c.push(list))
+        let c = c.push(list);
+        if titled { page(c) } else { c.into() }
     }
 
     fn download_card<'a>(&'a self, d: Card<'a>) -> Element<'a, Message> {
@@ -218,6 +398,44 @@ impl Gui {
             })
             .into()
     }
+}
+
+/// What a queue item is doing, as Sonarr's Queue tab says it, and its
+/// color.
+fn queue_status(q: &Queued) -> (String, Color) {
+    let failed = q.state.starts_with("failed") || q.status == "failed";
+    let s = match (q.state.as_str(), q.status.as_str()) {
+        _ if failed => "Failed",
+        ("importPending", _) => "Waiting to import",
+        ("importing", _) => "Importing",
+        ("imported", _) => "Imported",
+        (_, "queued") => "Queued",
+        (_, "paused") => "Paused",
+        (_, "delay") => "Delayed (by a delay profile)",
+        (_, "completed") => "Downloaded",
+        (_, "warning") => "Downloading, with a warning",
+        _ => "Downloading",
+    };
+    let color = if failed {
+        RED
+    } else if q.problem.is_some() || q.state == "importPending" {
+        GOLD
+    } else {
+        GREEN
+    };
+    (s.to_owned(), color)
+}
+
+/// "00:12:34" (or "1.02:03:04", with days) as "12 min left".
+fn time_left(t: &str) -> Option<String> {
+    let (days, hms) = match t.split_once('.') {
+        Some((d, rest)) if !d.contains(':') => (d.parse::<u64>().ok()?, rest),
+        _ => (0, t),
+    };
+    let mut p = hms.split(':').map(|x| x.parse::<f64>().ok());
+    let (h, m, s) = (p.next()??, p.next()??, p.next()??);
+    let secs = days as f64 * 86_400.0 + h * 3600.0 + m * 60.0 + s;
+    Some(format!("{} left", fmt_duration(secs)))
 }
 
 /// Pause or resume, files, remux, folder, remove (keeping or deleting).

@@ -13,7 +13,7 @@ use super::library_ui::SeriesStats;
 use super::{App, Msg, Page};
 use crate::fallback::ReleaseKind;
 use crate::library::{ArrRef, Library};
-use crate::servers::arr::{About, Arr, Kind};
+use crate::servers::arr::{About, Arr, Kind, Queued};
 use crate::servers::build::{self, Built};
 use crate::servers::jellyfin::Jellyfin;
 use crate::servers::mapping::{self, Mapping};
@@ -39,6 +39,10 @@ pub(super) struct ServersState {
     /// Anime being added, or handed a release or a search.
     pub(super) busy: HashSet<u64>,
     seq: u64,
+    /// Sonarr's and Radarr's queues, as last read, and when.
+    pub(super) queue: Vec<(Kind, Queued)>,
+    pub(super) queue_read: Option<Instant>,
+    queue_loading: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +64,19 @@ pub(super) enum ServersAction {
         id: u64,
         episodes: Vec<u32>,
     },
+    /// Ask before taking something out of a queue.
+    AskRemoveQueued {
+        kind: Kind,
+        id: u64,
+        title: String,
+    },
+    /// Take it out (and out of the download client), maybe blocklisting
+    /// its release.
+    RemoveQueued {
+        kind: Kind,
+        id: u64,
+        blocklist: bool,
+    },
 }
 
 pub(super) enum ServersMsg {
@@ -74,6 +91,10 @@ pub(super) enum ServersMsg {
         id: u64,
         result: Result<String, String>,
     },
+    /// The queues, read again (and what couldn't be read).
+    Queue(Vec<(Kind, Queued)>, Vec<String>),
+    /// Something taken out of a queue.
+    Removed(Result<String, String>),
 }
 
 impl ServersState {
@@ -93,6 +114,9 @@ impl ServersState {
             jellyfin_error: None,
             busy: HashSet::new(),
             seq: 0,
+            queue: Vec::new(),
+            queue_read: None,
+            queue_loading: false,
         }
     }
 }
@@ -149,6 +173,31 @@ impl App {
             ServersAction::Add => self.add_to_servers(),
             ServersAction::Push => self.push_release(),
             ServersAction::Search { id, episodes } => self.search_servers(id, episodes),
+            ServersAction::AskRemoveQueued { kind, id, title } => {
+                self.confirm_delete = Some((super::DeleteTarget::Queued(kind, id), title));
+            }
+            ServersAction::RemoveQueued {
+                kind,
+                id,
+                blocklist,
+            } => {
+                self.confirm_delete = None;
+                let Some(arr) = self.arr(kind) else { return };
+                self.spawn(async move {
+                    let result = arr
+                        .remove_queued(id, blocklist)
+                        .await
+                        .map(|()| {
+                            format!(
+                                "Removed from {}'s queue{}",
+                                kind.name(),
+                                if blocklist { " and blocklisted" } else { "" }
+                            )
+                        })
+                        .map_err(|e| format!("Couldn't remove it: {e:#}"));
+                    Msg::Servers(ServersMsg::Removed(result))
+                });
+            }
         }
     }
 
@@ -215,10 +264,34 @@ impl App {
                         self.library.save_or_warn();
                         self.servers.progress = built.progress;
                         self.servers.problems = built.problems;
+                        self.servers.queue = built.queue;
+                        self.servers.queue_read = Some(Instant::now());
                         self.pages.last_stats = None;
                     }
                     Err(e) => self.servers.problems = vec![e],
                 }
+            }
+            ServersMsg::Queue(queue, problems) => {
+                self.servers.queue_loading = false;
+                self.servers.queue_read = Some(Instant::now());
+                if !self.servers_mode() {
+                    return;
+                }
+                self.servers.progress = build::progress(&self.library.series, &queue);
+                self.servers.queue = queue;
+                for p in problems {
+                    if !self.servers.problems.contains(&p) {
+                        self.servers.problems.push(p);
+                    }
+                }
+                self.pages.last_stats = None;
+            }
+            ServersMsg::Removed(result) => {
+                match result {
+                    Ok(said) => self.set_info(said),
+                    Err(e) => self.set_error(e),
+                }
+                self.servers.queue_read = None;
             }
             ServersMsg::Done { id, result } => {
                 self.servers.busy.remove(&id);
@@ -239,7 +312,21 @@ impl App {
                 Err(e) => tracing::warn!("couldn't save the servers: {e:#}"),
             }
         }
-        if !self.servers_mode() || self.servers.refreshing || !self.servers.config.any() {
+        if !self.servers_mode() || !self.servers.config.any() {
+            return;
+        }
+        // The queues, every few seconds while they're on screen.
+        if matches!(self.page, Page::Downloads)
+            && !self.servers.queue_loading
+            && !self.servers.refreshing
+            && self
+                .servers
+                .queue_read
+                .is_none_or(|t| t.elapsed() > Duration::from_secs(5))
+        {
+            self.request_queue();
+        }
+        if self.servers.refreshing {
             return;
         }
         let due = self
@@ -306,6 +393,25 @@ impl App {
                 .await
                 .map_err(|e| format!("{e:#}"));
             Msg::Servers(ServersMsg::SignedIn(result))
+        });
+    }
+
+    /// Read Sonarr's and Radarr's queues again.
+    fn request_queue(&mut self) {
+        let arrs: Vec<Arr> = [Kind::Sonarr, Kind::Radarr]
+            .into_iter()
+            .filter_map(|k| self.arr(k))
+            .collect();
+        self.servers.queue_loading = true;
+        self.spawn(async move {
+            let (mut queue, mut problems) = (Vec::new(), Vec::new());
+            for arr in arrs {
+                match arr.queue().await {
+                    Ok(q) => queue.extend(q.into_iter().map(|q| (arr.kind, q))),
+                    Err(e) => problems.push(format!("{} queue: {e:#}", arr.kind.name())),
+                }
+            }
+            Msg::Servers(ServersMsg::Queue(queue, problems))
         });
     }
 

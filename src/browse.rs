@@ -254,6 +254,52 @@ pub async fn schedule(client: &reqwest::Client, from: i64, to: i64) -> Result<Ve
     Ok(out)
 }
 
+/// How long an anime is, and what follows it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Part {
+    pub episodes: Option<u32>,
+    /// Its sequels (series, not films or specials).
+    pub sequels: Vec<u64>,
+}
+
+/// Anime's episode counts and sequels, by AniList ID.
+pub async fn parts(
+    client: &reqwest::Client,
+    ids: &[u64],
+) -> Result<std::collections::HashMap<u64, Part>> {
+    const Q: &str = "query ($ids: [Int], $page: Int) { Page(page: $page, perPage: 50) { \
+        media(id_in: $ids, type: ANIME) { id episodes relations { edges { relationType \
+        node { id type format } } } } } }";
+    let mut out = std::collections::HashMap::new();
+    for chunk in ids.chunks(50) {
+        let data = query(client, Q, json!({ "ids": chunk, "page": 1 })).await?;
+        for m in data["Page"]["media"].as_array().into_iter().flatten() {
+            let Some(id) = m["id"].as_u64() else { continue };
+            let sequels = m["relations"]["edges"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|e| e["relationType"] == "SEQUEL" && e["node"]["type"] == "ANIME")
+                .filter(|e| {
+                    !matches!(
+                        e["node"]["format"].as_str(),
+                        Some("MOVIE" | "SPECIAL" | "MUSIC")
+                    )
+                })
+                .filter_map(|e| e["node"]["id"].as_u64())
+                .collect();
+            out.insert(
+                id,
+                Part {
+                    episodes: m["episodes"].as_u64().map(|n| n as u32),
+                    sequels,
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
 /// Anime by AniList ID (50 a request), in no particular order.
 pub async fn by_ids(client: &reqwest::Client, ids: &[u64]) -> Result<Vec<Media>> {
     let q = format!(
