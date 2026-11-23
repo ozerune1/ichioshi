@@ -15,18 +15,23 @@ val tauriProperties = Properties().apply {
 }
 
 // Release builds are signed with this computer's own key (made by
-// scripts/android/build.sh), so each installs over the last.
-val ichioshiKey = file(System.getProperty("user.home") + "/.local/share/ichioshi-android/ichioshi.keystore")
+// scripts/android/build.sh, its password beside it), so each installs over
+// the last.
+val keyDir = System.getProperty("user.home") + "/.local/share/ichioshi-android"
+val ichioshiKey = file("$keyDir/ichioshi.keystore")
+val signingPassword = file("$keyDir/keystore.properties").takeIf { it.exists() }?.let { f ->
+    java.util.Properties().apply { f.inputStream().use { load(it) } }.getProperty("password")
+}
 
 android {
     compileSdk = 37
     signingConfigs {
         create("ichioshi") {
-            if (ichioshiKey.exists()) {
+            if (ichioshiKey.exists() && signingPassword != null) {
                 storeFile = ichioshiKey
-                storePassword = "ichioshi-android"
+                storePassword = signingPassword
                 keyAlias = "ichioshi"
-                keyPassword = "ichioshi-android"
+                keyPassword = signingPassword
             }
         }
     }
@@ -56,7 +61,7 @@ android {
             }
         }
         getByName("release") {
-            if (ichioshiKey.exists()) {
+            if (ichioshiKey.exists() && signingPassword != null) {
                 signingConfig = signingConfigs.getByName("ichioshi")
             }
             optimization {

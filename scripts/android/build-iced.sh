@@ -33,13 +33,9 @@ done
 "$BT/zipalign" -f -P 16 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
 # A signing key of this computer's own (made once).
+# (The phone app's key: scripts/android/build.sh makes it.)
 KEY="$HOME/.local/share/ichioshi-android/ichioshi.keystore"
-if [ ! -f "$KEY" ]; then
-    mkdir -p "$(dirname "$KEY")"
-    keytool -genkeypair -keystore "$KEY" -alias ichioshi -keyalg RSA -keysize 2048 \
-        -validity 10000 -storepass ichioshi-android -keypass ichioshi-android \
-        -dname "CN=Ichioshi" >/dev/null
-fi
-"$BT/apksigner" sign --ks "$KEY" --ks-pass pass:ichioshi-android --v4-signing-enabled false \
+PASS=$(sed -n 's/^password=//p' "$(dirname "$KEY")/keystore.properties")
+"$BT/apksigner" sign --ks "$KEY" --ks-pass "pass:$PASS" --v4-signing-enabled false \
     --out dist/Ichioshi-android.apk "$OUT/aligned.apk"
 ls -la dist/Ichioshi-android.apk
