@@ -190,6 +190,8 @@ async fn make_demo_library() {
     let Some(dir) = std::env::var_os("DEMO_DIR") else {
         return;
     };
+    // The real AniList, not another test's mock.
+    let _net = crate::mock_http::real();
     make(Path::new(&dir)).await.unwrap();
     let library = Library::load(
         Path::new(&dir).join("state").join("library.json"),

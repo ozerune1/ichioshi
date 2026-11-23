@@ -266,6 +266,8 @@ fn demo(base: &Path) -> Option<Harness> {
 #[test]
 #[ignore = "needs DEMO_DIR"]
 fn library_screens() {
+    // AniList is asked for details: the real one, not another test's mock.
+    let _net = crate::mock_http::real();
     let base = tempfile::tempdir().unwrap();
     let Some(mut h) = demo(base.path()) else {
         return;
