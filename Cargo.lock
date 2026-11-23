@@ -5896,7 +5896,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "yenc-simd",
- "zbus",
  "zip",
 ]
 

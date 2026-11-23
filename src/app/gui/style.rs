@@ -28,6 +28,13 @@ pub(super) const GOLD: Color = Color::from_rgb8(0xfb, 0xbf, 0x24);
 pub(super) const RED: Color = Color::from_rgb8(0xf8, 0x71, 0x71);
 
 pub(super) const INTER: Font = Font::with_name("Inter");
+/// Inter's weights the app uses (built in: not every system has Inter).
+pub(crate) const FONTS: [&[u8]; 4] = [
+    include_bytes!("../../../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../../../assets/fonts/Inter-Bold.ttf"),
+];
 pub(super) const MEDIUM: Font = Font {
     weight: font::Weight::Medium,
     ..INTER

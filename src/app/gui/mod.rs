@@ -61,9 +61,15 @@ pub fn run(rt: tokio::runtime::Handle, state_dir: PathBuf) -> iced::Result {
     .subscription(Gui::subscription)
     .theme(|_: &Gui| Theme::Dark)
     .default_font(INTER)
+    .font(style::FONTS[0])
+    .font(style::FONTS[1])
+    .font(style::FONTS[2])
+    .font(style::FONTS[3])
     .window(window_settings())
     .run()
 }
+
+pub(crate) use style::FONTS;
 
 /// The app's icon (assets/icon/seadex.svg, as made by scripts/make-icons.sh).
 pub(super) const ICON_SVG: &[u8] = include_bytes!("../../../assets/icon/seadex.svg");

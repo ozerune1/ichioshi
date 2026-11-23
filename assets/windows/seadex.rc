@@ -1,0 +1,23 @@
+// The Windows executable's icon and description (compiled by build.rs).
+1 ICON "../icon/seadex.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "SeaDex"
+      VALUE "ProductName", "SeaDex"
+      VALUE "OriginalFilename", "seadex.exe"
+      VALUE "FileVersion", "0.1.0"
+      VALUE "ProductVersion", "0.1.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

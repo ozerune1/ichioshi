@@ -62,6 +62,10 @@ pub(super) fn harness(base: &Path, state_dir: &Path) -> Harness {
 fn settings() -> iced::Settings {
     iced::Settings {
         default_font: INTER,
+        fonts: super::style::FONTS
+            .iter()
+            .map(|f| std::borrow::Cow::Borrowed(*f))
+            .collect(),
         ..Default::default()
     }
 }
