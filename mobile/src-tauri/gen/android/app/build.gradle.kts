@@ -20,7 +20,7 @@ val tauriProperties = Properties().apply {
 val keyDir = System.getProperty("user.home") + "/.local/share/ichioshi-android"
 val ichioshiKey = file("$keyDir/ichioshi.keystore")
 val signingPassword = file("$keyDir/keystore.properties").takeIf { it.exists() }?.let { f ->
-    java.util.Properties().apply { f.inputStream().use { load(it) } }.getProperty("password")
+    Properties().apply { f.inputStream().use { load(it) } }.getProperty("password")
 }
 
 android {
