@@ -684,7 +684,7 @@ fn release(ui: &mut Ui, ap: &AnimePage) -> Value {
                 && nyaa.is_some()
                 && let Some(hash) = r.info_hash_hex()
             {
-                card["usenet"] = json!(nzb(app, &hash));
+                card["usenet"] = json!(nzb(app, hash));
             }
             cards.push(card);
         }

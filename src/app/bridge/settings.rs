@@ -3,7 +3,9 @@
 
 use serde_json::{Value, json};
 
-use super::form::{boxed, buttons, check, chips, copy, field, heading, link, said, select, text};
+use super::form::{
+    Change, boxed, buttons, check, chips, copy, field, heading, link, said, select, text,
+};
 use super::ui::Ui;
 use crate::app::servers_ui::{ServersAction, ago};
 use crate::app::tracking_ui::TrackingAction;
@@ -329,7 +331,7 @@ fn arr(ui: &mut Ui, kind: Kind) -> Vec<Value> {
                         account.quality_profile == Some(id),
                         Box::new(move |app: &mut App| {
                             account_of(app, kind).quality_profile = Some(id);
-                        }) as Box<dyn Fn(&mut App)>,
+                        }) as Change,
                     )
                 })
                 .collect();
@@ -344,7 +346,7 @@ fn arr(ui: &mut Ui, kind: Kind) -> Vec<Value> {
                         account.root_folder.as_ref() == Some(&f.path),
                         Box::new(move |app: &mut App| {
                             account_of(app, kind).root_folder = Some(path.clone());
-                        }) as Box<dyn Fn(&mut App)>,
+                        }) as Change,
                     )
                 })
                 .collect();
@@ -361,7 +363,7 @@ fn arr(ui: &mut Ui, kind: Kind) -> Vec<Value> {
 
 fn languages(ui: &mut Ui) -> Vec<Value> {
     let prefs = ui.app.settings.prefs.clone();
-    let set = |prefs: LangPrefs| -> Box<dyn Fn(&mut App)> {
+    let set = |prefs: LangPrefs| -> Change {
         Box::new(move |app: &mut App| {
             app.settings.prefs = prefs.clone();
             app.recheck_defaults();
@@ -466,7 +468,7 @@ fn downloading(ui: &mut Ui) -> Vec<Value> {
                     app.debrid.save();
                     app.debrid.account = None;
                     app.perform(Action::DebridCheck);
-                }) as Box<dyn Fn(&mut App)>,
+                }) as Change,
             )
         })
         .collect();

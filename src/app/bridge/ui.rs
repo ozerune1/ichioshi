@@ -5,16 +5,20 @@ use std::collections::VecDeque;
 
 use serde_json::{Value, json};
 
+use super::form::Change;
 use crate::app::{Action, App};
+
+/// What a field does with its text.
+type Setter = Box<dyn Fn(&mut App, String)>;
 
 /// What a handle does.
 pub(super) enum Handler {
     /// An action, as the desktop GUI's buttons do.
     Act(Action),
     /// A change to the app.
-    Edit(Box<dyn Fn(&mut App)>),
+    Edit(Change),
     /// What a field sets, with its text.
-    Input(Box<dyn Fn(&mut App, String)>),
+    Input(Setter),
 }
 
 /// The handles of the last views (a tap on a view just replaced, or text

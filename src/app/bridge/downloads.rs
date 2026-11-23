@@ -149,7 +149,7 @@ fn cover_for(ui: &Ui, hash: &str) -> Option<String> {
         .library
         .series
         .iter()
-        .find(|s| s.downloads.contains(&hash.to_owned()))?;
+        .find(|s| s.downloads.iter().any(|h| h == hash))?;
     s.cover
         .clone()
         .or(s.details.as_ref().and_then(|d| d.cover.clone()))

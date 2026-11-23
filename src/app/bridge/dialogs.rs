@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use super::form::{check, chips, field, said, select, text};
+use super::form::{Change, check, chips, field, said, select, text};
 use super::ui::Ui;
 use crate::app::import_ui::ImportAction;
 use crate::app::usenet_ui::{Check, Dialog};
@@ -37,12 +37,7 @@ fn button(ui: &mut Ui, label: impl Into<String>, kind: &str, action: Option<Acti
     b
 }
 
-fn button_edit(
-    ui: &mut Ui,
-    label: impl Into<String>,
-    kind: &str,
-    f: Option<Box<dyn Fn(&mut App)>>,
-) -> Value {
+fn button_edit(ui: &mut Ui, label: impl Into<String>, kind: &str, f: Option<Change>) -> Value {
     let id = f.map(|f| ui.edit(f));
     json!({"label": label.into(), "kind": kind, "id": id})
 }
@@ -278,7 +273,7 @@ fn confirm_delete(ui: &mut Ui, target: DeleteTarget, name: String) -> Value {
 /// The languages: audio, subtitles (or none) and their kind; saved for
 /// every series without its own.
 fn languages(ui: &mut Ui, prefs: LangPrefs) -> Value {
-    let set = |p: LangPrefs| -> Box<dyn Fn(&mut App)> {
+    let set = |p: LangPrefs| -> Change {
         Box::new(move |app: &mut App| app.pages.languages = Some(p.clone()))
     };
     let audio = LANGUAGES
@@ -370,7 +365,7 @@ fn on_form(f: impl Fn(&mut Provider) + 'static) -> impl Fn(&mut App) + 'static {
 }
 
 /// Change the provider list (and save it).
-fn on_providers(f: impl Fn(&mut Vec<Provider>) + 'static) -> Box<dyn Fn(&mut App)> {
+fn on_providers(f: impl Fn(&mut Vec<Provider>) + 'static) -> Change {
     Box::new(move |app| {
         f(&mut app.usenet.config.providers);
         app.usenet.save();
@@ -470,7 +465,7 @@ fn usenet(ui: &mut Ui, d: &Dialog) -> Value {
                 ui,
                 "Save",
                 "primary",
-                save_ok.then(|| -> Box<dyn Fn(&mut App)> {
+                save_ok.then(|| -> Change {
                     Box::new(|app: &mut App| {
                         let Some(d) = &mut app.usenet.dialog else {
                             return;
@@ -644,7 +639,7 @@ fn import(ui: &mut Ui) -> Value {
                 } else if choices.is_empty() {
                     boxed.push(said("Which episode isn't known", "warn"));
                 } else {
-                    let mut options: Vec<(String, bool, Box<dyn Fn(&mut App)>)> = vec![(
+                    let mut options: Vec<(String, bool, Change)> = vec![(
                         "Which episode?".into(),
                         !i.assigned.contains_key(&n),
                         Box::new(|_: &mut App| {}),

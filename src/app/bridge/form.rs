@@ -6,6 +6,9 @@ use serde_json::{Value, json};
 use super::ui::Ui;
 use crate::app::App;
 
+/// What choosing or tapping something does to the app.
+pub(super) type Change = Box<dyn Fn(&mut App)>;
+
 pub(super) fn text(s: impl Into<String>) -> Value {
     json!({"t": "text", "text": s.into()})
 }
@@ -20,7 +23,7 @@ pub(super) fn heading(s: impl Into<String>, sub: Option<String>) -> Value {
 }
 
 /// One of a few (the one on, and what each does).
-pub(super) fn chips(ui: &mut Ui, options: Vec<(String, bool, Box<dyn Fn(&mut App)>)>) -> Value {
+pub(super) fn chips(ui: &mut Ui, options: Vec<(String, bool, Change)>) -> Value {
     let options: Vec<Value> = options
         .into_iter()
         .map(|(label, on, f)| json!({"label": label, "on": on, "id": ui.edit(f)}))
@@ -59,11 +62,7 @@ pub(super) fn check(
 }
 
 /// A choice from a list: (its name, chosen, what choosing it does).
-pub(super) fn select(
-    ui: &mut Ui,
-    label: &str,
-    options: Vec<(String, bool, Box<dyn Fn(&mut App)>)>,
-) -> Value {
+pub(super) fn select(ui: &mut Ui, label: &str, options: Vec<(String, bool, Change)>) -> Value {
     let options: Vec<Value> = options
         .into_iter()
         .map(|(label, on, f)| json!({"label": label, "on": on, "id": ui.edit(f)}))

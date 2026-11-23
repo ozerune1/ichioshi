@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use super::form::{boxed, buttons, field, said, select, text};
+use super::form::{Change, boxed, buttons, field, said, select, text};
 use super::ui::Ui;
 use crate::app::remux_page::{FileState, RemuxPage, default_out_dir};
 use crate::app::{Action, App, Page, PlaylistPage, fmt_bytes};
@@ -318,8 +318,8 @@ pub(super) fn remux(ui: &mut Ui, rp: &RemuxPage) -> Value {
             Kind::Audio => rp.audio_lang.clone(),
             _ => rp.sub_lang.clone(),
         };
-        let mut options: Vec<(String, bool, Box<dyn Fn(&mut App)>)> = Vec::new();
-        let pick = move |code: Option<String>| -> Box<dyn Fn(&mut App)> {
+        let mut options: Vec<(String, bool, Change)> = Vec::new();
+        let pick = move |code: Option<String>| -> Change {
             Box::new(on_remux(move |rp| match kind {
                 Kind::Audio => {
                     rp.audio_lang = code.clone();

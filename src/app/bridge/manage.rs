@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::form::{boxed, buttons, check, field, said, select, text};
+use super::form::{Change, boxed, buttons, check, field, said, select, text};
 use super::ui::Ui;
 use crate::app::discover_ui::Loaded;
 use crate::app::manage_ui::{Edit, Looking, Manage, ManageAction, Tab};
@@ -278,7 +278,7 @@ fn edit(ui: &mut Ui, m: &Manage, e: &Edit) -> Vec<Value> {
             )];
         }
     };
-    let change = |f: Box<dyn Fn(&mut Edit)>| -> Box<dyn Fn(&mut App)> {
+    let change = |f: Box<dyn Fn(&mut Edit)>| -> Change {
         let e = e.clone();
         Box::new(move |app: &mut App| {
             let mut e = e.clone();

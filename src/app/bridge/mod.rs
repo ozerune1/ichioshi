@@ -43,11 +43,14 @@ struct Core {
     rt: tokio::runtime::Handle,
 }
 
+type Looking = Box<dyn FnOnce(&App, &mut Core) + Send>;
+type Changing = Box<dyn FnOnce(&mut App, &mut Core) + Send>;
+
 enum Job {
     /// Look at the app (a view): changes nothing in it.
-    Read(Box<dyn FnOnce(&App, &mut Core) + Send>),
+    Read(Looking),
     /// Change it (a command).
-    Write(Box<dyn FnOnce(&mut App, &mut Core) + Send>),
+    Write(Changing),
     /// Background work finished.
     Wake,
 }
