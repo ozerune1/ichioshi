@@ -13,7 +13,7 @@ use iced_test::selector::{Candidate, Selector};
 
 use super::tests::*;
 use super::*;
-use crate::app::{AnimePage, EngineState};
+use crate::app::{AnimePage, EngineState, Origin};
 
 const FRIEREN: u64 = 154587;
 
@@ -2613,4 +2613,75 @@ fn discovers_schedules_and_discusses() {
     });
     click(&mut h, "Close");
     assert!(h.app.discussion.is_none());
+}
+
+/// Against the live sites, with covers: Discover, the full calendar, a
+/// series page with MyAnimeList's episode ratings, and an episode's
+/// discussion on both sites. For looking at.
+#[test]
+#[ignore = "network; renders screenshots"]
+fn discover_and_discuss_live() {
+    let _net = crate::mock_http::real();
+    let (base, out) = dir("discover-live");
+    let mut h = app_harness(base.path());
+    set_size(1440.0, 900.0);
+    click(&mut h, "Discover");
+    wait(&mut h, "the list", |g| {
+        matches!(
+            g.app.discover.shelves.get(&g.app.discover.filter),
+            Some((crate::app::discover_ui::Loaded::Ready(_), _))
+        )
+    });
+    fetch_images(&mut h);
+    save(&h, &out, "1-discover");
+    click(&mut h, "Calendar");
+    click(&mut h, "Show full schedule");
+    wait(&mut h, "the schedule", |g| {
+        matches!(
+            g.app.calendar.weeks.get(&g.app.calendar.week),
+            Some((crate::app::discover_ui::Loaded::Ready(_), _))
+        )
+    });
+    fetch_images(&mut h);
+    save(&h, &out, "2-calendar");
+    // Frieren (finished; 28 episodes, each discussed on both sites).
+    let frieren = crate::browse::Media {
+        id: FRIEREN,
+        english: Some("Frieren: Beyond Journey’s End".into()),
+        romaji: Some("Sousou no Frieren".into()),
+        episodes: Some(28),
+        ..Default::default()
+    };
+    send(
+        &mut h,
+        [act(Action::OpenMedia(Box::new(frieren), Origin::Discover))],
+    );
+    wait(&mut h, "episode ratings", |g| {
+        g.app.episode_scores.episode(FRIEREN, 1).is_some()
+    });
+    set_size(1440.0, 1800.0);
+    fetch_images(&mut h);
+    save(&h, &out, "3-series");
+    set_size(1440.0, 900.0);
+    send(
+        &mut h,
+        [act(Action::OpenDiscussion {
+            id: FRIEREN,
+            episode: 28,
+        })],
+    );
+    wait(&mut h, "both threads", |g| {
+        g.app.discussion.as_ref().is_some_and(|d| {
+            d.threads
+                .values()
+                .all(|t| !matches!(t, crate::app::discover_ui::Loaded::Loading))
+        })
+    });
+    fetch_images(&mut h);
+    snapshot_after(&h, &out.join("4-discussion-anilist"), 40);
+    click_with(&mut h, "MyAnimeList tab", || {
+        containing("MyAnimeList ·".into())
+    });
+    fetch_images(&mut h);
+    snapshot_after(&h, &out.join("5-discussion-mal"), 40);
 }

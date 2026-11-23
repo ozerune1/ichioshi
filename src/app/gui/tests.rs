@@ -178,10 +178,34 @@ pub(super) fn wait_for(gui: &mut Gui, label: &str) {
     wait(gui, &format!("{label:?} to show"), move |g| shows(g, &l));
 }
 
+/// Fetch the images the page asks for, as the app would in the background.
+pub(super) fn fetch_images(h: &mut Harness) {
+    let http = h.app.http.clone();
+    for _ in 0..3 {
+        drop(simulator(h));
+        let wanted = h.images.take_wanted();
+        if wanted.is_empty() {
+            return;
+        }
+        for (url, file) in wanted {
+            let bytes = h
+                ._rt_handle()
+                .block_on(super::images::load(&http, &url, &file));
+            h.images.loaded(url, bytes.map(super::images::picture));
+        }
+    }
+}
+
 /// A screenshot, once images are in.
 pub(super) fn snapshot(gui: &Gui, path: &Path) {
+    snapshot_after(gui, path, 4);
+}
+
+/// A screenshot after `tries` draws, a tenth of a second apart (large
+/// images take a while to decode, and have no size until then).
+pub(super) fn snapshot_after(gui: &Gui, path: &Path, tries: usize) {
     let mut ui = simulator(gui);
-    for _ in 0..4 {
+    for _ in 0..tries {
         let _ = ui.snapshot(&Theme::Dark).unwrap();
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -244,10 +268,9 @@ fn demo(base: &Path) -> Option<Harness> {
             for ext in ["jpg", "png", "webp"] {
                 let file = images.join(format!("{}-{stem}.{ext}", s.anilist_id));
                 if file.exists() {
-                    h.images.loaded(
-                        url.clone(),
-                        Some(iced::widget::image::Handle::from_path(file)),
-                    );
+                    let bytes = std::fs::read(&file).unwrap();
+                    h.images
+                        .loaded(url.clone(), Some(super::images::picture(bytes)));
                 }
             }
         }

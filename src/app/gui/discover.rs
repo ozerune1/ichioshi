@@ -182,7 +182,7 @@ impl Gui {
         let mut c = column![
             poster,
             space().height(10),
-            text(clip(m.title(), 44))
+            text(clip(m.title(), 34))
                 .size(14)
                 .font(SEMI)
                 .color(TEXT)

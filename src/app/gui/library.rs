@@ -547,7 +547,7 @@ impl Gui {
             mouse_area(column![
                 poster,
                 space().height(10),
-                text(clip(s.title(), 44))
+                text(clip(s.title(), 34))
                     .size(14)
                     .font(SEMI)
                     .color(TEXT)

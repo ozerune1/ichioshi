@@ -106,7 +106,7 @@ impl Gui {
             .align_y(Alignment::Center),
         );
         for p in &t.posts {
-            c = c.push(post(d, t.site, p, 0));
+            c = c.push(post(&self.images, d, t.site, p, 0));
         }
         if t.next.is_some() {
             c = c.push(secondary(
@@ -124,7 +124,13 @@ impl Gui {
 
 /// A post: who and when, its text (spoilers hidden until shown), and the
 /// replies to it, indented.
-fn post<'a>(d: &'a Discussion, site: Site, p: &'a Post, depth: u16) -> Element<'a, Message> {
+fn post<'a>(
+    images: &'a super::images::Images,
+    d: &'a Discussion,
+    site: Site,
+    p: &'a Post,
+    depth: u16,
+) -> Element<'a, Message> {
     let shown = d.shown.contains(&(site, p.id));
     let mut meta = row![
         text(p.author.clone()).size(13).font(SEMI).color(TEXT),
@@ -170,6 +176,24 @@ fn post<'a>(d: &'a Discussion, site: Site, p: &'a Post, depth: u16) -> Element<'
                     .style(|_| card_style(GOLD.scale_alpha(0.06)))
                     .into()
             }
+            // Pictures at their size, up to the post's width.
+            Piece::Image(url) => match images.get_sized(url) {
+                Some((h, size)) => {
+                    // Its own size, made to fit (never larger).
+                    let (w, ht) = size.map_or((560.0, 315.0), |(w, h)| {
+                        let scale = (560.0 / w as f32).min(380.0 / h as f32).min(1.0);
+                        (w as f32 * scale, h as f32 * scale)
+                    });
+                    iced::widget::image(h)
+                        .width(w)
+                        .height(ht)
+                        .content_fit(iced::ContentFit::Contain)
+                        .border_radius(6.0)
+                        .into()
+                }
+                None if images.failed(url) => link("Image ↗", Some(open_url(url.clone()))),
+                None => text("Loading the image…").size(12).color(FAINT).into(),
+            },
             Piece::Spoiler(_) => small(
                 "Show spoiler",
                 Some(edit(move |g| {
@@ -196,7 +220,10 @@ fn post<'a>(d: &'a Discussion, site: Site, p: &'a Post, depth: u16) -> Element<'
     // Deeper replies stop moving in (the panel isn't wide enough for more).
     let indent = if depth < 3 { 24 } else { 0 };
     for r in &p.replies {
-        all = all.push(row![space().width(indent), post(d, site, r, depth + 1)]);
+        all = all.push(row![
+            space().width(indent),
+            post(images, d, site, r, depth + 1)
+        ]);
     }
     all.into()
 }

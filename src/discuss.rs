@@ -46,6 +46,30 @@ pub enum Piece {
     Quote(Option<String>, String),
     /// Hidden until asked for.
     Spoiler(String),
+    /// A picture, by its URL.
+    Image(String),
+}
+
+/// Where an image goes in text, until it's split out: `\u{1}<url>\u{1}`.
+const IMG: char = '\u{1}';
+
+/// Text with images marked by `IMG`, as text and image pieces.
+fn split_images(text: &str, out: &mut Vec<Piece>) {
+    for (i, part) in text.split(IMG).enumerate() {
+        if i % 2 == 1 {
+            out.push(Piece::Image(part.to_owned()));
+        } else if !part.trim().is_empty() {
+            out.push(Piece::Text(part.to_owned()));
+        }
+    }
+}
+
+/// Images marked by `IMG` as "[image]" (inside spoilers and quotes).
+fn images_as_text(text: &str) -> String {
+    text.split(IMG)
+        .enumerate()
+        .map(|(i, part)| if i % 2 == 1 { "[image]" } else { part })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -212,7 +236,10 @@ async fn anilist(client: &reqwest::Client, q: &str, variables: Value) -> Result<
 /// text.
 pub fn anilist_text(markup: &str) -> Vec<Piece> {
     static MEDIA: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)!\[[^\]]*\]\([^)]*\)|img\d*%?\([^)]*\)|<img[^>]*>").unwrap()
+        Regex::new(
+            r#"(?i)!\[[^\]]*\]\(([^)]*)\)|img\d*%?\(([^)]*)\)|<img[^>]*src=["']([^"']*)["'][^>]*>"#,
+        )
+        .unwrap()
     });
     static VIDEO: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?i)(?:youtube|webm)\([^)]*\)").unwrap());
@@ -223,7 +250,16 @@ pub fn anilist_text(markup: &str) -> Vec<Piece> {
     static MARKS: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"~~~|\*\*|__|(?m)^#{1,6}\s*|~~").unwrap());
     static SPOILER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)~!(.*?)!~").unwrap());
-    let text = MEDIA.replace_all(markup, "[image]");
+    let text = MEDIA.replace_all(markup, |c: &regex::Captures| {
+        let url = (1..=3)
+            .find_map(|i| c.get(i))
+            .map_or("", |m| m.as_str().trim());
+        if url.starts_with("http") {
+            format!("{IMG}{url}{IMG}")
+        } else {
+            "[image]".to_owned()
+        }
+    });
     let text = VIDEO.replace_all(&text, "[video]");
     let text = LINK.replace_all(&text, |c: &regex::Captures| {
         if c[1].trim().is_empty() {
@@ -239,20 +275,36 @@ pub fn anilist_text(markup: &str) -> Vec<Piece> {
     while let Some(m) = SPOILER.captures(rest) {
         let whole = m.get(0).unwrap();
         plain_and_quotes(&rest[..whole.start()], &mut pieces);
-        let hidden = tidy(&MARKS.replace_all(&unescape(&m[1]), ""));
+        let hidden = tidy(&MARKS.replace_all(&images_as_text(&unescape(&m[1])), ""));
         if !hidden.is_empty() {
             pieces.push(Piece::Spoiler(hidden));
         }
         rest = &rest[whole.end()..];
     }
     plain_and_quotes(rest, &mut pieces);
-    for p in &mut pieces {
-        if let Piece::Text(t) | Piece::Quote(_, t) = p {
-            *t = tidy(&MARKS.replace_all(t, ""));
+    let mut out = Vec::new();
+    for p in pieces {
+        match p {
+            Piece::Text(t) => {
+                let t = MARKS.replace_all(&t, "");
+                let mut parts = Vec::new();
+                split_images(&t, &mut parts);
+                for part in parts {
+                    out.push(match part {
+                        Piece::Text(t) => Piece::Text(tidy(&t)),
+                        other => other,
+                    });
+                }
+            }
+            Piece::Quote(who, t) => out.push(Piece::Quote(
+                who,
+                tidy(&MARKS.replace_all(&images_as_text(&t), "")),
+            )),
+            other => out.push(other),
         }
     }
-    pieces.retain(|p| !matches!(p, Piece::Text(t) | Piece::Quote(_, t) if t.is_empty()));
-    pieces
+    out.retain(|p| !matches!(p, Piece::Text(t) | Piece::Quote(_, t) if t.is_empty()));
+    out
 }
 
 /// Text, with markdown's "> " lines as quotes.
@@ -470,7 +522,20 @@ pub fn mal_text(html: &str) -> Vec<Piece> {
         let closing = lower.starts_with("</");
         match name.as_str() {
             "br" => push(&mut pieces, &mut current, mode_of(&stack), "\n"),
-            "img" => push(&mut pieces, &mut current, mode_of(&stack), "[image]"),
+            "img" => {
+                // Lazily loaded ones say where in data-src.
+                static SRC: LazyLock<Regex> =
+                    LazyLock::new(|| Regex::new(r#"(?:data-src|src)=["']([^"']+)["']"#).unwrap());
+                let url = SRC
+                    .captures(token)
+                    .map(|c| unescape(&c[1]))
+                    .filter(|u| u.starts_with("http"));
+                let mark = match url {
+                    Some(u) => format!("{IMG}{u}{IMG}"),
+                    None => "[image]".to_owned(),
+                };
+                push(&mut pieces, &mut current, mode_of(&stack), &mark);
+            }
             "input" => spoiler_next = lower.contains("show spoiler"),
             "div" | "span" if !closing => {
                 let mode = if lower.contains("quotetext") {
@@ -505,15 +570,31 @@ pub fn mal_text(html: &str) -> Vec<Piece> {
     }
     // "Someone said:" opens each quote; the quote says who already.
     static SAID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\S+ said:\s*").unwrap());
-    pieces
-        .into_iter()
-        .map(|p| match p {
-            Piece::Text(t) => Piece::Text(tidy(&t)),
-            Piece::Quote(who, t) => Piece::Quote(who, tidy(&SAID.replace(&t, ""))),
-            Piece::Spoiler(t) => Piece::Spoiler(tidy(&t)),
-        })
-        .filter(|p| !matches!(p, Piece::Text(t) | Piece::Quote(_, t) | Piece::Spoiler(t) if t.is_empty()))
-        .collect()
+    let mut out = Vec::new();
+    for p in pieces {
+        match p {
+            Piece::Text(t) => {
+                let mut parts = Vec::new();
+                split_images(&t, &mut parts);
+                for part in parts {
+                    out.push(match part {
+                        Piece::Text(t) => Piece::Text(tidy(&t)),
+                        other => other,
+                    });
+                }
+            }
+            Piece::Quote(who, t) => out.push(Piece::Quote(
+                who,
+                tidy(&SAID.replace(&images_as_text(&t), "")),
+            )),
+            Piece::Spoiler(t) => out.push(Piece::Spoiler(tidy(&images_as_text(&t)))),
+            Piece::Image(u) => out.push(Piece::Image(u)),
+        }
+    }
+    out.retain(
+        |p| !matches!(p, Piece::Text(t) | Piece::Quote(_, t) | Piece::Spoiler(t) if t.is_empty()),
+    );
+    out
 }
 
 async fn page_text(client: &reqwest::Client, url: &str) -> Result<String> {
@@ -696,14 +777,16 @@ pub(crate) mod tests {
     #[test]
     fn reads_anilist_markup() {
         let body = "~~~__Great__ ending!~~~<br>\nimg220(https://x/y.png) see [this](https://a.b)\n\
-                    > what they said\n> more\nmy reply ~!he lives!~ &amp; then";
+                    > what they said\n> more\nmy reply ~!he lives img(https://x/z.png)!~ &amp; then";
         assert_eq!(
             anilist_text(body),
             [
-                Piece::Text("Great ending!\n[image] see this".into()),
+                Piece::Text("Great ending!".into()),
+                Piece::Image("https://x/y.png".into()),
+                Piece::Text("see this".into()),
                 Piece::Quote(None, "what they said\nmore".into()),
                 Piece::Text("my reply".into()),
-                Piece::Spoiler("he lives".into()),
+                Piece::Spoiler("he lives [image]".into()),
                 Piece::Text("& then".into()),
             ]
         );
@@ -714,7 +797,7 @@ pub(crate) mod tests {
         let html = r#"Very cinematic episode.<br />
 <br />
 <div class="quotetext" data-id="1" data-user="Izana"><strong><a href="/x">Izana said:</a></strong><br>The premiere is split &quot;in four&quot;.<br />
-</div>I remember that.<div class="spoiler"><input type="button" class="button show_button" value="Show spoiler"><span class="spoiler_content" style="display:none"><input type="button" class="button hide_button" value="Hide spoiler"><br>Himmel dies.</span></div> <img src="x.gif"> Done"#;
+</div>I remember that.<div class="spoiler"><input type="button" class="button show_button" value="Show spoiler"><span class="spoiler_content" style="display:none"><input type="button" class="button hide_button" value="Hide spoiler"><br>Himmel dies.</span></div> <img src="https://cdn/x.gif"> Done <img class="lazyload" data-src="https://cdn/y.jpg">"#;
         assert_eq!(
             mal_text(html),
             [
@@ -725,7 +808,9 @@ pub(crate) mod tests {
                 ),
                 Piece::Text("I remember that.".into()),
                 Piece::Spoiler("Himmel dies.".into()),
-                Piece::Text("[image] Done".into()),
+                Piece::Image("https://cdn/x.gif".into()),
+                Piece::Text("Done".into()),
+                Piece::Image("https://cdn/y.jpg".into()),
             ]
         );
     }

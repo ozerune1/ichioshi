@@ -12,9 +12,21 @@ use iced::widget::image::Handle;
 
 use super::Message;
 
+/// An image, and its size in pixels (from its header).
+pub(super) type Picture = (Handle, Option<(u32, u32)>);
+
+/// What `bytes` is, ready to draw.
+pub(super) fn picture(bytes: Vec<u8>) -> Picture {
+    let size = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok());
+    (Handle::from_bytes(bytes), size)
+}
+
 pub(super) struct Images {
     dir: PathBuf,
-    ready: HashMap<String, Handle>,
+    ready: HashMap<String, Picture>,
     failed: HashSet<String>,
     loading: HashSet<String>,
     /// Asked for while drawing, not fetched yet.
@@ -35,13 +47,18 @@ impl Images {
     /// The image, if it's here; otherwise it's fetched soon.
     pub(super) fn get(&self, url: Option<&str>) -> Option<Handle> {
         let url = url.filter(|u| !u.is_empty())?;
-        if let Some(h) = self.ready.get(url) {
+        if let Some((h, _)) = self.ready.get(url) {
             return Some(h.clone());
         }
         if !self.failed.contains(url) && !self.loading.contains(url) {
             self.wanted.borrow_mut().insert(url.to_owned());
         }
         None
+    }
+
+    /// It couldn't be fetched (or read).
+    pub(super) fn failed(&self, url: &str) -> bool {
+        self.failed.contains(url)
     }
 
     /// Fetch what pages asked for.
@@ -57,13 +74,37 @@ impl Images {
                     let url = url.clone();
                     async move { load(&http, &url, &file).await }
                 },
-                move |bytes| Message::Image(url.clone(), bytes.map(Handle::from_bytes)),
+                move |bytes| Message::Image(url.clone(), bytes.map(picture)),
             ))
         });
         Task::batch(tasks)
     }
 
-    pub(super) fn loaded(&mut self, url: String, handle: Option<Handle>) {
+    /// What pages asked for, with where each is kept (tests fetch them
+    /// themselves: the harness doesn't run tasks).
+    #[cfg(test)]
+    pub(super) fn take_wanted(&mut self) -> Vec<(String, PathBuf)> {
+        let wanted: Vec<String> = self.wanted.borrow_mut().drain().collect();
+        wanted
+            .into_iter()
+            .map(|url| {
+                let file = self.dir.join(file_name(&url));
+                (url, file)
+            })
+            .collect()
+    }
+
+    /// An image with its size (asked for like `get`): to lay it out at
+    /// the right size before it's decoded.
+    pub(super) fn get_sized(&self, url: &str) -> Option<Picture> {
+        let found = self.ready.get(url).cloned();
+        if found.is_none() {
+            let _ = self.get(Some(url));
+        }
+        found
+    }
+
+    pub(super) fn loaded(&mut self, url: String, handle: Option<Picture>) {
         self.loading.remove(&url);
         match handle {
             Some(h) => {
@@ -77,7 +118,7 @@ impl Images {
 }
 
 /// From the disk copy, else the web (and kept).
-async fn load(http: &reqwest::Client, url: &str, file: &Path) -> Option<Vec<u8>> {
+pub(super) async fn load(http: &reqwest::Client, url: &str, file: &Path) -> Option<Vec<u8>> {
     if let Ok(bytes) = tokio::fs::read(file).await {
         return Some(bytes);
     }

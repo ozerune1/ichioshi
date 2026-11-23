@@ -74,7 +74,7 @@ pub(super) enum Message {
     /// Background work finished; its results are in the app's channel.
     Wake,
     Tick,
-    Image(String, Option<iced::widget::image::Handle>),
+    Image(String, Option<images::Picture>),
     Key(Key, keyboard::Modifiers),
     /// The window's size (logical) and display scale.
     Resized(iced::Size),
