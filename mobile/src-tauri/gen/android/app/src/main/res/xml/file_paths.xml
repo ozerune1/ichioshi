@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
   <external-path name="my_images" path="." />
   <cache-path name="my_cache_images" path="." />
+  <!-- Updates downloaded by the app's core (its state is the files folder). -->
+  <files-path name="updates" path="update/" />
 </paths>

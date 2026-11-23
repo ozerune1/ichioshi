@@ -45,6 +45,7 @@ mod subs;
 mod tiers;
 mod title;
 mod tracking;
+mod update;
 mod usenet;
 mod vpn;
 
@@ -239,10 +240,18 @@ fn state_dir_moved(data: &std::path::Path) -> std::path::PathBuf {
     dir
 }
 
-/// The desktop app (Linux, Windows); `--self-test` checks a build.
+/// The desktop app (Linux, Windows). `--self-test` checks a build,
+/// `--version` says which this is, and `--update` updates it without the
+/// window; `--install-update <folder>` is how an update (Windows) puts
+/// itself in place once the app has closed.
 #[cfg(all(feature = "gui", not(target_os = "android")))]
 pub fn desktop_main() {
     let args: Vec<String> = std::env::args().collect();
+    let flag = |name: &str| args.iter().any(|a| a == name);
+    if flag("--version") {
+        println!("Ichioshi {}", update::Version::current());
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--self-test") {
         let out = args.get(i + 1).map_or("self-test.txt", String::as_str);
         let video = args.get(i + 2).map(std::path::Path::new);
@@ -255,6 +264,30 @@ pub fn desktop_main() {
         || state_dir_moved(&dirs::data_dir().unwrap_or_else(std::env::temp_dir)),
         std::path::PathBuf::from,
     );
+    if let Some(i) = args.iter().position(|a| a == "--install-update") {
+        let Some(folder) = args.get(i + 1).map(std::path::Path::new) else {
+            std::process::exit(2);
+        };
+        let start = !flag("--no-start");
+        if let Err(e) = update::finish_install(folder, start) {
+            // The app says why when it next starts.
+            let why = format!("{e:#}");
+            eprintln!("{why}");
+            let _ = std::fs::write(state_dir.join("update").join(update::FAILED), why);
+            if start {
+                let _ = std::process::Command::new(update::program_in(folder)).spawn();
+            }
+            std::process::exit(1);
+        }
+        return;
+    }
+    if flag("--update") {
+        if let Err(e) = update::update_now(&state_dir) {
+            eprintln!("Couldn't update: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Before any other thread starts.
     use_bundled_gstreamer(&state_dir);
     tracing_subscriber::fmt()
@@ -272,6 +305,13 @@ pub fn desktop_main() {
         eprintln!("{e}");
     }
     runtime.shutdown_timeout(Duration::from_secs(2));
+    // An update put in place starts now, with this one gone.
+    let start = update::AFTER_EXIT.lock().ok().and_then(|mut s| s.take());
+    if let Some(mut start) = start
+        && let Err(e) = start.spawn()
+    {
+        eprintln!("couldn't start the update: {e}");
+    }
 }
 
 /// Android starts the app here (NativeActivity): its state goes in the

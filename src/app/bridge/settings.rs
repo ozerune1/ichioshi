@@ -80,6 +80,16 @@ pub(super) fn page(ui: &mut Ui) -> Value {
             "Skipping, autoplay".to_owned(),
             player(ui),
         ),
+        section(
+            "updates",
+            "⬆",
+            "Updates",
+            match app.update.release() {
+                Some(r) if r.is_newer() => format!("{} is out", r.name),
+                _ => format!("Ichioshi {}", crate::update::Version::current()),
+            },
+            updates(ui),
+        ),
     ];
     let playlist = app.playlist.items.len();
     json!({
@@ -670,6 +680,113 @@ fn account(ui: &mut Ui, service: Service) -> Vec<Value> {
             .then_some(Action::Tracking(TrackingAction::SignIn(service))),
     );
     items.push(buttons(vec![sign_in], true));
+    items
+}
+
+/// A newer Ichioshi: checking, downloading, and handing it to the phone's
+/// installer.
+fn updates(ui: &mut Ui) -> Vec<Value> {
+    use crate::app::update_ui::{Status as U, UpdateAction as A};
+    use crate::app::{fmt_bytes, servers_ui::ago};
+    let u = &ui.app.update;
+    let checked = u
+        .checked
+        .map(|t| format!(" · checked {}", ago(t)))
+        .unwrap_or_default();
+    let on = ui.app.settings.check_updates;
+    // What's new in a release: its name, notes and page.
+    let whats_new = |ui: &mut Ui, r: &crate::update::Release| {
+        vec![
+            heading(r.name.clone(), None),
+            said(r.summary(8), "muted"),
+            link(ui, "What's new", r.page.clone()),
+        ]
+    };
+    let mut items = vec![text(format!(
+        "This is Ichioshi {}.",
+        crate::update::Version::current()
+    ))];
+    match &u.status {
+        U::Idle => items.push(buttons(
+            vec![ui.button("Check for updates", Some(Action::Update(A::Check)))],
+            false,
+        )),
+        U::Checking => items.push(said("Asking GitHub…", "muted")),
+        U::UpToDate => {
+            items.push(said(format!("✓ It's the latest{checked}"), "good"));
+            items.push(buttons(
+                vec![ui.button("Check again", Some(Action::Update(A::Check)))],
+                false,
+            ));
+        }
+        U::Available(r) => {
+            let r = r.clone();
+            items.extend(whats_new(ui, &r));
+            items.push(match &r.asset {
+                Some(a) => buttons(
+                    vec![ui.button(
+                        format!("Download ({})", fmt_bytes(a.size)),
+                        Some(Action::Update(A::Download)),
+                    )],
+                    true,
+                ),
+                None => said(
+                    "It has no download for this phone: get it from its page.",
+                    "muted",
+                ),
+            });
+        }
+        U::Downloading { release, .. } => {
+            let (r, p) = (release.clone(), u.progress().unwrap_or(0.0));
+            let size = r.asset.as_ref().map_or(0, |a| a.size);
+            items.extend(whats_new(ui, &r));
+            items.push(said(
+                format!("Downloading… {:.0}% of {}", p * 100.0, fmt_bytes(size)),
+                "muted",
+            ));
+            items.push(json!({"t": "progress", "value": p}));
+            items.push(buttons(
+                vec![ui.button("Cancel", Some(Action::Update(A::Cancel)))],
+                false,
+            ));
+        }
+        U::Ready { release, .. } => {
+            let r = release.clone();
+            items.extend(whats_new(ui, &r));
+            items.push(said(
+                "Downloaded and checked. Android asks before installing it (the first \
+                 time, it asks you to allow Ichioshi to install apps).",
+                "muted",
+            ));
+            items.push(buttons(
+                vec![ui.button("Install", Some(Action::Update(A::Install)))],
+                true,
+            ));
+        }
+        U::Failed { release, error } => {
+            let (r, error) = (release.clone(), error.clone());
+            if let Some(r) = &r {
+                items.extend(whats_new(ui, r));
+            }
+            items.push(said(error, "error"));
+            let again = if r.is_some() { A::Download } else { A::Check };
+            items.push(buttons(
+                vec![ui.button("Try again", Some(Action::Update(again)))],
+                false,
+            ));
+        }
+    }
+    items.push(check(
+        ui,
+        "Check for updates when Ichioshi starts",
+        on,
+        |app, on| app.settings.check_updates = on,
+    ));
+    items.push(said(
+        "New versions come from Ichioshi's releases on GitHub. Each download is checked \
+         against the SHA-256 GitHub gives for it.",
+        "faint",
+    ));
     items
 }
 

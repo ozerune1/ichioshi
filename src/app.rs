@@ -41,6 +41,7 @@ mod playlist_page;
 mod remux_page;
 mod servers_ui;
 mod tracking_ui;
+pub(crate) mod update_ui;
 mod usenet_ui;
 mod vpn_ui;
 mod watching;
@@ -73,6 +74,8 @@ struct Settings {
     /// Old downloads have been moved into the library.
     migrated: bool,
     player: crate::player::Settings,
+    /// Ask GitHub for a newer Ichioshi when the app starts.
+    check_updates: bool,
 }
 
 impl Default for Settings {
@@ -89,6 +92,7 @@ impl Default for Settings {
             prefs: Default::default(),
             migrated: false,
             player: Default::default(),
+            check_updates: true,
         }
     }
 }
@@ -173,6 +177,7 @@ enum Msg {
     Servers(servers_ui::ServersMsg),
     Manage(manage_ui::ManageMsg),
     Offline(offline_ui::OfflineMsg),
+    Update(update_ui::UpdateMsg),
     Import(import_ui::ImportMsg),
     /// Episode files' releases, read: by series, path, size.
     Described(Vec<(u64, String, u64, crate::library::EpisodeRelease)>),
@@ -466,6 +471,7 @@ enum Action {
     Servers(servers_ui::ServersAction),
     Manage(manage_ui::ManageAction),
     Offline(offline_ui::OfflineAction),
+    Update(update_ui::UpdateAction),
     Import(import_ui::ImportAction),
 }
 
@@ -834,6 +840,10 @@ pub struct App {
     manage: Option<manage_ui::Manage>,
     /// Episodes on Jellyfin being saved here, to watch offline.
     offline: offline_ui::OfflineState,
+    /// A newer Ichioshi, and getting it.
+    update: update_ui::UpdateState,
+    /// Where releases are looked up (GitHub's API; a mock in tests).
+    update_api: String,
     /// Files being imported into Sonarr or Radarr by hand.
     import: Option<import_ui::Importing>,
     /// AniList's lists to discover anime in.
@@ -913,6 +923,8 @@ impl App {
             servers,
             manage: None,
             offline: Default::default(),
+            update: Default::default(),
+            update_api: crate::update::api_base(),
             import: None,
             discover: Default::default(),
             calendar: Default::default(),
@@ -933,6 +945,7 @@ impl App {
         if app.debrid.config.active() {
             app.debrid_check();
         }
+        app.update_at_start();
         app
     }
 
@@ -1227,6 +1240,7 @@ impl App {
                 Msg::Manage(msg) => self.handle_manage_msg(msg),
                 Msg::Described(read) => self.handle_described(read),
                 Msg::Offline(msg) => self.handle_offline_msg(msg),
+                Msg::Update(msg) => self.handle_update_msg(msg),
                 Msg::Import(msg) => self.handle_import_msg(msg),
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
@@ -1452,6 +1466,7 @@ impl App {
             Action::Servers(action) => self.servers_action(action),
             Action::Manage(action) => self.manage_action(action),
             Action::Offline(action) => self.offline_action(action),
+            Action::Update(action) => self.update_action(action),
             Action::Import(action) => self.import_action(action),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),

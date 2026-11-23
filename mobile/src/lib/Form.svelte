@@ -77,6 +77,8 @@
           </button>
         {/each}
       </div>
+    {:else if it.t === "progress"}
+      <span class="bar"><span style="width: {Math.round(it.value * 100)}%"></span></span>
     {:else if it.t === "box"}
       <div class="box"><Self items={it.items} /></div>
     {/if}
@@ -85,12 +87,14 @@
 
 <style>
   .form { display: flex; flex-direction: column; gap: 14px; }
-  .text { margin: 0; font-size: 14px; }
+  .text { margin: 0; font-size: 14px; white-space: pre-line; }
   .text.muted { color: var(--muted); font-size: 13px; }
   .text.faint { color: var(--faint); font-size: 12px; }
   .text.good { color: var(--green); }
   .text.warn { color: var(--gold); }
   .text.error { color: var(--red); }
+  .bar { display: block; height: 6px; border-radius: 3px; background: var(--surface2); overflow: hidden; }
+  .bar span { display: block; height: 100%; background: var(--accent); transition: width 0.3s; }
   .heading { display: flex; flex-direction: column; gap: 2px; }
   .heading b { font-size: 16px; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }

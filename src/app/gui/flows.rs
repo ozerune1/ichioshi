@@ -3645,3 +3645,106 @@ fn discover_and_discuss_live() {
     fetch_images(&mut h);
     snapshot_after(&h, &out.join("5-discussion-mal"), 40);
 }
+
+/// Updating from GitHub (a mock with a newer release): the sidebar says
+/// so; Settings downloads it, refuses a copy whose SHA-256 isn't GitHub's,
+/// and unpacks a good one, ready to restart into. (Restarting would replace
+/// the test itself: `update::tests` puts a program in place instead.)
+#[test]
+#[ignore = "renders screenshots"]
+#[cfg(target_os = "linux")]
+fn updates_from_github() {
+    use crate::mock_http::{Resp, mock, reply};
+    use std::sync::atomic::AtomicBool;
+    let (base, out) = dir("update-screens");
+    let base = base.path();
+
+    // The release's tarball, as scripts/linux/build.sh makes it.
+    let tarball = {
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut tar = tar::Builder::new(gz);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(11);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, "Ichioshi/ichioshi", &b"new program"[..])
+            .unwrap();
+        tar.into_inner().unwrap().finish().unwrap()
+    };
+    let probe = base.join("probe");
+    std::fs::write(&probe, &tarball).unwrap();
+    let sha = crate::update::sha256(&probe).unwrap();
+    let size = tarball.len() as u64;
+    let damaged = Arc::new(AtomicBool::new(false));
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let api = rt.block_on({
+        let damaged = damaged.clone();
+        let api = Arc::new(std::sync::OnceLock::<String>::new());
+        let me = api.clone();
+        async move {
+            let url = mock(move |req| {
+                let base = me.get().cloned().unwrap_or_default();
+                match req.target.as_str() {
+                    "/repos/ozerune1/ichioshi/releases/latest" => reply(
+                        200,
+                        serde_json::json!({
+                            "tag_name": "v99.0.0",
+                            "name": "Ichioshi 99.0.0",
+                            "body": "## What's new\n\n- Everything, faster",
+                            "html_url": "https://github.com/ozerune1/ichioshi/releases/tag/v99.0.0",
+                            "assets": [{
+                                "name": "Ichioshi-linux-x86_64.tar.gz",
+                                "size": size,
+                                "browser_download_url": format!("{base}/download"),
+                                "digest": format!("sha256:{sha}"),
+                            }],
+                        }),
+                    ),
+                    "/download" if damaged.load(Ordering::Relaxed) => {
+                        let mut bad = tarball.clone();
+                        let last = bad.len() - 1;
+                        bad[last] ^= 0xff;
+                        Resp::binary(200, bad)
+                    }
+                    "/download" => Resp::binary(200, tarball.clone()),
+                    _ => Resp::html(404, "no"),
+                }
+            })
+            .await;
+            api.set(url.clone()).unwrap();
+            url
+        }
+    });
+
+    let mut h = app_harness(base);
+    h.app.update_api = api;
+    click(&mut h, "Settings");
+    assert!(shows_containing(&h, "This is Ichioshi "));
+    click(&mut h, "Check for updates");
+    wait_for(&mut h, "Ichioshi 99.0.0");
+    assert!(shows(&h, "⬆  Update to 99.0.0"), "the sidebar says so");
+    assert!(shows_containing(&h, "Everything, faster"));
+    save(&h, &out, "update-1-available");
+
+    // A download that isn't what GitHub says: refused, and thrown away.
+    damaged.store(true, Ordering::Relaxed);
+    let download = format!("Download and install ({})", crate::app::fmt_bytes(size));
+    click(&mut h, &download);
+    wait(&mut h, "the damaged download refused", |g| {
+        shows_containing(g, "its SHA-256 differs")
+    });
+    let dir = base.join("state/update/99.0.0");
+    assert!(!dir.join("Ichioshi-linux-x86_64.tar.gz").exists());
+
+    // Again, whole: unpacked, ready to restart into.
+    damaged.store(false, Ordering::Relaxed);
+    click(&mut h, "Try again");
+    wait_for(&mut h, "Restart to update");
+    save(&h, &out, "update-2-ready");
+    assert_eq!(
+        std::fs::read(dir.join("unpacked/ichioshi")).unwrap(),
+        b"new program"
+    );
+    drop(rt);
+}

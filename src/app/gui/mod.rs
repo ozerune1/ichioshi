@@ -365,6 +365,15 @@ impl Gui {
     fn act(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::Player(PlayerAction::Play { id, episode }) => self.play(id, episode),
+            // The update in place: the app closes, and the new version starts.
+            Action::Update(crate::app::update_ui::UpdateAction::Install) => {
+                self.app.perform(action);
+                if self.app.update.restart {
+                    self.close();
+                    return iced::exit();
+                }
+                Task::none()
+            }
             Action::OpenDiscussion { id, episode } => {
                 // Reading over the player: it waits.
                 if let Some(p) = &mut self.player

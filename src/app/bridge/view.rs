@@ -102,13 +102,19 @@ pub(super) fn command(app: &mut App, core: &mut Core, command: Command) -> Value
 fn act(app: &mut App, core: &mut Core, action: Action) {
     match action {
         Action::Player(PlayerAction::Play { id, episode }) => play::play(app, core, id, episode),
+        // The phone's installer installs the downloaded APK.
+        Action::Update(crate::app::update_ui::UpdateAction::Install) => {
+            if let crate::app::update_ui::Status::Ready { path, .. } = &app.update.status {
+                (core.emit)("install", json!({"path": path}));
+            }
+        }
         other => app.perform(other),
     }
 }
 
 /// Is something moving on its own (downloads), so the view changes?
 pub(super) fn moving(app: &App) -> bool {
-    app.active_downloads() > 0
+    app.active_downloads() > 0 || app.update.downloading()
 }
 
 /// The tab a page is under.

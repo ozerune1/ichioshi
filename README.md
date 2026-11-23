@@ -36,6 +36,12 @@ For Linux, Windows and Android.</p>
 - **Works with your server.** Jellyfin: stream your library, or save
   episodes to watch offline. Sonarr and Radarr: manage series and films,
   with split cours mapped right. You can also upload to Google Drive.
+- **Updates itself.** When a new release comes out, Ichioshi offers it
+  (Settings › Updates, or More › Updates on a phone). It checks each
+  download against the SHA-256 GitHub gives for it, then installs it:
+  - on the desktop, it restarts as the new version;
+  - on Android, the system's installer asks first. The first time, Android
+    also asks you to allow Ichioshi to install apps.
 
 ## Download
 
@@ -46,6 +52,9 @@ From the [releases page](../../releases/latest):
 | **Windows** | `Ichioshi-windows-x86_64.zip` | 64-bit Windows 10 or later. Unzip it and run `Ichioshi.exe`; everything it needs is in the folder. |
 | **Linux** | `Ichioshi-linux-x86_64.tar.gz` | glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36 and newer), plus GStreamer 1.20+ and libass (see below). Extract it and run `./ichioshi`, or `./install.sh` to add it to your app menu. |
 | **Android** | `Ichioshi-android-arm64.apk` | Android 11 or later, on a 64-bit ARM phone (almost all phones from the last several years). Your library goes in `Download/Ichioshi`. |
+
+Versions from 0.2.0 on update themselves. On the desktop, `ichioshi --update`
+updates without opening the window.
 
 GStreamer and libass on Linux:
 

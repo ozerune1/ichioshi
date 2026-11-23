@@ -186,10 +186,26 @@ impl Gui {
         .align_y(Alignment::Center);
 
         let (accounts, status) = self.status_box();
+        // A newer Ichioshi: to Settings, where it's installed.
+        let update: Element<'_, Message> = match self.app.update.release() {
+            Some(r) if r.is_newer() => column![
+                space().height(12),
+                small(
+                    format!("⬆  Update to {}", r.version),
+                    Some(edit(|g| {
+                        g.app.cancel_listing();
+                        g.app.page = Page::Settings;
+                    }))
+                ),
+            ]
+            .into(),
+            _ => space().into(),
+        };
 
         let content =
             column![
                 logo,
+                update,
                 space().height(22),
                 label("Browse"),
                 space().height(4),

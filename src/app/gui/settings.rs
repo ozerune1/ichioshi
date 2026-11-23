@@ -85,7 +85,8 @@ impl Gui {
                     "Upload playlist exports to a folder in your Drive.",
                     self.drive_section(None),
                 ))
-                .push(self.player_settings());
+                .push(self.player_settings())
+                .push(self.update_settings());
         }
         page(c)
     }
@@ -821,6 +822,106 @@ impl Gui {
                 ),
             ]
             .spacing(12),
+        )
+    }
+}
+
+impl Gui {
+    /// A newer Ichioshi: checking, downloading and installing it.
+    pub(super) fn update_settings(&self) -> Element<'_, Message> {
+        use crate::app::update_ui::{Status as U, UpdateAction as A};
+        use crate::app::{fmt_bytes, servers_ui::ago};
+        let up = |a: A| act(Action::Update(a));
+        let u = &self.app.update;
+        let checked = u
+            .checked
+            .map(|t| format!(" · checked {}", ago(t)))
+            .unwrap_or_default();
+        let mut c = column![body(format!(
+            "This is Ichioshi {}.",
+            crate::update::Version::current()
+        ))]
+        .spacing(12);
+        let whats_new = |r: &crate::update::Release| {
+            column![
+                text(r.name.clone()).size(15).font(SEMI).color(TEXT),
+                weak(clip(&r.summary(8), 700)),
+                link("What's new ↗", Some(open_url(r.page.clone()))),
+            ]
+            .spacing(6)
+        };
+        c = match &u.status {
+            U::Idle => c.push(secondary("Check for updates", Some(up(A::Check)))),
+            U::Checking => c.push(weak("Asking GitHub…")),
+            U::UpToDate => c.push(
+                row![
+                    text(format!("✓ It's the latest{checked}"))
+                        .size(13)
+                        .color(GREEN),
+                    small("Check again", Some(up(A::Check))),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
+            ),
+            U::Available(r) => c.push(whats_new(r)).push(match &r.asset {
+                Some(a) => row![primary(
+                    format!("Download and install ({})", fmt_bytes(a.size)),
+                    Some(up(A::Download))
+                )],
+                None => row![weak(
+                    "It has no download for this system: get it from its page."
+                )],
+            }),
+            U::Downloading { release, .. } => {
+                let p = u.progress().unwrap_or(0.0);
+                let size = release.asset.as_ref().map_or(0, |a| a.size);
+                c.push(whats_new(release)).push(
+                    column![
+                        row![
+                            weak(format!(
+                                "Downloading… {:.0}% of {}",
+                                p * 100.0,
+                                fmt_bytes(size)
+                            )),
+                            space::horizontal(),
+                            small("Cancel", Some(up(A::Cancel))),
+                        ]
+                        .align_y(Alignment::Center),
+                        bar(p, ACCENT, 6.0),
+                    ]
+                    .spacing(8),
+                )
+            }
+            U::Ready { release, .. } => c.push(whats_new(release)).push(
+                row![
+                    primary("Restart to update", Some(up(A::Install))),
+                    weak("Downloaded and checked; Ichioshi closes and opens again."),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
+            ),
+            U::Failed { release, error } => {
+                if let Some(r) = release {
+                    c = c.push(whats_new(r));
+                }
+                c.push(error_text(error.clone())).push(secondary(
+                    "Try again",
+                    Some(up(if release.is_some() {
+                        A::Download
+                    } else {
+                        A::Check
+                    })),
+                ))
+            }
+        };
+        let on = self.app.settings.check_updates;
+        group(
+            "Updates",
+            "New versions come from Ichioshi's releases on GitHub. Each download is checked \
+             against the SHA-256 GitHub gives for it before it's installed.",
+            c.push(check("Check for updates when Ichioshi starts", on, |on| {
+                edit(move |g| g.app.settings.check_updates = on)
+            })),
         )
     }
 }

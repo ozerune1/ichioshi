@@ -2,6 +2,7 @@ package app.ichioshi
 
 import android.app.Activity
 import android.content.Intent
+import androidx.core.content.FileProvider
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
@@ -26,9 +27,15 @@ class PlayArgs {
   var hasPrev: Boolean = false
 }
 
+/** A downloaded update, for the system's installer. */
+@InvokeArg
+class InstallArgs {
+  var path: String = ""
+}
+
 /**
- * The phone app's own player (PlayerActivity, libmpv), and sending the app
- * to the background (back on its first page).
+ * The phone app's own player (PlayerActivity, libmpv), sending the app to
+ * the background (back on its first page), and installing updates.
  */
 @TauriPlugin
 class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
@@ -61,6 +68,27 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
     out.put("then", data?.getStringExtra("then"))
     out.put("error", data?.getStringExtra("error"))
     invoke.resolve(out)
+  }
+
+  /**
+   * Hand a downloaded APK to the system's installer, which asks first (and,
+   * the first time, has you allow Ichioshi to install apps).
+   */
+  @Command
+  fun installApk(invoke: Invoke) {
+    val args = invoke.parseArgs(InstallArgs::class.java)
+    try {
+      val file = java.io.File(args.path)
+      val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
+      val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.android.package-archive")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      activity.startActivity(intent)
+      invoke.resolve()
+    } catch (e: Exception) {
+      invoke.reject("Couldn't open the installer: ${e.message}")
+    }
   }
 
   @Command

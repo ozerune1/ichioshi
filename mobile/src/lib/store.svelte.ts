@@ -55,6 +55,14 @@ export function start() {
       say(String(err));
     }
   });
+  // A downloaded update: the phone's installer takes it from here.
+  listen<any>("install", async (e) => {
+    try {
+      await invoke("install_update", { path: e.payload.path });
+    } catch (err) {
+      say(String(err));
+    }
+  });
 }
 
 /** Say something briefly (a greyed-out button's reason). */

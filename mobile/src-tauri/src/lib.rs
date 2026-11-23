@@ -35,6 +35,30 @@ async fn play(
     }
 }
 
+/// Install a downloaded update (Android): the system's installer asks, and
+/// takes over.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let player = app.state::<Player>();
+        player
+            .0
+            .run_mobile_plugin_async::<serde_json::Value>(
+                "installApk",
+                serde_json::json!({ "path": path }),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, path);
+        Err("Installing is the phone's".into())
+    }
+}
+
 /// Back from the first page: the app goes to the background (Android).
 #[tauri::command]
 async fn to_background(app: tauri::AppHandle) -> Result<(), String> {
@@ -144,7 +168,13 @@ pub fn run() {
             app.manage(bridge);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![view, command, play, to_background])
+        .invoke_handler(tauri::generate_handler![
+            view,
+            command,
+            play,
+            install_update,
+            to_background
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Ichioshi");
 }
