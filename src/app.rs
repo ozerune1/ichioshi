@@ -32,6 +32,7 @@ mod drive_ui;
 pub(crate) mod gui;
 mod handover;
 mod library_ui;
+mod manage_ui;
 mod playlist_page;
 mod remux_page;
 mod servers_ui;
@@ -160,6 +161,7 @@ fn default_library_dir() -> PathBuf {
 enum Msg {
     Tracking(tracking_ui::TrackingMsg),
     Servers(servers_ui::ServersMsg),
+    Manage(manage_ui::ManageMsg),
     Engine {
         seq: u64,
         result: Result<Arc<Engine>, String>,
@@ -441,6 +443,7 @@ enum Action {
     DeleteRemux(PathBuf),
     Tracking(tracking_ui::TrackingAction),
     Servers(servers_ui::ServersAction),
+    Manage(manage_ui::ManageAction),
 }
 
 /// A download picked on the Downloads page (to remove several at once).
@@ -467,6 +470,10 @@ enum DeleteTarget {
     Queued(crate::servers::arr::Kind, u64),
     /// Several downloads (or queue items) at once.
     Many(Vec<Picked>),
+    /// Files Sonarr or Radarr has (from the page's series).
+    ArrFiles(Vec<u64>),
+    /// The page's series in Sonarr (or film in Radarr).
+    ArrOwner,
 }
 
 enum EngineState {
@@ -800,6 +807,8 @@ pub struct App {
     tracking: tracking_ui::TrackingState,
     /// Jellyfin, Sonarr and Radarr, when the library is there.
     servers: servers_ui::ServersState,
+    /// The page's series, managed as in Sonarr (on the servers).
+    manage: Option<manage_ui::Manage>,
     /// AniList's lists to discover anime in.
     discover: discover_ui::DiscoverState,
     /// What's airing.
@@ -878,6 +887,7 @@ impl App {
             usenet,
             tracking: tracking_ui::TrackingState::load(&state_dir),
             servers,
+            manage: None,
             discover: Default::default(),
             calendar: Default::default(),
             episode_scores: Default::default(),
@@ -1155,6 +1165,7 @@ impl App {
                 Msg::HandedOver(result) => self.handled_over(result),
                 Msg::Tracking(msg) => self.handle_tracking_msg(msg),
                 Msg::Servers(msg) => self.handle_servers_msg(msg),
+                Msg::Manage(msg) => self.handle_manage_msg(msg),
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
@@ -1375,6 +1386,7 @@ impl App {
             Action::Player(_) => {}
             Action::Tracking(action) => self.tracking_action(action),
             Action::Servers(action) => self.servers_action(action),
+            Action::Manage(action) => self.manage_action(action),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),

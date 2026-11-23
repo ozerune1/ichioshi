@@ -17,6 +17,7 @@ mod downloads;
 mod flows;
 mod images;
 mod library;
+mod manage;
 mod player;
 mod player_view;
 mod playlist;
@@ -256,6 +257,7 @@ impl Gui {
         a.request_browse();
         a.request_episode_scores();
         a.servers_tick();
+        a.manage_tick();
         a.save_settings();
     }
 

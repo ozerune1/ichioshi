@@ -515,6 +515,304 @@ impl Arr {
             Kind::Radarr => format!("{}/movie/{slug}", self.base),
         }
     }
+
+    // ── Managing a series or film ─────────────────────────────────────
+
+    /// "series" or "movie".
+    fn owner_path(&self) -> &'static str {
+        match self.kind {
+            Kind::Sonarr => "series",
+            Kind::Radarr => "movie",
+        }
+    }
+
+    /// A series or film as it is there (all of it, to change and send
+    /// back).
+    pub async fn owner(&self, id: u64) -> Result<Value> {
+        self.get(&format!("{}/{id}", self.owner_path())).await
+    }
+
+    /// Save a changed series or film; with `move_files`, files follow a
+    /// new folder.
+    pub async fn save_owner(&self, owner: &Value, move_files: bool) -> Result<Value> {
+        let id = owner["id"].as_u64().context("no ID")?;
+        self.send(
+            self.client
+                .put(self.url(&format!(
+                    "{}/{id}?moveFiles={move_files}",
+                    self.owner_path()
+                )))
+                .json(owner),
+        )
+        .await
+    }
+
+    /// Delete a series or film, maybe with its files; with `exclude`, lists
+    /// don't add it back.
+    pub async fn delete_owner(&self, id: u64, delete_files: bool, exclude: bool) -> Result<()> {
+        let exclusion = match self.kind {
+            Kind::Sonarr => "addImportListExclusion",
+            Kind::Radarr => "addImportExclusion",
+        };
+        self.send(self.client.delete(self.url(&format!(
+            "{}/{id}?deleteFiles={delete_files}&{exclusion}={exclude}",
+            self.owner_path()
+        ))))
+        .await
+        .map(drop)
+    }
+
+    /// Run a command ("RefreshSeries", "RenameFiles", …).
+    pub async fn command(&self, body: Value) -> Result<()> {
+        self.post("command", &body).await.map(drop)
+    }
+
+    /// What its indexers have for an episode, a season or a film.
+    pub async fn releases(&self, scope: Scope) -> Result<Vec<Release>> {
+        let query = match scope {
+            Scope::Episode(id) => format!("episodeId={id}"),
+            Scope::Season { series, season } => {
+                format!("seriesId={series}&seasonNumber={season}")
+            }
+            Scope::Movie(id) => format!("movieId={id}"),
+        };
+        let v: Value = self.get(&format!("release?{query}")).await?;
+        let text = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+        let mut out: Vec<Release> = v
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| Release {
+                guid: r["guid"].as_str().unwrap_or_default().to_owned(),
+                indexer_id: r["indexerId"].as_u64().unwrap_or(0),
+                title: r["title"].as_str().unwrap_or_default().to_owned(),
+                indexer: text(&r["indexer"]),
+                size: r["size"].as_u64().unwrap_or(0),
+                age_hours: r["ageHours"].as_f64(),
+                seeders: r["seeders"].as_u64(),
+                leechers: r["leechers"].as_u64(),
+                protocol: r["protocol"].as_str().unwrap_or_default().to_owned(),
+                quality: text(&r["quality"]["quality"]["name"]),
+                languages: r["languages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| text(&l["name"]))
+                    .collect(),
+                score: r["customFormatScore"].as_i64(),
+                approved: r["approved"] == true,
+                rejections: r["rejections"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| text(x).or_else(|| text(&x["reason"])))
+                    .collect(),
+            })
+            .collect();
+        // As Sonarr sorts them: what it would take first.
+        out.sort_by(|a, b| {
+            b.approved
+                .cmp(&a.approved)
+                .then(b.score.unwrap_or(0).cmp(&a.score.unwrap_or(0)))
+                .then(b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0)))
+        });
+        Ok(out)
+    }
+
+    /// Download a release its indexers listed (it's sent to the download
+    /// client, rejected or not).
+    pub async fn grab(&self, r: &Release) -> Result<()> {
+        self.post(
+            "release",
+            &json!({ "guid": r.guid, "indexerId": r.indexer_id }),
+        )
+        .await
+        .map(drop)
+    }
+
+    /// A series' (or film's) files, with what's in them.
+    pub async fn files(&self, owner: u64) -> Result<Vec<FileInfo>> {
+        let path = match self.kind {
+            Kind::Sonarr => format!("episodefile?seriesId={owner}"),
+            Kind::Radarr => format!("moviefile?movieId={owner}"),
+        };
+        let v: Value = self.get(&path).await?;
+        let text = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+        Ok(v.as_array()
+            .into_iter()
+            .flatten()
+            .map(|f| {
+                let m = &f["mediaInfo"];
+                FileInfo {
+                    id: f["id"].as_u64().unwrap_or(0),
+                    path: text(&f["relativePath"]).unwrap_or_default(),
+                    size: f["size"].as_u64().unwrap_or(0),
+                    quality: text(&f["quality"]["quality"]["name"]),
+                    group: text(&f["releaseGroup"]),
+                    languages: f["languages"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|l| text(&l["name"]))
+                        .collect(),
+                    video: text(&m["videoCodec"]),
+                    resolution: text(&m["resolution"]),
+                    audio: text(&m["audioCodec"]),
+                    audio_languages: text(&m["audioLanguages"]),
+                    subtitles: text(&m["subtitles"]),
+                }
+            })
+            .collect())
+    }
+
+    /// Delete files (from disk).
+    pub async fn delete_files(&self, ids: &[u64]) -> Result<()> {
+        let (path, key) = match self.kind {
+            Kind::Sonarr => ("episodefile/bulk", "episodeFileIds"),
+            Kind::Radarr => ("moviefile/bulk", "movieFileIds"),
+        };
+        self.send(
+            self.client
+                .delete(self.url(path))
+                .json(&json!({ key: ids })),
+        )
+        .await
+        .map(drop)
+    }
+
+    /// How files would be renamed (by its naming settings).
+    pub async fn rename_preview(&self, owner: u64, season: Option<u32>) -> Result<Vec<Rename>> {
+        let mut path = match self.kind {
+            Kind::Sonarr => format!("rename?seriesId={owner}"),
+            Kind::Radarr => format!("rename?movieId={owner}"),
+        };
+        if let Some(s) = season {
+            path += &format!("&seasonNumber={s}");
+        }
+        let v: Value = self.get(&path).await?;
+        let file_key = match self.kind {
+            Kind::Sonarr => "episodeFileId",
+            Kind::Radarr => "movieFileId",
+        };
+        Ok(v.as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| Rename {
+                file: r[file_key].as_u64().unwrap_or(0),
+                from: r["existingPath"].as_str().unwrap_or_default().to_owned(),
+                to: r["newPath"].as_str().unwrap_or_default().to_owned(),
+            })
+            .collect())
+    }
+
+    /// Rename files as previewed.
+    pub async fn rename(&self, owner: u64, files: &[u64]) -> Result<()> {
+        let body = match self.kind {
+            Kind::Sonarr => json!({ "name": "RenameFiles", "seriesId": owner, "files": files }),
+            Kind::Radarr => json!({ "name": "RenameFiles", "movieId": owner, "files": files }),
+        };
+        self.command(body).await
+    }
+
+    /// What happened to a series (one season of it) or film: grabs,
+    /// imports, failures, deletions.
+    pub async fn history(&self, owner: u64, season: Option<u32>) -> Result<Vec<Event>> {
+        let mut path = match self.kind {
+            Kind::Sonarr => format!("history/series?seriesId={owner}&includeEpisode=true"),
+            Kind::Radarr => format!("history/movie?movieId={owner}"),
+        };
+        if let Some(s) = season {
+            path += &format!("&seasonNumber={s}");
+        }
+        let v: Value = self.get(&path).await?;
+        let text = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+        let mut out: Vec<Event> = v
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| Event {
+                kind: e["eventType"].as_str().unwrap_or_default().to_owned(),
+                title: e["sourceTitle"].as_str().unwrap_or_default().to_owned(),
+                at: e["date"]
+                    .as_str()
+                    .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+                    .map_or(0, |d| d.timestamp()),
+                episode: e["episodeId"].as_u64().filter(|id| *id > 0),
+                quality: text(&e["quality"]["quality"]["name"]),
+                detail: text(&e["data"]["message"])
+                    .or_else(|| text(&e["data"]["reason"]))
+                    .or_else(|| text(&e["data"]["indexer"]).map(|i| format!("from {i}"))),
+            })
+            .collect();
+        out.sort_by_key(|e| std::cmp::Reverse(e.at));
+        Ok(out)
+    }
+}
+
+/// What to look for releases for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Episode(u64),
+    Season { series: u64, season: u32 },
+    Movie(u64),
+}
+
+/// A release an indexer has (Sonarr's interactive search).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Release {
+    pub guid: String,
+    pub indexer_id: u64,
+    pub title: String,
+    pub indexer: Option<String>,
+    pub size: u64,
+    pub age_hours: Option<f64>,
+    pub seeders: Option<u64>,
+    pub leechers: Option<u64>,
+    pub protocol: String,
+    pub quality: Option<String>,
+    pub languages: Vec<String>,
+    pub score: Option<i64>,
+    pub approved: bool,
+    /// Why it wouldn't take it itself.
+    pub rejections: Vec<String>,
+}
+
+/// A file, and what's in it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileInfo {
+    pub id: u64,
+    pub path: String,
+    pub size: u64,
+    pub quality: Option<String>,
+    pub group: Option<String>,
+    pub languages: Vec<String>,
+    pub video: Option<String>,
+    pub resolution: Option<String>,
+    pub audio: Option<String>,
+    pub audio_languages: Option<String>,
+    pub subtitles: Option<String>,
+}
+
+/// A file's new name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rename {
+    pub file: u64,
+    pub from: String,
+    pub to: String,
+}
+
+/// Something that happened (history).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Event {
+    /// grabbed, downloadFolderImported, downloadFailed,
+    /// episodeFileDeleted, episodeFileRenamed, downloadIgnored…
+    pub kind: String,
+    pub title: String,
+    /// Unix time.
+    pub at: i64,
+    pub episode: Option<u64>,
+    pub quality: Option<String>,
+    pub detail: Option<String>,
 }
 
 fn defaults(account: &ArrAccount, name: &str) -> Result<(u64, String)> {
@@ -737,5 +1035,100 @@ mod tests {
             .block_on(sonarr.add_show(431162, 2, &unset, false))
             .unwrap_err();
         assert!(e.to_string().contains("root folder in Settings"), "{e}");
+    }
+
+    /// Managing a series: interactive search and grabbing, files, renames,
+    /// history, changing and deleting it.
+    #[test]
+    fn manages_a_series() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let seen: Arc<Mutex<Vec<Req>>> = Arc::default();
+        let log = seen.clone();
+        let base = rt.block_on(mock(move |req| {
+            log.lock().unwrap().push(req.clone());
+            match (req.method.as_str(), req.target.as_str()) {
+                ("GET", "/api/v3/release?seriesId=1&seasonNumber=6") => reply(200, json!([
+                    {"guid": "g1", "indexerId": 3, "title": "Worse", "indexer": "Nyaa", "size": 10,
+                     "ageHours": 5.0, "seeders": 50, "approved": false,
+                     "rejections": [{"reason": "Not an upgrade"}], "customFormatScore": 0,
+                     "quality": {"quality": {"name": "WEBDL-1080p"}}, "protocol": "torrent"},
+                    {"guid": "g2", "indexerId": 3, "title": "Best", "indexer": "Nyaa", "size": 20,
+                     "seeders": 5, "approved": true, "customFormatScore": 1500,
+                     "languages": [{"name": "Japanese"}], "protocol": "torrent"}])),
+                ("POST", "/api/v3/release") => reply(200, json!({})),
+                ("GET", "/api/v3/episodefile?seriesId=1") => reply(200, json!([
+                    {"id": 9, "relativePath": "Season 06/SBR - S06E01.mkv", "size": 3000,
+                     "releaseGroup": "Group", "quality": {"quality": {"name": "Bluray-1080p"}},
+                     "languages": [{"name": "Japanese"}],
+                     "mediaInfo": {"videoCodec": "x265", "resolution": "1920x1080",
+                                   "audioCodec": "FLAC", "audioLanguages": "jpn/eng",
+                                   "subtitles": "eng/spa"}}])),
+                ("DELETE", "/api/v3/episodefile/bulk") => reply(200, json!({})),
+                ("GET", "/api/v3/rename?seriesId=1&seasonNumber=6") => reply(200, json!([
+                    {"episodeFileId": 9, "existingPath": "Season 06/old.mkv",
+                     "newPath": "Season 06/SBR - S06E01.mkv"}])),
+                ("POST", "/api/v3/command") => reply(201, json!({"id": 1})),
+                ("GET", "/api/v3/history/series?seriesId=1&includeEpisode=true&seasonNumber=6") => {
+                    reply(200, json!([
+                        {"eventType": "grabbed", "sourceTitle": "SBR - 01", "date": "2026-11-20T10:00:00Z",
+                         "episodeId": 41, "data": {"indexer": "Nyaa"}},
+                        {"eventType": "downloadFolderImported", "sourceTitle": "SBR - 01",
+                         "date": "2026-11-20T11:00:00Z", "episodeId": 41}]))
+                }
+                ("GET", "/api/v3/series/1") => reply(200, json!({"id": 1, "monitored": true,
+                    "qualityProfileId": 4, "path": "/tv/JoJo"})),
+                ("PUT", "/api/v3/series/1?moveFiles=true") => reply(202, json!({"id": 1})),
+                ("DELETE", "/api/v3/series/1?deleteFiles=false&addImportListExclusion=true") => {
+                    reply(200, json!({}))
+                }
+                other => reply(404, json!({"message": format!("no {other:?}")})),
+            }
+        }));
+        let sonarr = Arr::new(Kind::Sonarr, &account(&base), &reqwest::Client::new());
+        let found = rt
+            .block_on(sonarr.releases(Scope::Season {
+                series: 1,
+                season: 6,
+            }))
+            .unwrap();
+        assert_eq!(found[0].title, "Best", "what Sonarr would take first");
+        assert_eq!(found[1].rejections, ["Not an upgrade"]);
+        rt.block_on(sonarr.grab(&found[1])).unwrap();
+        let last_body = |m: &str| -> Value {
+            let r = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|r| r.method == m)
+                .cloned()
+                .unwrap();
+            serde_json::from_slice(&r.body).unwrap_or(Value::Null)
+        };
+        assert_eq!(last_body("POST"), json!({"guid": "g1", "indexerId": 3}));
+
+        let files = rt.block_on(sonarr.files(1)).unwrap();
+        assert_eq!(files[0].quality.as_deref(), Some("Bluray-1080p"));
+        assert_eq!(files[0].audio_languages.as_deref(), Some("jpn/eng"));
+        rt.block_on(sonarr.delete_files(&[9])).unwrap();
+        assert_eq!(last_body("DELETE"), json!({"episodeFileIds": [9]}));
+
+        let renames = rt.block_on(sonarr.rename_preview(1, Some(6))).unwrap();
+        assert_eq!(renames[0].file, 9);
+        rt.block_on(sonarr.rename(1, &[9])).unwrap();
+        assert_eq!(
+            last_body("POST"),
+            json!({"name": "RenameFiles", "seriesId": 1, "files": [9]})
+        );
+
+        let history = rt.block_on(sonarr.history(1, Some(6))).unwrap();
+        assert_eq!(history[0].kind, "downloadFolderImported", "newest first");
+        assert_eq!(history[1].detail.as_deref(), Some("from Nyaa"));
+
+        let mut series = rt.block_on(sonarr.owner(1)).unwrap();
+        series["path"] = json!("/tv2/JoJo");
+        rt.block_on(sonarr.save_owner(&series, true)).unwrap();
+        assert_eq!(last_body("PUT")["path"], "/tv2/JoJo");
+        rt.block_on(sonarr.delete_owner(1, false, true)).unwrap();
     }
 }

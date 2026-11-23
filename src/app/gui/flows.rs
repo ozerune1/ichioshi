@@ -1474,7 +1474,49 @@ fn library_on_your_servers() {
                 json!([ep(11, 1, 100), ep(12, 2, 0), ep(13, 3, 0)])
             }
             ("GET", "/sonarr/api/v3/episodefile") => json!([{"id": 100,
-                "relativePath": "Season 01/Frieren - S01E01.mkv", "size": video_bytes.len()}]),
+                "relativePath": "Season 01/Frieren - S01E01.mkv", "size": video_bytes.len(),
+                "releaseGroup": "Group", "quality": {"quality": {"name": "Bluray-1080p"}},
+                "mediaInfo": {"videoCodec": "x265", "resolution": "1920x1080",
+                              "audioCodec": "FLAC", "audioLanguages": "jpn", "subtitles": "eng"}}]),
+            // Managing the series.
+            ("GET", "/sonarr/api/v3/series/1") => json!({"id": 1,
+                "title": "Frieren: Beyond Journey's End", "titleSlug": "frieren", "monitored": true,
+                "qualityProfileId": 4, "seriesType": "anime", "seasonFolder": true,
+                "monitorNewItems": "all", "path": "/tv/anime/Frieren", "rootFolderPath": "/tv/anime",
+                "seasons": [{"seasonNumber": 1, "monitored": true}]}),
+            ("PUT", "/sonarr/api/v3/series/1") => json!({"id": 1}),
+            ("GET", "/sonarr/api/v3/release") => {
+                if q.contains_key("episodeId") {
+                    json!([{"guid": "e2", "indexerId": 1, "title": "[Group] Frieren - 02 (1080p)",
+                            "indexer": "Nyaa", "size": 1_400_000_000, "ageHours": 30.0,
+                            "seeders": 80, "leechers": 2, "approved": true, "protocol": "torrent",
+                            "quality": {"quality": {"name": "WEBDL-1080p"}}}])
+                } else {
+                    json!([{"guid": "s2", "indexerId": 1, "title": "[Other] Frieren S01 (720p)",
+                            "indexer": "Nyaa", "size": 9_000_000_000_u64, "ageHours": 900.0,
+                            "seeders": 3, "approved": false, "protocol": "torrent",
+                            "rejections": ["720p is not wanted in profile"],
+                            "quality": {"quality": {"name": "WEBDL-720p"}}},
+                           {"guid": "s1", "indexerId": 1, "title": "[Group] Frieren S01 (BD 1080p)",
+                            "indexer": "Nyaa", "size": 30_000_000_000_u64, "ageHours": 2000.0,
+                            "seeders": 120, "leechers": 4, "approved": true, "protocol": "torrent",
+                            "customFormatScore": 1200, "languages": [{"name": "Japanese"}],
+                            "quality": {"quality": {"name": "Bluray-1080p"}}}])
+                }
+            }
+            ("POST", "/sonarr/api/v3/release") => json!({}),
+            ("DELETE", "/sonarr/api/v3/episodefile/bulk") => json!({}),
+            ("GET", "/sonarr/api/v3/rename") => json!([{"episodeFileId": 100,
+                "existingPath": "Season 01/Frieren - S01E01.mkv",
+                "newPath": "Season 01/Frieren - S01E01 - The Journey's End.mkv"}]),
+            ("GET", "/sonarr/api/v3/history/series") => json!([
+                {"eventType": "grabbed", "sourceTitle": "[Group] Frieren - 01", "date": "2026-11-20T10:00:00Z",
+                 "episodeId": 11, "data": {"indexer": "Nyaa"}, "quality": {"quality": {"name": "WEBDL-1080p"}}},
+                {"eventType": "downloadFolderImported", "sourceTitle": "[Group] Frieren - 01",
+                 "date": "2026-11-20T11:00:00Z", "episodeId": 11},
+                {"eventType": "grabbed", "sourceTitle": "Some other anime of the series",
+                 "date": "2026-11-21T11:00:00Z", "episodeId": 999}]),
+            ("DELETE", "/sonarr/api/v3/series/1") => json!({}),
             ("GET", "/sonarr/api/v3/queue") => json!({"records": [
                 {"id": 5, "seriesId": 1, "episodeId": 13, "size": 100.0, "sizeleft": 40.0,
                  "title": "[Group] Frieren - 03 (1080p)", "status": "downloading",
@@ -1637,7 +1679,10 @@ fn library_on_your_servers() {
     wait_until(&mut h, "its release read", has_release);
     assert!(shows(&h, "▶ Play"));
     assert!(shows(&h, "60%"), "Sonarr's download of episode 3");
-    assert!(shows(&h, "On Sonarr"));
+    assert!(
+        h.app.manage.as_ref().is_some_and(|m| m.anilist == FRIEREN),
+        "its Sonarr panel"
+    );
     save(&h, &out, "3-series");
     click_nth(&mut h, "⌕ Search", 0);
     wait_until(&mut h, "Sonarr searching", |g| {
@@ -1724,6 +1769,158 @@ fn library_on_your_servers() {
     click(&mut h, "Library");
     click(&mut h, "Frieren: Beyond Journey’s End");
     wait_until(&mut h, "its page again", has_release);
+
+    // Managing it as in Sonarr: its panel reads the series there.
+    wait_until(&mut h, "Sonarr's series", |g| {
+        g.app
+            .manage
+            .as_ref()
+            .is_some_and(|m| matches!(m.record, crate::app::discover_ui::Loaded::Ready(_)))
+    });
+    assert!(shows(&h, "Watch for this series"));
+    assert!(shows_containing(&h, "Quality: HD-1080p"));
+    assert!(shows_containing(&h, "2 of its 3 episodes watched for"));
+    save(&h, &out, "6a-manage");
+    // Episode 2 watched for, from its row's box.
+    send(
+        &mut h,
+        [act(Action::Manage(
+            crate::app::manage_ui::ManageAction::SetEpisodesMonitored(vec![2], true),
+        ))],
+    );
+    wait_until(&mut h, "watching for it", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Watching for the episode")
+    });
+    assert_eq!(
+        sent("PUT", "/sonarr/api/v3/episode/monitor").last(),
+        Some(&json!({"episodeIds": [12], "monitored": true}))
+    );
+    // The series, not watched for (its box).
+    click(&mut h, "Watch for this series");
+    wait_until(&mut h, "saved", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Sonarr stopped watching for it")
+    });
+    assert_eq!(
+        sent("PUT", "/sonarr/api/v3/series/1").last().unwrap()["monitored"],
+        false
+    );
+
+    // Its indexers' releases for the season, best first; grabbing one.
+    click(&mut h, "Releases");
+    wait(&mut h, "releases", |g| {
+        shows(g, "[Group] Frieren S01 (BD 1080p)")
+    });
+    assert!(shows(&h, "720p is not wanted in profile"));
+    save(&h, &out, "6b-releases");
+    click(&mut h, "Grab");
+    wait(&mut h, "grabbed", |g| shows(g, "Sent ✓"));
+    assert_eq!(
+        sent("POST", "/sonarr/api/v3/release").last(),
+        Some(&json!({"guid": "s1", "indexerId": 1}))
+    );
+    // An episode's, from its row.
+    click_nth(&mut h, "Releases…", 1);
+    wait(&mut h, "episode 2's", |g| {
+        shows(g, "[Group] Frieren - 02 (1080p)")
+    });
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.target.contains("/release?episodeId=12"))
+    );
+
+    // Its files: what's in them; deleting one (asking first).
+    click(&mut h, "Files");
+    wait(&mut h, "files", |g| {
+        shows_containing(g, "Bluray-1080p · Group")
+    });
+    save(&h, &out, "6c-files");
+    click(&mut h, "Delete…");
+    assert!(shows(&h, "Delete 1 file?"));
+    click(&mut h, "Delete");
+    wait_until(&mut h, "deleted", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Deleted 1 file")
+    });
+    assert_eq!(
+        sent("DELETE", "/sonarr/api/v3/episodefile/bulk"),
+        [json!({"episodeFileIds": [100]})]
+    );
+
+    // What happened to it (only this anime's episodes).
+    click(&mut h, "History");
+    wait(&mut h, "history", |g| shows(g, "Imported"));
+    assert!(!shows(&h, "Some other anime of the series"));
+    save(&h, &out, "6d-history");
+
+    // Renaming its files, previewed first.
+    click(&mut h, "Overview");
+    click(&mut h, "Rename files…");
+    wait(&mut h, "the new names", |g| {
+        shows_containing(g, "The Journey's End.mkv")
+    });
+    click(&mut h, "Rename 1 file");
+    wait_until(&mut h, "renaming", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Renaming 1 file")
+    });
+    assert!(sent("POST", "/sonarr/api/v3/command").contains(&json!(
+        {"name": "RenameFiles", "seriesId": 1, "files": [100]}
+    )));
+
+    // Its settings: another quality profile.
+    click(&mut h, "Edit…");
+    wait(&mut h, "the form", |g| shows(g, "Quality profile"));
+    save(&h, &out, "6e-edit");
+    let mut changed = h.app.manage.as_ref().unwrap().edit.clone().unwrap();
+    changed.profile = 6;
+    send(
+        &mut h,
+        [act(Action::Manage(
+            crate::app::manage_ui::ManageAction::ChangeEdit(changed),
+        ))],
+    );
+    click(&mut h, "Save");
+    wait_until(&mut h, "saved", |g| {
+        g.app.status.as_ref().is_some_and(|s| s.text == "Saved")
+    });
+    let saved = sent("PUT", "/sonarr/api/v3/series/1");
+    assert_eq!(saved.last().unwrap()["qualityProfileId"], 6);
+
+    // Refresh & scan; and deleting it from Sonarr (asking first).
+    click(&mut h, "Refresh & scan");
+    wait_until(&mut h, "refreshing", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text.contains("refreshing"))
+    });
+    assert!(sent("POST", "/sonarr/api/v3/command").contains(&json!(
+        {"name": "RefreshSeries", "seriesId": 1}
+    )));
+    click(&mut h, "Delete…");
+    assert!(shows(&h, "Delete from Sonarr?"));
+    save(&h, &out, "6f-delete");
+    click(&mut h, "Delete, keep files");
+    wait_until(&mut h, "deleted from Sonarr", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Deleted from Sonarr")
+    });
+    assert!(seen.lock().unwrap().iter().any(|r| r.method == "DELETE"
+        && r.target == "/sonarr/api/v3/series/1?deleteFiles=false&addImportListExclusion=false"));
 
     // Streaming episode 1 from Jellyfin (the simulator doesn't run tasks:
     // what Jellyfin says about the file is read here).

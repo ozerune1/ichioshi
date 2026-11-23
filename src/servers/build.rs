@@ -307,6 +307,7 @@ pub async fn build(
                     RemoteEpisode {
                         arr_id: Some(e.id),
                         monitored: e.monitored,
+                        file_id: file.as_ref().map(|_| e.episode_file_id),
                         file,
                         jellyfin: jep.map(|j| j.id.clone()),
                     },
@@ -376,6 +377,7 @@ pub async fn build(
                     RemoteEpisode {
                         arr_id: None,
                         monitored: m.monitored,
+                        file_id: file.as_ref().and(m.movie_file.as_ref()).map(|f| f.id),
                         file,
                         jellyfin: jitem.map(|i| i.id.clone()),
                     },

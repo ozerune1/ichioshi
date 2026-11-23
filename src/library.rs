@@ -177,6 +177,9 @@ pub struct RemoteEpisode {
     pub monitored: bool,
     /// Its file: name and size.
     pub file: Option<(String, u64)>,
+    /// The file in Sonarr or Radarr.
+    #[serde(default)]
+    pub file_id: Option<u64>,
     /// Jellyfin's episode (or film).
     pub jellyfin: Option<String>,
 }

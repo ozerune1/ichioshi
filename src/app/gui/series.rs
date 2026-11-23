@@ -55,9 +55,16 @@ impl Gui {
             rest = rest
                 .push(container(text(d).size(14).line_height(1.55).color(MUTED)).max_width(920));
         }
+        // On the servers, managing it comes first (as Sonarr's page).
+        let servers = self.app.servers_mode();
+        if servers {
+            rest = rest.push(self.library_box(ap));
+        }
         rest = rest.push(self.episodes(ap));
         rest = rest.push(self.release_section(ap));
-        rest = rest.push(self.library_box(ap));
+        if !servers {
+            rest = rest.push(self.library_box(ap));
+        }
         rest = rest.push(gap(20.0));
         body = body.push(rest);
         iced::widget::scrollable(body)
@@ -210,6 +217,8 @@ impl Gui {
                     }))),
                 ));
             }
+        } else if self.app.manage.as_ref().is_some_and(|m| m.anilist == id) {
+            // In Sonarr as a later part of a series there: nothing to add.
         } else if self.app.servers_mode() {
             let to = match self.app.server_place(id) {
                 Some((crate::servers::arr::Kind::Radarr, _)) => "Radarr",
@@ -712,8 +721,13 @@ impl Gui {
         } else {
             space().width(0).into()
         };
+        // On the servers: watched for or not, and its releases there.
+        let (watch, releases) = match self.episode_manage(n) {
+            Some((w, r)) => (w, r),
+            None => (space().width(0).into(), space().width(0).into()),
+        };
         let row = container(
-            row![number, middle, score, airs, discuss, right]
+            row![watch, number, middle, score, airs, discuss, releases, right]
                 .spacing(16)
                 .align_y(Alignment::Center),
         )
@@ -1134,6 +1148,14 @@ impl Gui {
     fn library_box<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
         let anime = &ap.anime;
         if self.app.servers_mode() {
+            if let Some(m) = self
+                .app
+                .manage
+                .as_ref()
+                .filter(|m| m.anilist == anime.anilist_id)
+            {
+                return self.manage_panel(m);
+            }
             if let Some(r) = self
                 .app
                 .library

@@ -556,6 +556,31 @@ impl App {
         self.pages.stats = stats;
     }
 
+    /// Where an anime is in Sonarr or Radarr, if it is: its own entry, or
+    /// (a sequel not out yet, say) as a later part of a series there, by
+    /// what AniList said follows what. The anime it follows, if so.
+    pub(super) fn server_owner(&self, id: u64) -> Option<(Kind, u64, Option<u32>, Option<u64>)> {
+        if let Some(r) = self.library.find(id).and_then(|s| s.remote.as_ref()) {
+            return Some(match r.arr {
+                ArrRef::Sonarr { id, season, .. } => (Kind::Sonarr, id, Some(season), None),
+                ArrRef::Radarr { id, .. } => (Kind::Radarr, id, None, None),
+            });
+        }
+        self.library.series.iter().find_map(|s| {
+            let r = s.remote.as_ref()?;
+            let (part, _) = self.servers.parts.get(&s.anilist_id)?;
+            if !part.sequels.contains(&id) {
+                return None;
+            }
+            match r.arr {
+                ArrRef::Sonarr { id, season, .. } => {
+                    Some((Kind::Sonarr, id, Some(season), Some(s.anilist_id)))
+                }
+                ArrRef::Radarr { .. } => None,
+            }
+        })
+    }
+
     /// Which server an anime goes to, and where it is there.
     pub(super) fn server_place(&self, id: u64) -> Option<(Kind, mapping::Place)> {
         let place = self.servers.mapping.as_ref()?.place(id)?;
@@ -694,10 +719,10 @@ impl App {
                 return;
             }
         };
-        let in_library = self.library.find(id).and_then(|s| s.remote.as_ref());
-        let (kind, add) = match in_library.map(|r| r.arr) {
-            Some(ArrRef::Sonarr { .. }) => (Kind::Sonarr, None),
-            Some(ArrRef::Radarr { .. }) => (Kind::Radarr, None),
+        // There already (maybe as a later part of a series there), or to be
+        // added first.
+        let (kind, add) = match self.server_owner(id) {
+            Some((kind, ..)) => (kind, None),
             None => {
                 if let Some(why) = self.why_not_addable(id) {
                     self.set_error(why);

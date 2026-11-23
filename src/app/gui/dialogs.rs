@@ -144,6 +144,79 @@ impl Gui {
             ];
             return dialog(base, content.into(), 520.0, cancel);
         }
+        // Sonarr's (or Radarr's) files, or the series itself.
+        if let DeleteTarget::ArrFiles(ids) = &target {
+            use crate::app::manage_ui::ManageAction;
+            let content = column![
+                dialog_title(
+                    format!("Delete {name}?"),
+                    Some("They're deleted from disk on the server. It can't be undone.".into())
+                ),
+                gap(20.0),
+                buttons(vec![
+                    secondary("Cancel", Some(cancel.clone())),
+                    danger(
+                        "Delete",
+                        Some(act(Action::Manage(ManageAction::DeleteFiles(ids.clone()))))
+                    ),
+                ]),
+            ];
+            return dialog(base, content.into(), 480.0, cancel);
+        }
+        if let DeleteTarget::ArrOwner = &target {
+            use crate::app::manage_ui::ManageAction;
+            let (kind, others) = match &self.app.manage {
+                Some(m) => {
+                    // Other anime that are seasons of the same series.
+                    let others: Vec<&str> = self
+                        .app
+                        .library
+                        .series
+                        .iter()
+                        .filter(|s| s.anilist_id != m.anilist)
+                        .filter(|s| {
+                            s.remote.as_ref().is_some_and(|r| match r.arr {
+                                crate::library::ArrRef::Sonarr { id, .. } => {
+                                    m.kind == crate::servers::arr::Kind::Sonarr && id == m.owner
+                                }
+                                crate::library::ArrRef::Radarr { id, .. } => {
+                                    m.kind == crate::servers::arr::Kind::Radarr && id == m.owner
+                                }
+                            })
+                        })
+                        .map(|s| s.title())
+                        .collect();
+                    (m.kind.name(), others)
+                }
+                None => ("Sonarr", Vec::new()),
+            };
+            let mut note = format!(
+                "This deletes “{name}” from {kind}: it stops watching for it and forgets it."
+            );
+            if !others.is_empty() {
+                note += &format!(
+                    " It's the whole series there, so these go too: {}.",
+                    others.join(", ")
+                );
+            }
+            note += " Deleting its files too can't be undone.";
+            let delete = |delete_files| {
+                act(Action::Manage(ManageAction::Delete {
+                    delete_files,
+                    exclude: false,
+                }))
+            };
+            let content = column![
+                dialog_title(format!("Delete from {kind}?"), Some(note)),
+                gap(20.0),
+                buttons(vec![
+                    secondary("Cancel", Some(cancel.clone())),
+                    secondary("Delete, keep files", Some(delete(false))),
+                    danger("Delete with files", Some(delete(true))),
+                ]),
+            ];
+            return dialog(base, content.into(), 560.0, cancel);
+        }
         // Several at once: queue items (remove, maybe blocklisting) or
         // downloads here (deleting their files).
         if let DeleteTarget::Many(items) = &target {
@@ -237,7 +310,10 @@ impl Gui {
                 delete_files: true,
             },
             DeleteTarget::Remux(path) => Action::DeleteRemux(path),
-            DeleteTarget::Queued(..) | DeleteTarget::Many(_) => unreachable!("asked above"),
+            DeleteTarget::Queued(..)
+            | DeleteTarget::Many(_)
+            | DeleteTarget::ArrFiles(_)
+            | DeleteTarget::ArrOwner => unreachable!("asked above"),
         };
         let content = column![
             dialog_title(title.into(), Some(note)),
