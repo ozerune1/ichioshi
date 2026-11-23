@@ -144,6 +144,50 @@ impl Gui {
             ];
             return dialog(base, content.into(), 520.0, cancel);
         }
+        // Several at once: queue items (remove, maybe blocklisting) or
+        // downloads here (deleting their files).
+        if let DeleteTarget::Many(items) = &target {
+            let queued = items
+                .iter()
+                .all(|p| matches!(p, crate::app::Picked::Queued(..)));
+            let remove = |delete_files: bool, blocklist: bool| {
+                act(Action::RemoveMany {
+                    items: items.clone(),
+                    delete_files,
+                    blocklist,
+                })
+            };
+            let (title, note, buttons_row) = if queued {
+                (
+                    format!("Remove {name} from the queue?"),
+                    "This stops downloading them and takes them out of the download client, \
+                     with what they've downloaded so far. Blocklisting their releases as well \
+                     keeps Sonarr and Radarr from grabbing them again."
+                        .to_owned(),
+                    vec![
+                        secondary("Cancel", Some(cancel.clone())),
+                        secondary("Remove and blocklist", Some(remove(false, true))),
+                        danger("Remove", Some(remove(false, false))),
+                    ],
+                )
+            } else {
+                (
+                    format!("Delete {name}?"),
+                    "This removes them and deletes their files from disk. It can't be undone."
+                        .to_owned(),
+                    vec![
+                        secondary("Cancel", Some(cancel.clone())),
+                        danger("Delete", Some(remove(true, false))),
+                    ],
+                )
+            };
+            let content = column![
+                dialog_title(title, Some(note)),
+                gap(20.0),
+                buttons(buttons_row),
+            ];
+            return dialog(base, content.into(), 520.0, cancel);
+        }
         let note = match target {
             DeleteTarget::Series(id) => {
                 let folder = self
@@ -193,7 +237,7 @@ impl Gui {
                 delete_files: true,
             },
             DeleteTarget::Remux(path) => Action::DeleteRemux(path),
-            DeleteTarget::Queued(..) => unreachable!("asked above"),
+            DeleteTarget::Queued(..) | DeleteTarget::Many(_) => unreachable!("asked above"),
         };
         let content = column![
             dialog_title(title.into(), Some(note)),

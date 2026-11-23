@@ -427,11 +427,30 @@ enum Action {
     },
     /// For the GUI's player.
     Player(watching::PlayerAction),
+    /// Remove several downloads at once: deleting their files, or (queue
+    /// items) blocklisting their releases.
+    RemoveMany {
+        items: Vec<Picked>,
+        delete_files: bool,
+        blocklist: bool,
+    },
+    /// Ask before that.
+    AskRemoveMany(Vec<Picked>),
     /// Ask before deleting a remuxed copy (or a series' folder of them).
     AskDeleteRemux(PathBuf),
     DeleteRemux(PathBuf),
     Tracking(tracking_ui::TrackingAction),
     Servers(servers_ui::ServersAction),
+}
+
+/// A download picked on the Downloads page (to remove several at once).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Picked {
+    Torrent(TorrentId),
+    Debrid(u64),
+    Usenet(u64),
+    /// In Sonarr's or Radarr's queue.
+    Queued(crate::servers::arr::Kind, u64),
 }
 
 /// What the delete confirmation is about.
@@ -446,6 +465,8 @@ enum DeleteTarget {
     Remux(PathBuf),
     /// Something in Sonarr's or Radarr's queue.
     Queued(crate::servers::arr::Kind, u64),
+    /// Several downloads (or queue items) at once.
+    Many(Vec<Picked>),
 }
 
 enum EngineState {
@@ -1240,6 +1261,37 @@ impl App {
             Action::PlaylistRemove(i) => self.playlist.remove(i),
             Action::PlaylistMove { from, to } => self.playlist.move_item(from, to),
             Action::PlaylistClear => self.playlist.clear(),
+            Action::AskRemoveMany(items) => {
+                let n = items.len();
+                self.confirm_delete = Some((
+                    DeleteTarget::Many(items),
+                    format!("{n} download{}", if n == 1 { "" } else { "s" }),
+                ));
+            }
+            Action::RemoveMany {
+                items,
+                delete_files,
+                blocklist,
+            } => {
+                self.confirm_delete = None;
+                let mut queued: std::collections::HashMap<crate::servers::arr::Kind, Vec<u64>> =
+                    Default::default();
+                for item in items {
+                    match item {
+                        Picked::Torrent(id) => self.perform(Action::Remove { id, delete_files }),
+                        Picked::Debrid(id) => self.debrid_remove(id, delete_files),
+                        Picked::Usenet(id) => self.usenet_remove(id, delete_files),
+                        Picked::Queued(kind, id) => queued.entry(kind).or_default().push(id),
+                    }
+                }
+                for (kind, ids) in queued {
+                    self.servers_action(servers_ui::ServersAction::RemoveQueuedMany {
+                        kind,
+                        ids,
+                        blocklist,
+                    });
+                }
+            }
             Action::AskDeleteRemux(path) => {
                 let name = path
                     .file_name()

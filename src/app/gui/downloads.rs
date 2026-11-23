@@ -7,7 +7,7 @@ use librqbit::TorrentStatsState;
 
 use super::{Gui, Message, act, edit};
 use crate::app::servers_ui::ServersAction;
-use crate::app::{Action, EngineState, fmt_bytes, fmt_duration, fmt_speed};
+use crate::app::{Action, EngineState, Picked, fmt_bytes, fmt_duration, fmt_speed};
 use crate::engine::TorrentHandle;
 use crate::servers::arr::{Kind, Queued};
 
@@ -16,6 +16,7 @@ use super::style::*;
 /// One download, however it's getting here.
 struct Card<'a> {
     key: String,
+    picked: Picked,
     source: &'static str,
     color: Color,
     name: String,
@@ -71,6 +72,9 @@ impl Gui {
             let mut list = Column::new().spacing(10);
             if items.is_empty() {
                 list = list.push(weak(format!("Nothing in {}'s queue.", kind.name())));
+            } else {
+                let all = items.iter().map(|q| Picked::Queued(kind, q.id)).collect();
+                list = list.push(self.pick_bar(all, true));
             }
             for q in items.iter().copied() {
                 list = list.push(self.queued_card(kind, q));
@@ -192,9 +196,13 @@ impl Gui {
         ));
         info = info.push(buttons);
         container(
-            row![picture(cover, 54.0, 76.0, 8.0), info]
-                .spacing(16)
-                .align_y(Alignment::Start),
+            row![
+                self.pick_box(Picked::Queued(kind, q.id)),
+                picture(cover, 54.0, 76.0, 8.0),
+                info
+            ]
+            .spacing(16)
+            .align_y(Alignment::Start),
         )
         .padding(16)
         .width(Fill)
@@ -264,6 +272,11 @@ impl Gui {
             return if titled { page(c) } else { c.into() };
         }
         let mut list = Column::new().spacing(12);
+        let mut all = Vec::new();
+        all.extend(usenet_jobs.iter().map(|v| Picked::Usenet(v.job.id)));
+        all.extend(jobs.iter().map(|v| Picked::Debrid(v.job.id)));
+        all.extend(torrents.iter().rev().map(|(id, _)| Picked::Torrent(*id)));
+        list = list.push(self.pick_bar(all, false));
         for v in &usenet_jobs {
             list = list.push(self.download_card(usenet_card(v)));
         }
@@ -354,9 +367,13 @@ impl Gui {
             info = info.push(files);
         }
         container(
-            row![picture(cover, 54.0, 76.0, 8.0), info]
-                .spacing(16)
-                .align_y(Alignment::Start),
+            row![
+                self.pick_box(d.picked),
+                picture(cover, 54.0, 76.0, 8.0),
+                info
+            ]
+            .spacing(16)
+            .align_y(Alignment::Start),
         )
         .padding(16)
         .width(Fill)
@@ -397,6 +414,76 @@ impl Gui {
                 ..card_style(GOLD.scale_alpha(0.06))
             })
             .into()
+    }
+}
+
+impl Gui {
+    /// A download's checkbox (to remove several together).
+    fn pick_box(&self, p: Picked) -> Element<'_, Message> {
+        let on = self.picked.contains(&p);
+        check("", on, move |v| {
+            let p = p.clone();
+            edit(move |g| {
+                if v {
+                    g.picked.insert(p.clone());
+                } else {
+                    g.picked.remove(&p);
+                }
+            })
+        })
+    }
+
+    /// Above a list of downloads: pick them all, and remove the picked
+    /// ones (queue items: from the queue; downloads here: keeping or
+    /// deleting their files).
+    fn pick_bar(&self, all: Vec<Picked>, queue: bool) -> Element<'_, Message> {
+        let picked: Vec<Picked> = all
+            .iter()
+            .filter(|p| self.picked.contains(*p))
+            .cloned()
+            .collect();
+        let every = !all.is_empty() && picked.len() == all.len();
+        let toggle = all.clone();
+        let mut bar = row![check("Select all", every, move |on| {
+            let toggle = toggle.clone();
+            edit(move |g| {
+                for p in &toggle {
+                    if on {
+                        g.picked.insert(p.clone());
+                    } else {
+                        g.picked.remove(p);
+                    }
+                }
+            })
+        })]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        if picked.is_empty() {
+            return bar.into();
+        }
+        bar = bar.push(weak(format!("{} selected", picked.len())));
+        bar = bar.push(space::horizontal());
+        if queue {
+            bar = bar.push(outlined_red(
+                "Remove selected…",
+                act(Action::AskRemoveMany(picked.clone())),
+            ));
+        } else {
+            bar = bar
+                .push(small(
+                    "Remove selected (keep files)",
+                    Some(act(Action::RemoveMany {
+                        items: picked.clone(),
+                        delete_files: false,
+                        blocklist: false,
+                    })),
+                ))
+                .push(outlined_red(
+                    "Delete selected…",
+                    act(Action::AskRemoveMany(picked.clone())),
+                ));
+        }
+        bar.into()
     }
 }
 
@@ -543,6 +630,7 @@ fn torrent_card<'a>(id: crate::engine::TorrentId, handle: &TorrentHandle) -> Car
     });
     Card {
         key: format!("t{id}"),
+        picked: Picked::Torrent(id),
         source: "BitTorrent",
         color: BLUE,
         hash: handle.info_hash().as_string().to_ascii_lowercase(),
@@ -639,6 +727,7 @@ fn debrid_card<'a>(v: &crate::debrid::jobs::View) -> Card<'a> {
         .collect();
     Card {
         key: format!("d{}", job.id),
+        picked: Picked::Debrid(job.id),
         source: service,
         color: ACCENT,
         name: job.name.clone(),
@@ -731,6 +820,7 @@ fn usenet_card<'a>(v: &crate::usenet::jobs::View) -> Card<'a> {
         .collect();
     Card {
         key: format!("u{}", job.id),
+        picked: Picked::Usenet(job.id),
         source: "Usenet",
         color: GREEN,
         name: job.name.clone(),

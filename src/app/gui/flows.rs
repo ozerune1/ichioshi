@@ -1356,9 +1356,27 @@ fn downloads_and_plays_a_film() {
 
     // Once it's there (the torrent stopped; its file put in place), it's
     // the film's episode, and plays.
-    let engine = h.app.engine().unwrap();
-    let (id, _) = engine.torrents().into_iter().next().unwrap();
-    rt.block_on(engine.remove(id, false)).unwrap();
+    // Removed as the Downloads page removes what's picked (keeping its
+    // files).
+    let (id, _) = h
+        .app
+        .engine()
+        .unwrap()
+        .torrents()
+        .into_iter()
+        .next()
+        .unwrap();
+    send(
+        &mut h,
+        [act(Action::RemoveMany {
+            items: vec![crate::app::Picked::Torrent(id)],
+            delete_files: false,
+            blocklist: false,
+        })],
+    );
+    wait_until(&mut h, "removed", |g| {
+        g.app.engine().is_some_and(|e| e.torrents().is_empty())
+    });
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(
         folder.join(film),
@@ -1472,6 +1490,7 @@ fn library_on_your_servers() {
                  "statusMessages": [{"title": "Other.Show.S01E01.1080p.mkv",
                     "messages": ["Not an upgrade for existing episode file(s)"]}]}]}),
             ("DELETE", "/sonarr/api/v3/queue/5") => json!({}),
+            ("DELETE", "/sonarr/api/v3/queue/bulk") => json!({}),
             ("GET", "/radarr/api/v3/movie") => json!([]),
             ("GET", "/radarr/api/v3/queue") => json!({"records": []}),
             ("PUT", "/sonarr/api/v3/episode/monitor") => json!([]),
@@ -1686,6 +1705,22 @@ fn library_on_your_servers() {
         removed,
         ["/sonarr/api/v3/queue/5?removeFromClient=true&blocklist=true"]
     );
+    // Several at once: picked with their boxes (here, all of them).
+    click(&mut h, "Select all");
+    assert!(shows(&h, "2 selected"));
+    save(&h, &out, "3d-picked");
+    click(&mut h, "Remove selected…");
+    assert!(shows(&h, "Remove 2 downloads from the queue?"));
+    click(&mut h, "Remove");
+    wait_until(&mut h, "removed both", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Removed 2 from Sonarr's queue")
+    });
+    let bulk: Vec<Value> = sent("DELETE", "/sonarr/api/v3/queue/bulk");
+    assert_eq!(bulk, [json!({"ids": [5, 6]})]);
+    assert!(h.picked.is_empty(), "nothing left picked");
     click(&mut h, "Library");
     click(&mut h, "Frieren: Beyond Journey’s End");
     wait_until(&mut h, "its page again", has_release);

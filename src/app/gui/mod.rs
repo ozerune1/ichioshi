@@ -148,6 +148,8 @@ pub(super) struct Gui {
     release_open: Option<u64>,
     /// Downloads whose files are shown.
     expanded: std::collections::HashSet<String>,
+    /// Downloads picked on the Downloads page (to remove together).
+    picked: std::collections::HashSet<crate::app::Picked>,
     /// Text to put on the clipboard.
     copy: Option<String>,
     /// The note in the corner (the app's status), and since when.
@@ -179,6 +181,7 @@ impl Gui {
             filter: Filter::All,
             release_open: None,
             expanded: Default::default(),
+            picked: Default::default(),
             copy: None,
             note_since: None,
         }
@@ -276,6 +279,13 @@ impl Gui {
                     self.save_progress();
                 }
                 self.app.perform(Action::OpenDiscussion { id, episode });
+                Task::none()
+            }
+            Action::RemoveMany { ref items, .. } => {
+                for p in items {
+                    self.picked.remove(p);
+                }
+                self.app.perform(action);
                 Task::none()
             }
             other => {

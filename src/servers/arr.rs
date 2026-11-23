@@ -357,6 +357,19 @@ impl Arr {
             .collect())
     }
 
+    /// Take several things out of the queue at once (as `remove_queued`).
+    pub async fn remove_queued_many(&self, ids: &[u64], blocklist: bool) -> Result<()> {
+        self.send(
+            self.client
+                .delete(self.url(&format!(
+                    "queue/bulk?removeFromClient=true&blocklist={blocklist}"
+                )))
+                .json(&json!({ "ids": ids })),
+        )
+        .await
+        .map(drop)
+    }
+
     /// Take something out of the queue (and the download client); with
     /// `blocklist`, its release isn't grabbed again.
     pub async fn remove_queued(&self, id: u64, blocklist: bool) -> Result<()> {

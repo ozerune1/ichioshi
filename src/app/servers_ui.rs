@@ -80,6 +80,12 @@ pub(super) enum ServersAction {
         id: u64,
         blocklist: bool,
     },
+    /// Several at once.
+    RemoveQueuedMany {
+        kind: Kind,
+        ids: Vec<u64>,
+        blocklist: bool,
+    },
 }
 
 pub(super) enum ServersMsg {
@@ -190,6 +196,32 @@ impl App {
             ServersAction::Search { id, episodes } => self.search_servers(id, episodes),
             ServersAction::AskRemoveQueued { kind, id, title } => {
                 self.confirm_delete = Some((super::DeleteTarget::Queued(kind, id), title));
+            }
+            ServersAction::RemoveQueuedMany {
+                kind,
+                ids,
+                blocklist,
+            } => {
+                let Some(arr) = self.arr(kind) else { return };
+                let n = ids.len();
+                self.spawn(async move {
+                    let result = arr
+                        .remove_queued_many(&ids, blocklist)
+                        .await
+                        .map(|()| {
+                            format!(
+                                "Removed {n} from {}'s queue{}",
+                                kind.name(),
+                                if blocklist {
+                                    " and blocklisted them"
+                                } else {
+                                    ""
+                                }
+                            )
+                        })
+                        .map_err(|e| format!("Couldn't remove them: {e:#}"));
+                    Msg::Servers(ServersMsg::Removed(result))
+                });
             }
             ServersAction::RemoveQueued {
                 kind,
