@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- SeaDex on Android: the app is native code (android_main in
-     libseadex_downloader.so) run by NativeActivity; no Java of its own. -->
+<!-- Ichioshi on Android: the app is native code (android_main in
+     libichioshi.so) run by NativeActivity; no Java of its own. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="app.seadex.downloader"
+    package="app.ichioshi"
     android:versionCode="1"
     android:versionName="0.1.0">
 
@@ -10,20 +10,20 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
-        android:label="SeaDex"
+        android:label="Ichioshi"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:hasCode="false"
         android:extractNativeLibs="true"
         android:usesCleartextTraffic="true"
-        android:theme="@style/SeaDex">
+        android:theme="@style/Ichioshi">
         <activity
             android:name="android.app.NativeActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|density|uiMode"
             android:windowSoftInputMode="adjustResize">
-            <meta-data android:name="android.app.lib_name" android:value="seadex_downloader" />
+            <meta-data android:name="android.app.lib_name" android:value="ichioshi" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

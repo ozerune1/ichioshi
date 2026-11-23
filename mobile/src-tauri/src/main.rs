@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    seadex_mobile_lib::run()
+    ichioshi_mobile_lib::run()
 }

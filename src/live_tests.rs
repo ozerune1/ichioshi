@@ -16,7 +16,7 @@ fn scratch_dir(name: &str) -> PathBuf {
     let base = std::env::var_os("LIVE_TEST_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join(format!("seadex-live-{name}-{}", std::process::id()));
+    let dir = base.join(format!("ichioshi-live-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -73,7 +73,7 @@ async fn wait_finished(handle: &crate::engine::TorrentHandle) {
 
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent("seadex-downloader-tests")
+        .user_agent("ichioshi-tests")
         .build()
         .unwrap()
 }

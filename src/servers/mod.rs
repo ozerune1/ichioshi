@@ -83,7 +83,7 @@ impl Config {
         if c.jellyfin.device_id.is_empty() {
             let mut buf = [0u8; 8];
             let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut buf);
-            c.jellyfin.device_id = format!("seadex-{:016x}", u64::from_le_bytes(buf));
+            c.jellyfin.device_id = format!("ichioshi-{:016x}", u64::from_le_bytes(buf));
         }
         c
     }
@@ -170,7 +170,7 @@ mod tests {
     fn saves_privately_and_makes_a_device_id() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = Config::load(dir.path());
-        assert!(c.jellyfin.device_id.starts_with("seadex-"));
+        assert!(c.jellyfin.device_id.starts_with("ichioshi-"));
         c.sonarr.url = "nas:8989".into();
         c.sonarr.api_key = "k".into();
         c.save(dir.path()).unwrap();

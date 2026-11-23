@@ -81,7 +81,7 @@ pub async fn respond(mut stream: TcpStream, status: &str, message: &str, script:
         .map(|s| format!("<script>{s}</script>"))
         .unwrap_or_default();
     let body = format!(
-        "<!doctype html><meta charset=utf-8><title>SeaDex Downloader</title>\
+        "<!doctype html><meta charset=utf-8><title>Ichioshi</title>\
          <body style=\"font:16px sans-serif;margin:3em\"><p id=m>{message}</p>{script}"
     );
     let response = format!(
@@ -93,5 +93,4 @@ pub async fn respond(mut stream: TcpStream, status: &str, message: &str, script:
     let _ = stream.shutdown().await;
 }
 
-pub const DONE: &str =
-    "Signed in to SeaDex Downloader. You can close this tab and go back to the app.";
+pub const DONE: &str = "Signed in to Ichioshi. You can close this tab and go back to the app.";

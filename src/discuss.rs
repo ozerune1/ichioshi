@@ -686,7 +686,7 @@ pub(crate) mod tests {
         let _net = crate::mock_http::real();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::builder()
-            .user_agent("seadex-downloader-test")
+            .user_agent("ichioshi-test")
             .build()
             .unwrap();
         rt.block_on(async {

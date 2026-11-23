@@ -95,7 +95,7 @@ pub fn run(rt: tokio::runtime::Handle, state_dir: PathBuf) -> iced::Result {
         Gui::update,
         Gui::view,
     )
-    .title("SeaDex")
+    .title("Ichioshi")
     .subscription(Gui::subscription)
     .theme(|_: &Gui| Theme::Dark)
     .default_font(INTER);
@@ -108,9 +108,9 @@ pub fn run(rt: tokio::runtime::Handle, state_dir: PathBuf) -> iced::Result {
 
 pub(crate) use style::FONTS;
 
-/// The app's icon (assets/icon/seadex.svg, as made by scripts/make-icons.sh).
-pub(super) const ICON_SVG: &[u8] = include_bytes!("../../../assets/icon/seadex.svg");
-const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon/png/seadex-256.png");
+/// The app's icon (assets/icon/ichioshi.svg, as made by scripts/make-icons.sh).
+pub(super) const ICON_SVG: &[u8] = include_bytes!("../../../assets/icon/ichioshi.svg");
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon/png/ichioshi-256.png");
 
 /// The main window: its size and icon (and, on Linux, the app ID desktops
 /// match it to its desktop entry by).
@@ -121,7 +121,7 @@ fn window_settings() -> iced::window::Settings {
         exit_on_close_request: false,
         #[cfg(target_os = "linux")]
         platform_specific: iced::window::settings::PlatformSpecific {
-            application_id: "seadex".into(),
+            application_id: "ichioshi".into(),
             ..Default::default()
         },
         ..Default::default()

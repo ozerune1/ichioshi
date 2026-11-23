@@ -2,5 +2,5 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 fn main() {
-    seadex_downloader::desktop_main();
+    ichioshi::desktop_main();
 }

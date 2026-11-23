@@ -247,30 +247,27 @@ async fn wait_for_code(listener: &TcpListener, state: &str, cancel: &AtomicBool)
         let query: HashMap<String, String> = url::Url::parse(&format!("http://localhost{target}"))
             .map(|u| u.query_pairs().into_owned().collect())
             .unwrap_or_default();
-        let (status, message, outcome) = match (
-            query.get("code"),
-            query.get("error"),
-            query.get("state"),
-        ) {
-            (_, Some(error), Some(s)) if s == state => (
-                "200 OK",
-                "Sign-in was cancelled. You can close this tab.",
-                Some(Err(anyhow!("Google sign-in didn't complete ({error})"))),
-            ),
-            (Some(code), None, Some(s)) if s == state => (
-                "200 OK",
-                "Signed in to SeaDex Downloader. You can close this tab and go back to the app.",
-                Some(Ok(code.clone())),
-            ),
-            (Some(_), _, _) => (
-                "400 Bad Request",
-                "This sign-in doesn't match the app's. Start again from the app.",
-                None,
-            ),
-            _ => ("404 Not Found", "Not found.", None),
-        };
+        let (status, message, outcome) =
+            match (query.get("code"), query.get("error"), query.get("state")) {
+                (_, Some(error), Some(s)) if s == state => (
+                    "200 OK",
+                    "Sign-in was cancelled. You can close this tab.",
+                    Some(Err(anyhow!("Google sign-in didn't complete ({error})"))),
+                ),
+                (Some(code), None, Some(s)) if s == state => (
+                    "200 OK",
+                    "Signed in to Ichioshi. You can close this tab and go back to the app.",
+                    Some(Ok(code.clone())),
+                ),
+                (Some(_), _, _) => (
+                    "400 Bad Request",
+                    "This sign-in doesn't match the app's. Start again from the app.",
+                    None,
+                ),
+                _ => ("404 Not Found", "Not found.", None),
+            };
         let body = format!(
-            "<!doctype html><meta charset=utf-8><title>SeaDex Downloader</title>\
+            "<!doctype html><meta charset=utf-8><title>Ichioshi</title>\
              <body style=\"font:16px sans-serif;margin:3em\"><p>{message}</p>"
         );
         let response = format!(
@@ -1019,7 +1016,7 @@ pub(crate) mod tests {
     /// kept, and what arrives is exactly the file.
     #[tokio::test]
     async fn resumable_upload_recovers_from_errors() {
-        let dir = std::env::temp_dir().join(format!("seadex-gdrive-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ichioshi-gdrive-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("2026-11-21 16-48-35.zip");
         let content: Vec<u8> = (0..1_300_000u32).map(|i| (i % 251) as u8).collect();

@@ -3,7 +3,7 @@
 members = [".", "mobile/src-tauri"]
 
 [package]
-name = "seadex-downloader"
+name = "ichioshi"
 version = "0.1.0"
 edition = "2024"
 
@@ -76,7 +76,7 @@ gui = [
 ]
 
 [[bin]]
-name = "seadex-downloader"
+name = "ichioshi"
 path = "src/main.rs"
 required-features = ["gui"]
 

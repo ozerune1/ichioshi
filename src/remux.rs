@@ -1282,7 +1282,7 @@ mod end_to_end {
         let base = std::env::var_os("LIVE_TEST_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        let dir = base.join(format!("seadex-remux-{name}-{}", std::process::id()));
+        let dir = base.join(format!("ichioshi-remux-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

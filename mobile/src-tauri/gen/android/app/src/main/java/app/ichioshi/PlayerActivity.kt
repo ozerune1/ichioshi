@@ -1,4 +1,4 @@
-package app.seadex.downloader
+package app.ichioshi
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog

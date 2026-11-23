@@ -1,6 +1,6 @@
 #!/bin/sh
 # The earlier Android build (iced, NativeActivity), superseded by build.sh
-# (the Tauri app): dist/SeaDex-android.apk for ARM phones (arm64) and
+# (the Tauri app): dist/Ichioshi-android.apk for ARM phones (arm64) and
 # x86_64 emulators, signed with a key of this computer's own.
 # Needs (once): the Android SDK (platforms;android-35, build-tools;35.0.0)
 # in ~/.local/share/android-sdk, the NDK, and
@@ -20,8 +20,8 @@ for t in ${TARGETS:-aarch64-linux-android:arm64-v8a x86_64-linux-android:x86_64}
     abi=${t##*:}
     if [ "$PROFILE" = release ]; then flag=--release; else flag=; fi
     cargo rustc --lib $flag --target "$triple" --crate-type cdylib
-    llvm-strip -o "$OUT/lib/$abi/libseadex_downloader.so" \
-        "target/$triple/$PROFILE/libseadex_downloader.so"
+    llvm-strip -o "$OUT/lib/$abi/libichioshi.so" \
+        "target/$triple/$PROFILE/libichioshi.so"
 done
 
 # Resources (the icons) and the manifest, then the native code.
@@ -33,13 +33,13 @@ done
 "$BT/zipalign" -f -P 16 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
 # A signing key of this computer's own (made once).
-KEY="$HOME/.local/share/seadex-android/seadex.keystore"
+KEY="$HOME/.local/share/ichioshi-android/ichioshi.keystore"
 if [ ! -f "$KEY" ]; then
     mkdir -p "$(dirname "$KEY")"
-    keytool -genkeypair -keystore "$KEY" -alias seadex -keyalg RSA -keysize 2048 \
-        -validity 10000 -storepass seadex-android -keypass seadex-android \
-        -dname "CN=SeaDex" >/dev/null
+    keytool -genkeypair -keystore "$KEY" -alias ichioshi -keyalg RSA -keysize 2048 \
+        -validity 10000 -storepass ichioshi-android -keypass ichioshi-android \
+        -dname "CN=Ichioshi" >/dev/null
 fi
-"$BT/apksigner" sign --ks "$KEY" --ks-pass pass:seadex-android --v4-signing-enabled false \
-    --out dist/SeaDex-android.apk "$OUT/aligned.apk"
-ls -la dist/SeaDex-android.apk
+"$BT/apksigner" sign --ks "$KEY" --ks-pass pass:ichioshi-android --v4-signing-enabled false \
+    --out dist/Ichioshi-android.apk "$OUT/aligned.apk"
+ls -la dist/Ichioshi-android.apk

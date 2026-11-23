@@ -21,5 +21,5 @@
 #-renamesourcefileattribute SourceFile
 # The player: found by name (Tauri loads the plugin; libmpv calls back into
 # its class from native code).
--keep class app.seadex.downloader.** { *; }
+-keep class app.ichioshi.** { *; }
 -keep class dev.jdtech.mpv.** { *; }

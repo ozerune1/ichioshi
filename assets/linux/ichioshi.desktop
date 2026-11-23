@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=SeaDex
+Name=Ichioshi
 GenericName=Anime library
 Comment=Download, organize and watch anime
-Exec=seadex-downloader
-Icon=seadex
-StartupWMClass=seadex
+Exec=ichioshi
+Icon=ichioshi
+StartupWMClass=ichioshi
 Categories=AudioVideo;Video;Player;Network;
 Terminal=false

@@ -3487,6 +3487,66 @@ dependencies = [
 ]
 
 [[package]]
+name = "ichioshi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "dirs",
+ "fancy-regex",
+ "flate2",
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-video",
+ "iced",
+ "iced_test",
+ "iced_video_player",
+ "iced_winit",
+ "image",
+ "jni 0.21.1",
+ "libc",
+ "libloading 0.8.9",
+ "librqbit",
+ "librqbit-core",
+ "ndk-context",
+ "nzb-nntp",
+ "nzb-rs",
+ "par2-rs",
+ "rcgen",
+ "regex",
+ "reqwest",
+ "rfd",
+ "ring",
+ "ron",
+ "roxmltree 0.21.2",
+ "serde",
+ "serde_json",
+ "socket2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "winit",
+ "yenc-simd",
+ "zip",
+]
+
+[[package]]
+name = "ichioshi-mobile"
+version = "0.1.0"
+dependencies = [
+ "ichioshi",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ico"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7029,66 +7089,6 @@ dependencies = [
  "memmap2",
  "smithay-client-toolkit 0.19.2",
  "tiny-skia",
-]
-
-[[package]]
-name = "seadex-downloader"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "chrono",
- "dirs",
- "fancy-regex",
- "flate2",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-video",
- "iced",
- "iced_test",
- "iced_video_player",
- "iced_winit",
- "image",
- "jni 0.21.1",
- "libc",
- "libloading 0.8.9",
- "librqbit",
- "librqbit-core",
- "ndk-context",
- "nzb-nntp",
- "nzb-rs",
- "par2-rs",
- "rcgen",
- "regex",
- "reqwest",
- "rfd",
- "ring",
- "ron",
- "roxmltree 0.21.2",
- "serde",
- "serde_json",
- "socket2",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
- "url",
- "winit",
- "yenc-simd",
- "zip",
-]
-
-[[package]]
-name = "seadex-mobile"
-version = "0.1.0"
-dependencies = [
- "seadex-downloader",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-opener",
- "tracing-subscriber",
 ]
 
 [[package]]

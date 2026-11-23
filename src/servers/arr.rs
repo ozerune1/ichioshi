@@ -510,7 +510,7 @@ impl Arr {
             "title": title,
             "protocol": "torrent",
             "publishDate": chrono::Utc::now().to_rfc3339(),
-            "indexer": "SeaDex",
+            "indexer": "Ichioshi",
         });
         if !download.is_empty() {
             body["downloadUrl"] = json!(download);

@@ -152,7 +152,7 @@ impl Manager {
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Arc<Self> {
         let http = reqwest::Client::builder()
-            .user_agent(concat!("seadex-downloader/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("ichioshi/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(90))
             .build()
@@ -1091,7 +1091,8 @@ pub(crate) mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("seadex-debrid-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ichioshi-debrid-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

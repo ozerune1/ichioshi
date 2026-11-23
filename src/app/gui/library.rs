@@ -178,7 +178,7 @@ impl Gui {
                 .width(30)
                 .height(30),
             column![
-                text("SeaDex").size(16).font(BOLD).color(TEXT),
+                text("Ichioshi").size(16).font(BOLD).color(TEXT),
                 text("anime library").size(11).color(FAINT)
             ],
         ]

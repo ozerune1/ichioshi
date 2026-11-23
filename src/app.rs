@@ -79,7 +79,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             // (Android says where, at start.)
-            download_dir: std::env::var_os("SEADEX_DOWNLOAD_DIR")
+            download_dir: std::env::var_os("ICHIOSHI_DOWNLOAD_DIR")
                 .map(PathBuf::from)
                 .or_else(dirs::download_dir)
                 .or_else(dirs::home_dir)
@@ -156,9 +156,9 @@ impl Waker {
 /// `~/Videos/Anime` (or the platform's videos folder). Tests never touch it.
 fn default_library_dir() -> PathBuf {
     if cfg!(test) {
-        return std::env::temp_dir().join("seadex-downloader-test-library");
+        return std::env::temp_dir().join("ichioshi-test-library");
     }
-    if let Some(dir) = std::env::var_os("SEADEX_LIBRARY_DIR") {
+    if let Some(dir) = std::env::var_os("ICHIOSHI_LIBRARY_DIR") {
         return PathBuf::from(dir);
     }
     dirs::video_dir()
@@ -864,7 +864,7 @@ impl App {
         let settings = Settings::load(&state_dir);
         let saved_settings = settings.to_json();
         let http = reqwest::Client::builder()
-            .user_agent(concat!("seadex-downloader/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("ichioshi/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
             .build()
             .expect("failed to build the HTTP client");
@@ -905,10 +905,7 @@ impl App {
             remux_seq: 0,
             playlist: Playlist::load(state_dir.join("playlist.json")),
             playlist_seq: 0,
-            drive: DriveState::load(
-                &state_dir,
-                concat!("seadex-downloader/", env!("CARGO_PKG_VERSION")),
-            ),
+            drive: DriveState::load(&state_dir, concat!("ichioshi/", env!("CARGO_PKG_VERSION"))),
             debrid,
             vpn,
             usenet,

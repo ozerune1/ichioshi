@@ -1,4 +1,4 @@
-package app.seadex.downloader
+package app.ichioshi
 
 import android.graphics.Color
 import android.os.Bundle

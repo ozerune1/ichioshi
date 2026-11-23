@@ -467,7 +467,8 @@ pub(crate) mod tests {
 
     #[test]
     fn config_keeps_a_key_per_service() {
-        let dir = std::env::temp_dir().join(format!("seadex-debrid-config-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ichioshi-debrid-config-{}", std::process::id()));
         let path = dir.join("debrid.json");
         let mut config = Config {
             enabled: true,

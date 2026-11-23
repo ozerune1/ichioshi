@@ -1,4 +1,4 @@
-//! SeaDex: find the best releases of anime (SeaDex, Nyaa), download them
+//! Ichioshi (イチオシ, "top pick"): find the best releases of anime (SeaDex, Nyaa), download them
 //! (BitTorrent, debrid services, Usenet) into a library on this computer or
 //! on your own servers (Sonarr, Radarr, Jellyfin), and watch them.
 //!
@@ -222,6 +222,23 @@ fn self_test(out: &std::path::Path, video: Option<&std::path::Path>) -> bool {
     ok
 }
 
+/// The app's folder in `data` (settings, sign-ins, caches): `ichioshi`.
+/// The app was called SeaDex Downloader before, and kept it in
+/// `seadex-downloader`: that folder is moved here the first time.
+#[cfg(all(feature = "gui", not(target_os = "android")))]
+fn state_dir_moved(data: &std::path::Path) -> std::path::PathBuf {
+    let dir = data.join("ichioshi");
+    let old = data.join("seadex-downloader");
+    if !dir.exists()
+        && old.is_dir()
+        && let Err(e) = std::fs::rename(&old, &dir)
+    {
+        eprintln!("couldn't move {} to {}: {e}", old.display(), dir.display());
+        return old;
+    }
+    dir
+}
+
 /// The desktop app (Linux, Windows); `--self-test` checks a build.
 #[cfg(all(feature = "gui", not(target_os = "android")))]
 pub fn desktop_main() {
@@ -229,17 +246,13 @@ pub fn desktop_main() {
     if let Some(i) = args.iter().position(|a| a == "--self-test") {
         let out = args.get(i + 1).map_or("self-test.txt", String::as_str);
         let video = args.get(i + 2).map(std::path::Path::new);
-        let state = std::env::temp_dir().join("seadex-self-test");
+        let state = std::env::temp_dir().join("ichioshi-self-test");
         use_bundled_gstreamer(&state);
         let ok = self_test(std::path::Path::new(out), video);
         std::process::exit(if ok { 0 } else { 1 });
     }
-    let state_dir = std::env::var_os("SEADEX_STATE_DIR").map_or_else(
-        || {
-            dirs::data_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("seadex-downloader")
-        },
+    let state_dir = std::env::var_os("ICHIOSHI_STATE_DIR").map_or_else(
+        || state_dir_moved(&dirs::data_dir().unwrap_or_else(std::env::temp_dir)),
         std::path::PathBuf::from,
     );
     // Before any other thread starts.
@@ -269,7 +282,7 @@ fn android_main(app: iced_winit::android::AndroidApp) {
     android::start_logging();
     let state_dir = app
         .internal_data_path()
-        .unwrap_or_else(|| std::path::PathBuf::from("/data/local/tmp/seadex"));
+        .unwrap_or_else(|| std::path::PathBuf::from("/data/local/tmp/ichioshi"));
     // The library and downloads: in the phone's Download folder, where
     // player apps can read them (an app's own storage is closed to others),
     // and which an app can write to without asking for a permission.
@@ -280,11 +293,11 @@ fn android_main(app: iced_winit::android::AndroidApp) {
     let shared = std::fs::canonicalize(&storage)
         .unwrap_or(storage)
         .join("Download")
-        .join("SeaDex");
+        .join("Ichioshi");
     // SAFETY: nothing else runs yet.
     unsafe {
-        std::env::set_var("SEADEX_LIBRARY_DIR", shared.join("Library"));
-        std::env::set_var("SEADEX_DOWNLOAD_DIR", shared.join("Downloads"));
+        std::env::set_var("ICHIOSHI_LIBRARY_DIR", shared.join("Library"));
+        std::env::set_var("ICHIOSHI_DOWNLOAD_DIR", shared.join("Downloads"));
         // Servers' certificates are checked against the phone's own CAs
         // (Android 14 and later keep them in Conscrypt's module).
         std::env::set_var(
@@ -302,4 +315,43 @@ fn android_main(app: iced_winit::android::AndroidApp) {
         tracing::error!("{e}");
     }
     runtime.shutdown_timeout(Duration::from_secs(2));
+}
+
+#[cfg(all(test, feature = "gui", not(target_os = "android")))]
+mod state_dir_tests {
+    use super::state_dir_moved;
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ichioshi-state-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// SeaDex Downloader's folder becomes Ichioshi's, with what's in it.
+    #[test]
+    fn the_old_folder_is_moved() {
+        let data = temp("moved");
+        std::fs::create_dir(data.join("seadex-downloader")).unwrap();
+        std::fs::write(data.join("seadex-downloader/app.ron"), "()").unwrap();
+        let dir = state_dir_moved(&data);
+        assert_eq!(dir, data.join("ichioshi"));
+        assert_eq!(std::fs::read_to_string(dir.join("app.ron")).unwrap(), "()");
+        assert!(!data.join("seadex-downloader").exists());
+        // Once moved, it stays put.
+        assert_eq!(state_dir_moved(&data), dir);
+        std::fs::remove_dir_all(&data).unwrap();
+    }
+
+    /// With both folders there, Ichioshi's is used and the old one left be.
+    #[test]
+    fn the_new_folder_wins() {
+        let data = temp("both");
+        std::fs::create_dir(data.join("seadex-downloader")).unwrap();
+        std::fs::create_dir(data.join("ichioshi")).unwrap();
+        assert_eq!(state_dir_moved(&data), data.join("ichioshi"));
+        assert!(data.join("seadex-downloader").exists());
+        std::fs::remove_dir_all(&data).unwrap();
+    }
 }

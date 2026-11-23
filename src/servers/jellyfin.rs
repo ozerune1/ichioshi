@@ -105,7 +105,7 @@ impl Jellyfin {
     /// Who's asking, as Jellyfin wants it said.
     fn authorization(&self) -> String {
         let mut a = format!(
-            "MediaBrowser Client=\"SeaDex\", Device=\"SeaDex\", DeviceId=\"{}\", Version=\"{}\"",
+            "MediaBrowser Client=\"Ichioshi\", Device=\"Ichioshi\", DeviceId=\"{}\", Version=\"{}\"",
             self.device_id,
             env!("CARGO_PKG_VERSION")
         );

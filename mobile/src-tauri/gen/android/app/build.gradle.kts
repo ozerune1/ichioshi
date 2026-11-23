@@ -14,27 +14,27 @@ val tauriProperties = Properties().apply {
     }
 }
 
-// Release builds are signed with this computer's own key (the one the
-// earlier builds used, so this installs over them), when it's there.
-val seadexKey = file(System.getProperty("user.home") + "/.local/share/seadex-android/seadex.keystore")
+// Release builds are signed with this computer's own key (made by
+// scripts/android/build.sh), so each installs over the last.
+val ichioshiKey = file(System.getProperty("user.home") + "/.local/share/ichioshi-android/ichioshi.keystore")
 
 android {
     compileSdk = 37
     signingConfigs {
-        create("seadex") {
-            if (seadexKey.exists()) {
-                storeFile = seadexKey
-                storePassword = "seadex-android"
-                keyAlias = "seadex"
-                keyPassword = "seadex-android"
+        create("ichioshi") {
+            if (ichioshiKey.exists()) {
+                storeFile = ichioshiKey
+                storePassword = "ichioshi-android"
+                keyAlias = "ichioshi"
+                keyPassword = "ichioshi-android"
             }
         }
     }
-    namespace = "app.seadex.downloader"
+    namespace = "app.ichioshi"
     defaultConfig {
         // Servers at home are often plain HTTP.
         manifestPlaceholders["usesCleartextTraffic"] = "true"
-        applicationId = "app.seadex.downloader"
+        applicationId = "app.ichioshi"
         // Android 11: the library goes in the Download folder (scoped
         // storage, no permission needed).
         minSdk = 30
@@ -56,8 +56,8 @@ android {
             }
         }
         getByName("release") {
-            if (seadexKey.exists()) {
-                signingConfig = signingConfigs.getByName("seadex")
+            if (ichioshiKey.exists()) {
+                signingConfig = signingConfigs.getByName("ichioshi")
             }
             optimization {
                enable = true

@@ -1,9 +1,9 @@
-//! SeaDex for phones: the app's core (seadex-downloader, without its
+//! Ichioshi for phones: the app's core (ichioshi, without its
 //! desktop GUI) behind a web UI. The UI asks for the view and sends
 //! commands; the core tells it things as events ("changed": ask for the
 //! view again; "play": a video to play).
 
-use seadex_downloader::{Bridge, Command};
+use ichioshi::{Bridge, Command};
 use tauri::{Emitter, Manager};
 
 /// What to show: the page and what's around it.
@@ -64,8 +64,7 @@ fn player_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .setup(|_app, _api| {
             #[cfg(target_os = "android")]
             {
-                let handle =
-                    _api.register_android_plugin("app.seadex.downloader", "PlayerPlugin")?;
+                let handle = _api.register_android_plugin("app.ichioshi", "PlayerPlugin")?;
                 _app.manage(Player(handle));
             }
             Ok(())
@@ -82,7 +81,7 @@ async fn command(
     bridge.command(command).await
 }
 
-/// Android: the core's log and panics go to logcat (tag "SeaDex").
+/// Android: the core's log and panics go to logcat (tag "Ichioshi").
 #[cfg(target_os = "android")]
 fn log_to_logcat() {
     use std::ffi::{CString, c_char, c_int};
@@ -94,7 +93,7 @@ fn log_to_logcat() {
         if let Ok(text) = CString::new(text.replace('\0', " ")) {
             // SAFETY: both strings are NUL-terminated and outlive the call.
             unsafe {
-                __android_log_write(4, c"SeaDex".as_ptr(), text.as_ptr());
+                __android_log_write(4, c"Ichioshi".as_ptr(), text.as_ptr());
             }
         }
     }
@@ -147,7 +146,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![view, command, play, to_background])
         .run(tauri::generate_context!())
-        .expect("error while running SeaDex");
+        .expect("error while running Ichioshi");
 }
 
 /// Where the app keeps its state; on Android, also where the library and
@@ -163,11 +162,11 @@ fn state_dir(app: &tauri::App) -> Result<std::path::PathBuf, Box<dyn std::error:
         let shared = std::fs::canonicalize(&storage)
             .unwrap_or(storage)
             .join("Download")
-            .join("SeaDex");
+            .join("Ichioshi");
         // SAFETY: before the core (and its threads) start.
         unsafe {
-            std::env::set_var("SEADEX_LIBRARY_DIR", shared.join("Library"));
-            std::env::set_var("SEADEX_DOWNLOAD_DIR", shared.join("Downloads"));
+            std::env::set_var("ICHIOSHI_LIBRARY_DIR", shared.join("Library"));
+            std::env::set_var("ICHIOSHI_DOWNLOAD_DIR", shared.join("Downloads"));
             // Android 14 and later keep the CAs in Conscrypt's module.
             std::env::set_var(
                 "SSL_CERT_DIR",

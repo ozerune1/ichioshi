@@ -74,7 +74,7 @@ impl Bridge {
         let wake = jobs.clone();
         let emit: Emit = Arc::new(emit);
         std::thread::Builder::new()
-            .name("seadex-core".into())
+            .name("ichioshi-core".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()

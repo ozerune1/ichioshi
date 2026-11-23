@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the Windows build: SeaDex.exe with the GStreamer plugins
+"""Package the Windows build: Ichioshi.exe with the GStreamer plugins
 playing needs, libass, and every DLL they load (from the MSYS2 sysroot made
 by fetch-gstreamer.py), zipped.
 
@@ -32,15 +32,15 @@ LOADED = ["libass-9.dll", "libsoup-3.0-0.dll"]
 def main():
     exe, root, out = sys.argv[1], sys.argv[2], sys.argv[3]
     bin_dir = os.path.join(root, "bin")
-    dist = os.path.join(out, "SeaDex")
+    dist = os.path.join(out, "Ichioshi")
     if os.path.exists(dist):
         shutil.rmtree(dist)
     os.makedirs(dist)
-    shutil.copy2(exe, os.path.join(dist, "SeaDex.exe"))
+    shutil.copy2(exe, os.path.join(dist, "Ichioshi.exe"))
 
     plugins_out = os.path.join(dist, "lib", "gstreamer-1.0")
     os.makedirs(plugins_out)
-    todo = [os.path.join(dist, "SeaDex.exe")]
+    todo = [os.path.join(dist, "Ichioshi.exe")]
     for p in PLUGINS:
         src = os.path.join(root, "lib", "gstreamer-1.0", f"libgst{p}.dll")
         if not os.path.exists(src):
@@ -84,7 +84,7 @@ def main():
     # fontconfig's settings (libass finds fonts with it).
     shutil.copytree(os.path.join(root, "etc", "fonts"), os.path.join(dist, "etc", "fonts"))
 
-    zip_path = os.path.join(out, "SeaDex-windows-x86_64.zip")
+    zip_path = os.path.join(out, "Ichioshi-windows-x86_64.zip")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
         for base, _, files in os.walk(dist):
             for name in files:

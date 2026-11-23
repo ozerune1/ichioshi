@@ -39,7 +39,7 @@ def get(url, tries=5):
 
     for attempt in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "seadex-build"})
+            req = urllib.request.Request(url, headers={"User-Agent": "ichioshi-build"})
             with urllib.request.urlopen(req, timeout=600) as r:
                 return r.read()
         except OSError as e:

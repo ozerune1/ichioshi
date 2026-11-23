@@ -21,9 +21,9 @@ unsafe extern "C" {
     fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
 }
 
-/// One line to logcat (tag "SeaDex").
+/// One line to logcat (tag "Ichioshi").
 pub fn log(text: &str) {
-    let tag = c"SeaDex";
+    let tag = c"Ichioshi";
     let Ok(text) = CString::new(text.replace('\0', " ")) else {
         return;
     };
@@ -330,7 +330,7 @@ pub fn clipboard() -> Option<String> {
 pub fn set_clipboard(text: &str) {
     java(|env, activity| {
         let manager = clipboard_manager(env, activity)?;
-        let label = env.new_string("SeaDex")?;
+        let label = env.new_string("Ichioshi")?;
         let value = env.new_string(text)?;
         let clip = env
             .call_static_method(

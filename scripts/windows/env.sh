@@ -1,7 +1,7 @@
 # Source this to cross-compile for Windows: Zig as the C compiler and
 # linker (cargo-zigbuild), GStreamer from MSYS2 (fetch-gstreamer.py) for
 # pkg-config.
-TOOLS=${SEADEX_WINDOWS_TOOLS:-$HOME/.local/share/seadex-windows}
+TOOLS=${ICHIOSHI_WINDOWS_TOOLS:-$HOME/.local/share/ichioshi-windows}
 export PATH="$TOOLS/zig-x86_64-linux-0.15.2:$HOME/.cargo/bin:$PATH"
 export ZIG="$TOOLS/zig-x86_64-linux-0.15.2/zig"
 export PKG_CONFIG_ALLOW_CROSS=1

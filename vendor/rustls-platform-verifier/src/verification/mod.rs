@@ -1,7 +1,7 @@
 #[cfg(any(windows, target_vendor = "apple"))]
 use std::sync::Arc;
 
-// SeaDex's copy: Android uses this one too (webpki, with the phone's CA
+// Ichioshi's copy: Android uses this one too (webpki, with the phone's CA
 // folders through SSL_CERT_DIR), not the Java verifier, which an APK
 // without Gradle doesn't have.
 #[cfg(all(any(unix, target_arch = "wasm32"), not(target_vendor = "apple"),))]

@@ -1,7 +1,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
-// SeaDex's copy: the Java verifier's setup is kept (for its API) but unused.
+// Ichioshi's copy: the Java verifier's setup is kept (for its API) but unused.
 #![cfg_attr(target_os = "android", allow(dead_code))]
 
 use std::sync::Arc;

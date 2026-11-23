@@ -1,11 +1,11 @@
 [package]
-name = "seadex-mobile"
+name = "ichioshi-mobile"
 version = "0.1.0"
-description = "SeaDex for phones: the app's core, with a web UI (Tauri)"
+description = "Ichioshi for phones: the app's core, with a web UI (Tauri)"
 edition = "2024"
 
 [lib]
-name = "seadex_mobile_lib"
+name = "ichioshi_mobile_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -13,7 +13,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # The core, without the desktop GUI.
-seadex-downloader = { path = "../..", default-features = false }
+ichioshi = { path = "../..", default-features = false }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde_json = "1"

@@ -352,7 +352,7 @@ pub(crate) mod tests {
     async fn real_indexers() {
         let idx = Indexers::new(
             reqwest::Client::builder()
-                .user_agent("seadex-downloader-test")
+                .user_agent("ichioshi-test")
                 .build()
                 .unwrap(),
         );

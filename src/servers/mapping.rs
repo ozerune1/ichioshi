@@ -217,7 +217,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::builder()
-            .user_agent("seadex-downloader-test")
+            .user_agent("ichioshi-test")
             .build()
             .unwrap();
         let m = rt
