@@ -50,6 +50,10 @@ pub(super) const BOLD: Font = Font {
     weight: font::Weight::Bold,
     ..INTER
 };
+/// (Android's own: iced finds no "monospace" there; gui/mod.rs loads it.)
+#[cfg(target_os = "android")]
+pub(super) const MONO: Font = Font::with_name("Droid Sans Mono");
+#[cfg(not(target_os = "android"))]
 pub(super) const MONO: Font = Font::MONOSPACE;
 
 pub(super) fn status_color(s: Status) -> Color {
@@ -490,6 +494,23 @@ pub(super) fn scroll_style(_: &Theme, _: scrollable::Status) -> scrollable::Styl
 /// Android has no file manager to open, nor dialogs to pick files and
 /// folders with: what needs them is left out there.
 pub(super) const DESKTOP: bool = !cfg!(target_os = "android");
+
+/// A field you'd paste into (an address, a key): on Android, whose
+/// keyboards can't paste into the app, with a Paste button beside it.
+/// `set` is what the field does with text (its `on_input`).
+pub(super) fn pasteable<'a>(
+    input: text_input::TextInput<'a, Message>,
+    set: impl Fn(String) -> Message + Send + Sync + 'static,
+) -> Element<'a, Message> {
+    if DESKTOP {
+        return input.into();
+    }
+    let paste = super::Message::Paste(super::Paste(std::sync::Arc::new(set)));
+    row![input.width(Fill), small("Paste", Some(paste))]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+}
 
 /// What the app runs on, in words.
 pub(super) const HERE: &str = if DESKTOP {

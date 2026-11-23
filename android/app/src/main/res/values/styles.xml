@@ -1,11 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- The app's window sits between Android's status bar and its
-         navigation bar (not under them), which take the app's colours. -->
+    <!-- The app draws edge to edge (behind Android's status and navigation
+         bars) and keeps clear of them itself, from the window's insets. -->
     <style name="SeaDex" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
-        <item name="android:statusBarColor">#0d0f14</item>
-        <item name="android:navigationBarColor">#11141b</item>
         <item name="android:windowBackground">@android:color/black</item>
     </style>
 </resources>

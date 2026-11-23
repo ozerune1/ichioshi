@@ -67,6 +67,10 @@ impl Gui {
         // room to see what's typed.
         let typing = self.bottom_clear > 120.0;
         let mut c = column![
+            // What Android's status bar (or the screen's cutout) covers.
+            container(space().height(self.top_clear))
+                .width(Fill)
+                .style(|_| fill(BG)),
             self.top_bar(),
             container(page).width(Fill).height(Fill).style(|_| fill(BG)),
         ];

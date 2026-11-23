@@ -229,21 +229,27 @@ impl Gui {
                 .into(),
             _ => space().into(),
         };
+        let set_key = move |k: String| {
+            edit(move |g| {
+                g.app.debrid.config.keys.insert(provider, k.clone());
+                g.app.debrid.save();
+                g.app.debrid.account = None;
+            })
+        };
         c = c
             .push(providers)
-            .push(
-                row![
-                    text("API key").size(14).color(MUTED).width(80),
+            .push(line(vec![
+                text("API key").size(14).color(MUTED).width(80).into(),
+                pasteable(
                     field("Paste it here", &key)
                         .id("debrid-key")
                         .secure(true)
-                        .on_input(move |k| edit(move |g| {
-                            g.app.debrid.config.keys.insert(provider, k.clone());
-                            g.app.debrid.save();
-                            g.app.debrid.account = None;
-                        }))
+                        .on_input(set_key)
                         .on_submit(act(Action::DebridCheck))
-                        .width(360),
+                        .width(w(360.0)),
+                    set_key,
+                ),
+                row![
                     secondary(
                         "Check",
                         d.config
@@ -257,8 +263,9 @@ impl Gui {
                     ),
                 ]
                 .spacing(10)
-                .align_y(Alignment::Center),
-            )
+                .align_y(Alignment::Center)
+                .into(),
+            ]))
             .push(account)
             .push(weak(format!(
                 "{} fetches each torrent on its servers; {HERE} then downloads just the files \
@@ -544,6 +551,24 @@ impl Gui {
             Service::AniList => t.config.anilist.client_id.clone(),
             Service::Mal => t.config.mal.client_id.clone(),
         };
+        let set_id = move |v: String| {
+            edit(move |g| {
+                let c = &mut g.app.tracking.config;
+                match service {
+                    Service::AniList => c.anilist.client_id = v.clone(),
+                    Service::Mal => c.mal.client_id = v.clone(),
+                }
+            })
+        };
+        let set_secret = move |v: String| {
+            edit(move |g| {
+                let c = &mut g.app.tracking.config;
+                match service {
+                    Service::AniList => c.anilist.client_secret = v.clone(),
+                    Service::Mal => c.mal.client_secret = v.clone(),
+                }
+            })
+        };
         c = c
             .push(
                 row![
@@ -571,18 +596,10 @@ impl Gui {
             )
             .push(line(vec![
                 weak("3. Its client ID").into(),
-                field("Client ID", &id)
-                    .on_input(move |v| {
-                        edit(move |g| {
-                            let c = &mut g.app.tracking.config;
-                            match service {
-                                Service::AniList => c.anilist.client_id = v.clone(),
-                                Service::Mal => c.mal.client_id = v.clone(),
-                            }
-                        })
-                    })
-                    .width(w(320.0))
-                    .into(),
+                pasteable(
+                    field("Client ID", &id).on_input(set_id).width(w(320.0)),
+                    set_id,
+                ),
             ]));
         // AniList's code grant needs the secret; MyAnimeList shows one for
         // some kinds of client only.
@@ -596,23 +613,17 @@ impl Gui {
         let note = if compact() { note.trim_start() } else { note };
         c = c.push(line(vec![
             weak(note).into(),
-            field("Client secret", secret)
-                .id(match service {
-                    Service::AniList => "anilist-secret",
-                    Service::Mal => "mal-secret",
-                })
-                .secure(true)
-                .on_input(move |v| {
-                    edit(move |g| {
-                        let c = &mut g.app.tracking.config;
-                        match service {
-                            Service::AniList => c.anilist.client_secret = v.clone(),
-                            Service::Mal => c.mal.client_secret = v.clone(),
-                        }
+            pasteable(
+                field("Client secret", secret)
+                    .id(match service {
+                        Service::AniList => "anilist-secret",
+                        Service::Mal => "mal-secret",
                     })
-                })
-                .width(w(320.0))
-                .into(),
+                    .secure(true)
+                    .on_input(set_secret)
+                    .width(w(320.0)),
+                set_secret,
+            ),
         ]));
         c.push(primary(
             format!("Sign in with {}", service.name()),

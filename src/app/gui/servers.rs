@@ -33,42 +33,63 @@ impl Gui {
     /// Settings: Jellyfin, Sonarr and Radarr.
     pub(super) fn servers_settings(&self) -> Element<'_, Message> {
         let s = &self.app.servers;
-        let mut c = column![
-            weak(
-                "Sonarr (series) and Radarr (films) keep your anime and download them with \
-                 their own download client: choosing a release here hands it to them. Jellyfin \
-                 streams what's there and remembers what you've watched. Anime are matched to \
-                 AniList through the community anime-lists mapping, so each season (or part of \
-                 a split-cour season) is its own anime with its own episode numbers."
-            ),
-            self.jellyfin_settings(),
-            row![
-                column![
-                    text("Offline copies").size(15).font(SEMI).color(TEXT),
-                    weak(format!(
-                        "Episodes saved from Jellyfin go in {}",
-                        self.app.library_dir().join("Offline").display()
-                    )),
-                ]
-                .spacing(2)
-                .width(Fill),
-                desktop_only(secondary("Change…", Some(act(Action::PickLibraryFolder)))),
-            ]
-            .align_y(Alignment::Center),
-            self.arr_settings(Kind::Sonarr),
-            self.arr_settings(Kind::Radarr),
+        let offline = column![
+            text("Offline copies").size(15).font(SEMI).color(TEXT),
+            weak(format!(
+                "Episodes saved from Jellyfin go in {}",
+                self.app.library_dir().join("Offline").display()
+            )),
         ]
-        .spacing(18);
-        let mut status = row![].spacing(10).align_y(Alignment::Center);
-        status = status.push(if s.refreshing {
-            weak("Reading your servers…")
-        } else if let Some(t) = s.refreshed {
-            weak(format!("Read {}", ago(t)))
-        } else if s.config.any() {
-            weak("Not read yet")
+        .spacing(2)
+        .width(Fill);
+        // A phone's: a few words, and each server in a box of its own.
+        let mut c = if compact() {
+            column![
+                weak(
+                    "Sonarr and Radarr keep and download your anime; Jellyfin streams it and \
+                     remembers what you've watched."
+                ),
+                card(
+                    column![self.jellyfin_settings(), super::library::rule(), offline].spacing(12)
+                ),
+                card(self.arr_settings(Kind::Sonarr)),
+                card(self.arr_settings(Kind::Radarr)),
+            ]
+            .spacing(14)
         } else {
-            weak("Set up Sonarr or Radarr to see your library")
-        });
+            column![
+                weak(
+                    "Sonarr (series) and Radarr (films) keep your anime and download them with \
+                     their own download client: choosing a release here hands it to them. \
+                     Jellyfin streams what's there and remembers what you've watched. Anime are \
+                     matched to AniList through the community anime-lists mapping, so each \
+                     season (or part of a split-cour season) is its own anime with its own \
+                     episode numbers."
+                ),
+                self.jellyfin_settings(),
+                row![
+                    offline,
+                    desktop_only(secondary("Change…", Some(act(Action::PickLibraryFolder)))),
+                ]
+                .align_y(Alignment::Center),
+                self.arr_settings(Kind::Sonarr),
+                self.arr_settings(Kind::Radarr),
+            ]
+            .spacing(18)
+        };
+        let mut status = row![].spacing(10).align_y(Alignment::Center);
+        status = status.push(
+            if s.refreshing {
+                weak("Reading your servers…")
+            } else if let Some(t) = s.refreshed {
+                weak(format!("Read {}", ago(t)))
+            } else if s.config.any() {
+                weak("Not read yet")
+            } else {
+                weak("Set up Sonarr or Radarr to see your library")
+            }
+            .width(Fill),
+        );
         status = status.push(small(
             "Read again",
             (s.config.any() && !s.refreshing).then(|| servers(ServersAction::Refresh)),
@@ -110,26 +131,36 @@ impl Gui {
             .spacing(10)
             .into();
         }
+        let set_url = |v: String| edit(move |g| g.app.servers.config.jellyfin.url = v.clone());
+        let set_user =
+            |v: String| edit(move |g| g.app.servers.config.jellyfin.username = v.clone());
+        let set_password = |v: String| edit(move |g| g.app.servers.password = v.clone());
         let mut c = column![
             head,
             line(vec![
-                field("Address, like http://nas:8096", &j.url)
-                    .id("jellyfin-url")
-                    .on_input(|v| edit(move |g| g.app.servers.config.jellyfin.url = v.clone()))
-                    .width(Fill)
-                    .into(),
-                field("Username", &j.username)
-                    .id("jellyfin-user")
-                    .on_input(|v| edit(move |g| g.app.servers.config.jellyfin.username = v.clone()))
-                    .width(w(200.0))
-                    .into(),
-                field("Password", &s.password)
-                    .id("jellyfin-password")
-                    .secure(true)
-                    .on_input(|v| edit(move |g| g.app.servers.password = v.clone()))
-                    .on_submit(servers(ServersAction::SignIn))
-                    .width(w(200.0))
-                    .into(),
+                pasteable(
+                    field("Address, like http://nas:8096", &j.url)
+                        .id("jellyfin-url")
+                        .on_input(set_url)
+                        .width(Fill),
+                    set_url,
+                ),
+                pasteable(
+                    field("Username", &j.username)
+                        .id("jellyfin-user")
+                        .on_input(set_user)
+                        .width(w(200.0)),
+                    set_user,
+                ),
+                pasteable(
+                    field("Password", &s.password)
+                        .id("jellyfin-password")
+                        .secure(true)
+                        .on_input(set_password)
+                        .on_submit(servers(ServersAction::SignIn))
+                        .width(w(200.0)),
+                    set_password,
+                ),
                 primary(
                     if s.signing_in {
                         "Signing in…"
@@ -159,6 +190,8 @@ impl Gui {
             Kind::Radarr => ("Films: where they're kept, and downloading them.", 7878),
         };
         let id = |f: &str| format!("{}-{f}", kind.name().to_lowercase());
+        let set_url = move |v: String| edit(move |g| account_mut(g, kind).url = v.clone());
+        let set_key = move |v: String| edit(move |g| account_mut(g, kind).api_key = v.clone());
         let about = s.about.get(&kind);
         let mut c = column![
             column![
@@ -167,18 +200,22 @@ impl Gui {
             ]
             .spacing(2),
             line(vec![
-                field(&format!("Address, like http://nas:{port}"), &account.url)
-                    .id(id("url"))
-                    .on_input(move |v| edit(move |g| account_mut(g, kind).url = v.clone()))
-                    .width(Fill)
-                    .into(),
-                field("API key (its Settings → General)", &account.api_key)
-                    .id(id("key"))
-                    .secure(true)
-                    .on_input(move |v| edit(move |g| account_mut(g, kind).api_key = v.clone()))
-                    .on_submit(servers(ServersAction::Check(kind)))
-                    .width(w(300.0))
-                    .into(),
+                pasteable(
+                    field(&format!("Address, like http://nas:{port}"), &account.url)
+                        .id(id("url"))
+                        .on_input(set_url)
+                        .width(Fill),
+                    set_url,
+                ),
+                pasteable(
+                    field("API key (its Settings → General)", &account.api_key)
+                        .id(id("key"))
+                        .secure(true)
+                        .on_input(set_key)
+                        .on_submit(servers(ServersAction::Check(kind)))
+                        .width(w(300.0)),
+                    set_key,
+                ),
                 secondary(
                     if matches!(about, Some(Loaded::Loading)) {
                         "Checking…"

@@ -67,7 +67,8 @@ fn system_fonts() -> &'static [&'static [u8]] {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let wanted = name.starts_with("NotoSansCJK-Regular")
                     || name.starts_with("NotoSansSymbols")
-                    || name.starts_with("DroidSansFallback");
+                    || name.starts_with("DroidSansFallback")
+                    || name == "DroidSansMono.ttf";
                 if wanted && let Ok(bytes) = std::fs::read(entry.path()) {
                     out.push(&*Box::leak(bytes.into_boxed_slice()));
                 }
@@ -133,6 +134,8 @@ pub(super) enum Message {
     Act(Action),
     /// A change to what's being edited (fields, choices).
     Edit(Edit),
+    /// Paste the clipboard's text into a field (Android's keyboards can't).
+    Paste(Paste),
     Player(player::Msg),
     /// Background work finished; its results are in the app's channel.
     Wake,
@@ -163,6 +166,7 @@ impl std::fmt::Debug for Message {
             other => f.write_str(match other {
                 Message::Act(_) => "Act",
                 Message::Edit(_) => "Edit",
+                Message::Paste(_) => "Paste",
                 Message::Wake => "Wake",
                 Message::Tick => "Tick",
                 Message::Resized(_) => "Resized",
@@ -177,6 +181,10 @@ impl std::fmt::Debug for Message {
 /// A change to the GUI's state, made when the message arrives.
 #[derive(Clone)]
 pub(super) struct Edit(Arc<dyn Fn(&mut Gui) + Send + Sync>);
+
+/// What a field does with text: its `on_input`, for pasting into it.
+#[derive(Clone)]
+pub(super) struct Paste(pub(super) Arc<dyn Fn(String) -> Message + Send + Sync>);
 
 /// A message that changes something (a field, a choice) when it arrives.
 pub(super) fn edit(f: impl Fn(&mut Gui) + Send + Sync + 'static) -> Message {
@@ -203,8 +211,10 @@ pub(super) struct Gui {
     fullscreen: bool,
     window: iced::Size,
     scale: f32,
-    /// How much of the window's bottom the system covers (Android's
-    /// gesture bar, the keyboard): kept clear.
+    /// How much of the window's top and bottom the system covers
+    /// (Android's status bar, its gesture bar or buttons, the keyboard):
+    /// kept clear.
+    top_clear: f32,
     bottom_clear: f32,
     /// A phone's: the settings' group open (a page of its own), and the
     /// calendar's day.
@@ -246,6 +256,7 @@ impl Gui {
             fullscreen: false,
             window: iced::Size::new(1440.0, 900.0),
             scale: 1.0,
+            top_clear: 0.0,
             bottom_clear: 0.0,
             settings_section: None,
             cal_day: None,
@@ -265,9 +276,33 @@ impl Gui {
             Message::Edit(Edit(f)) => {
                 f(self);
                 match self.copy.take() {
+                    #[cfg(target_os = "android")]
+                    Some(text) => {
+                        crate::android::set_clipboard(&text);
+                        self.app.set_info("Copied");
+                        Task::none()
+                    }
+                    #[cfg(not(target_os = "android"))]
                     Some(text) => iced::clipboard::write(text),
                     None => Task::none(),
                 }
+            }
+            Message::Paste(Paste(f)) => {
+                #[cfg(target_os = "android")]
+                {
+                    match crate::android::clipboard() {
+                        Some(text) if !text.trim().is_empty() => {
+                            return self.update(f(text.trim().to_owned()));
+                        }
+                        _ => self.app.set_error("Nothing to paste: copy something first"),
+                    }
+                    Task::none()
+                }
+                #[cfg(not(target_os = "android"))]
+                iced::clipboard::read().map(move |text| match text {
+                    Some(t) if !t.trim().is_empty() => f(t.trim().to_owned()),
+                    _ => Message::Wake,
+                })
             }
             Message::Player(msg) => self.player_message(msg),
             Message::Wake => Task::none(),
@@ -375,7 +410,10 @@ impl Gui {
         let mut tasks = Vec::new();
         #[cfg(target_os = "android")]
         {
-            self.bottom_clear = crate::android::bottom_covered() / self.scale.max(1.0);
+            let (top, bottom) = crate::android::covered();
+            let scale = self.scale.max(1.0);
+            self.top_clear = top / scale;
+            self.bottom_clear = bottom / scale;
         }
         // The end (the widget says so too, while the window draws).
         if self
@@ -925,7 +963,7 @@ impl Gui {
                     .height(Fill)
                     .align_y(Alignment::Start)
                     .padding(iced::Padding {
-                        top: 60.0,
+                        top: 60.0 + self.top_clear,
                         right: 12.0,
                         bottom: 0.0,
                         left: 12.0,

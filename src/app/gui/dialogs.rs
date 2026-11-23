@@ -692,10 +692,19 @@ impl Gui {
 
 /// A Usenet provider's server, account and connections.
 fn provider_form<'a>(p: &Provider, new: bool) -> Element<'a, Message> {
-    let line = |name: &'static str, input: Element<'a, Message>| {
+    let line = |name: &'static str, input: Element<'a, Message>| -> Element<'a, Message> {
+        if compact() {
+            if name.is_empty() {
+                return input;
+            }
+            return column![text(name).size(13).color(MUTED), input]
+                .spacing(4)
+                .into();
+        }
         row![text(name).size(13).color(MUTED).width(110), input]
             .spacing(10)
             .align_y(Alignment::Center)
+            .into()
     };
     let number = |n: u16| if n == 0 { String::new() } else { n.to_string() };
     let digits = |s: &str| -> u16 {
@@ -705,6 +714,9 @@ fn provider_form<'a>(p: &Provider, new: bool) -> Element<'a, Message> {
             .parse()
             .unwrap_or(0)
     };
+    let set_host = |v: String| on_form(move |p| p.host = v.clone());
+    let set_user = |v: String| on_form(move |p| p.username = v.clone());
+    let set_password = |v: String| on_form(move |p| p.password = v.clone());
     let tls = p.tls;
     let save_ok = !p.host.trim().is_empty() && p.port > 0 && p.connections > 0;
     column![
@@ -724,9 +736,10 @@ fn provider_form<'a>(p: &Provider, new: bool) -> Element<'a, Message> {
         ),
         line(
             "Server",
-            field("news.example.com", &p.host)
-                .on_input(|v| on_form(move |p| p.host = v.clone()))
-                .into()
+            pasteable(
+                field("news.example.com", &p.host).on_input(set_host),
+                set_host
+            )
         ),
         line(
             "Port",
@@ -752,16 +765,14 @@ fn provider_form<'a>(p: &Provider, new: bool) -> Element<'a, Message> {
         ),
         line(
             "Username",
-            field("", &p.username)
-                .on_input(|v| on_form(move |p| p.username = v.clone()))
-                .into()
+            pasteable(field("", &p.username).on_input(set_user), set_user)
         ),
         line(
             "Password",
-            field("", &p.password)
-                .secure(true)
-                .on_input(|v| on_form(move |p| p.password = v.clone()))
-                .into()
+            pasteable(
+                field("", &p.password).secure(true).on_input(set_password),
+                set_password
+            )
         ),
         line(
             "Connections",
