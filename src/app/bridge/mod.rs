@@ -8,9 +8,12 @@
 //! the view says what's there and the core keeps what each thing does, as
 //! the desktop GUI does with its messages.
 
+mod browse;
+mod downloads;
 mod form;
 mod library;
 mod play;
+mod series;
 mod settings;
 mod ui;
 mod view;

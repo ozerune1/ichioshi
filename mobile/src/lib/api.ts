@@ -13,6 +13,8 @@ export type Note = { text: string; error: boolean } | null;
 
 export type View = {
   page: any;
+  /** Opens the search page. */
+  search: string;
   tab: "library" | "discover" | "downloads" | "more";
   servers: boolean;
   downloading: number;

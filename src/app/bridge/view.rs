@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ui::{Handler, Handles, Ui};
-use super::{Core, library, play, settings};
+use super::{Core, browse, downloads, library, play, series, settings};
 use crate::app::watching::PlayerAction;
 use crate::app::{Action, App, Origin, Page};
 
@@ -133,17 +133,23 @@ pub(super) fn view(app: &App, handles: &mut Handles) -> Value {
     let mut ui = Ui::new(app, handles);
     let page = match &app.page {
         Page::Home => library::page(&mut ui),
-        Page::Downloads => json!({"kind": "downloads"}),
+        Page::Downloads => downloads::page(&mut ui),
         Page::Settings => settings::page(&mut ui),
-        Page::Discover | Page::Calendar => json!({"kind": "discover"}),
-        Page::Anime(ap) => json!({"kind": "series", "title": ap.anime.title}),
-        Page::Results => json!({"kind": "search"}),
-        Page::Files(_) => json!({"kind": "files"}),
+        Page::Discover => browse::discover(&mut ui),
+        Page::Calendar => browse::calendar(&mut ui),
+        Page::Anime(ap) => series::page(&mut ui, ap),
+        Page::Results => browse::search(&mut ui),
+        Page::Files(fp) => browse::files(&mut ui, fp),
         Page::Remux(_) => json!({"kind": "remux"}),
         Page::Playlist(_) => json!({"kind": "playlist"}),
     };
+    let search = ui.edit(|app| {
+        app.cancel_listing();
+        app.page = Page::Results;
+    });
     json!({
         "page": page,
+        "search": search,
         "tab": match tab(app) {
             Tab::Library => "library",
             Tab::Discover => "discover",

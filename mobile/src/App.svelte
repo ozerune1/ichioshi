@@ -6,6 +6,12 @@
   import { back, dismissNote, goTab, type View } from "./lib/api";
   import Library from "./pages/Library.svelte";
   import More from "./pages/More.svelte";
+  import Series from "./pages/Series.svelte";
+  import Discover from "./pages/Discover.svelte";
+  import Search from "./pages/Search.svelte";
+  import Files from "./pages/Files.svelte";
+  import Downloads from "./pages/Downloads.svelte";
+  import { press } from "./lib/api";
 
   start();
   // Back: out of an open settings group first, then the app's own.
@@ -68,6 +74,9 @@
       <span class="gap"></span>
     {/if}
     <h1>{title}</h1>
+    {#if page?.kind === "library" || page?.kind === "discover"}
+      <button class="icon" onclick={() => app.view && press(app.view.search)} aria-label="Search">⌕</button>
+    {/if}
   </header>
 
   {#if note}
@@ -83,6 +92,16 @@
       <Library {page} />
     {:else if page.kind === "more"}
       <More {page} />
+    {:else if page.kind === "series"}
+      <Series {page} />
+    {:else if page.kind === "discover"}
+      <Discover {page} />
+    {:else if page.kind === "search"}
+      <Search {page} />
+    {:else if page.kind === "files"}
+      <Files {page} />
+    {:else if page.kind === "downloads"}
+      <Downloads {page} />
     {:else}
       <p class="muted center">{page.kind}: coming soon</p>
     {/if}
