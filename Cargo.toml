@@ -4,7 +4,7 @@ members = [".", "mobile/src-tauri"]
 
 [package]
 name = "ichioshi"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 
 [dependencies]
@@ -48,6 +48,8 @@ iroh = { version = "1.5", default-features = false, features = ["tls-ring", "por
 # A watch party member seeding to the party: the router's port for it (UPnP,
 # NAT-PMP or PCP; iroh brings it already).
 portmapper = "0.20"
+# Reading iroh's lookups (it brings it already).
+n0-future = "0.3"
 
 # The player (GStreamer) and file dialogs: not on Android, where videos open
 # in a player app and paths are typed in.

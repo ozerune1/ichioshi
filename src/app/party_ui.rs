@@ -227,8 +227,8 @@ impl App {
                 if self.party.role.is_some() || self.party.busy {
                     return;
                 }
-                let invite = match party::Invite::parse(&self.party.code) {
-                    Ok(i) => i,
+                let code = match party::Invite::normalize(&self.party.code) {
+                    Ok(c) => c,
                     Err(e) => {
                         self.party.error = Some(e);
                         return;
@@ -241,9 +241,16 @@ impl App {
                 let name = self.party_name();
                 let events = self.party_events(move |e| PartyMsg::Member(seq, e));
                 self.spawn(async move {
-                    let result = Joined::join(&invite, &name, events)
-                        .await
-                        .map_err(|e| format!("{e:#}"));
+                    // What the code stands for takes a moment to work out.
+                    let result =
+                        match tokio::task::spawn_blocking(move || party::Invite::from_code(&code))
+                            .await
+                        {
+                            Ok(invite) => Joined::join(&invite, &name, events)
+                                .await
+                                .map_err(|e| format!("{e:#}")),
+                            Err(e) => Err(e.to_string()),
+                        };
                     Msg::Party(PartyMsg::Joined { seq, result })
                 });
             }
@@ -342,7 +349,7 @@ impl App {
                 self.party.busy = false;
                 match result {
                     Ok(hosting) => {
-                        let code = hosting.invite.code();
+                        let code = hosting.invite.code.clone();
                         self.party.role = Some(Role::Host(HostSide {
                             hosting: Some(hosting),
                             code,

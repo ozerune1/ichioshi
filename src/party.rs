@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use base64::Engine as _;
 use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::{Endpoint, EndpointAddr};
 use serde::{Deserialize, Serialize};
@@ -30,79 +29,99 @@ pub const ALPN: &[u8] = b"ichioshi/party/1";
 /// The longest message read.
 const MAX_LINE: u64 = 1 << 20;
 
-/// What an invite code starts with.
-const PREFIX: &str = "ichioshi-party:";
-
 /// Milliseconds on this app's clock (since it first asked).
 pub fn now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
-/// Joining a party: the host's address, and the party's secret (anyone
-/// with the code can join, so it's shared only with friends).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// The characters a party code is made of: Crockford's base 32, which
+/// leaves out look-alikes (I, L, O and U) so it's easy to say and type.
+const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// How long a party code is.
+pub const CODE_LEN: usize = 4;
+
+/// Joining a party: its code (four characters, about a million of them),
+/// and what the code stands for, worked out from it: the host's iroh key
+/// (so a member can look the host up by it) and the party's secret.
+/// Working them out is slow on purpose, so guessing codes is slow too.
+/// Anyone with the code can join, so it's shared only with friends.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Invite {
-    pub host: EndpointAddr,
+    pub code: String,
+    key: [u8; 32],
     pub secret: [u8; 16],
 }
 
 impl Invite {
-    /// The code to send friends: short, so it's easy to pass on. The
-    /// host's key, the secret, and its relay (members find the direct way
-    /// through it); without a relay, its addresses.
-    pub fn code(&self) -> String {
-        use iroh::TransportAddr;
-        let mut bytes = vec![1u8];
-        bytes.extend_from_slice(self.host.id.as_bytes());
-        bytes.extend_from_slice(&self.secret);
-        let relays = self.host.addrs.iter().any(TransportAddr::is_relay);
-        let addrs: Vec<String> = self
-            .host
-            .addrs
+    /// A new party's: a random code.
+    pub fn random() -> Self {
+        use ring::rand::SecureRandom;
+        let mut bytes = [0u8; CODE_LEN];
+        ring::rand::SystemRandom::new()
+            .fill(&mut bytes)
+            .expect("the system's random numbers");
+        let code = bytes
             .iter()
-            .filter_map(|a| match a {
-                TransportAddr::Relay(url) => Some(format!("r{url}")),
-                TransportAddr::Ip(ip) if !relays => Some(format!("i{ip}")),
-                _ => None,
-            })
-            .collect();
-        bytes.extend_from_slice(addrs.join(" ").as_bytes());
-        format!(
-            "{PREFIX}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-        )
+            .map(|b| ALPHABET[(*b & 31) as usize] as char)
+            .collect::<String>();
+        Self::from_code(&code)
     }
 
-    /// Read a code (pasted with spaces or line breaks in it, or without its
-    /// start).
+    /// What a code (as `normalize` gives it) stands for. (Slow: a tenth of
+    /// a second or so.)
+    pub fn from_code(code: &str) -> Self {
+        let mut out = [0u8; 48];
+        ring::pbkdf2::derive(
+            ring::pbkdf2::PBKDF2_HMAC_SHA256,
+            std::num::NonZeroU32::new(100_000).unwrap(),
+            b"ichioshi watch party 1",
+            code.as_bytes(),
+            &mut out,
+        );
+        Self {
+            code: code.to_owned(),
+            key: out[..32].try_into().unwrap(),
+            secret: out[32..].try_into().unwrap(),
+        }
+    }
+
+    /// A code as typed: spaces and dashes left out, any case, and the
+    /// look-alikes read as what they look like (O as 0, I and L as 1).
+    pub fn normalize(text: &str) -> Result<String, String> {
+        let code: String = text
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '-')
+            .map(|c| match c.to_ascii_uppercase() {
+                'O' => '0',
+                'I' | 'L' => '1',
+                c => c,
+            })
+            .collect();
+        if code.chars().count() == CODE_LEN && code.bytes().all(|b| ALPHABET.contains(&b)) {
+            Ok(code)
+        } else {
+            Err(format!(
+                "A watch party code is {CODE_LEN} letters and numbers"
+            ))
+        }
+    }
+
+    /// Read a code as typed.
+    #[cfg(test)]
     pub fn parse(text: &str) -> Result<Self, String> {
-        use iroh::TransportAddr;
-        let text: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        let body = text.strip_prefix(PREFIX).unwrap_or(&text);
-        let bad = || "That isn't a watch party code (copy all of it)".to_owned();
-        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(body)
-            .map_err(|_| bad())?;
-        if bytes.len() < 49 || bytes[0] != 1 {
-            return Err(bad());
-        }
-        let id =
-            iroh::PublicKey::from_bytes(bytes[1..33].try_into().unwrap()).map_err(|_| bad())?;
-        let secret: [u8; 16] = bytes[33..49].try_into().unwrap();
-        let rest = std::str::from_utf8(&bytes[49..]).map_err(|_| bad())?;
-        let mut addrs = Vec::new();
-        for a in rest.split(' ').filter(|a| !a.is_empty()) {
-            addrs.push(match a.split_at(1) {
-                ("r", url) => TransportAddr::Relay(url.parse().map_err(|_| bad())?),
-                ("i", ip) => TransportAddr::Ip(ip.parse().map_err(|_| bad())?),
-                _ => return Err(bad()),
-            });
-        }
-        Ok(Self {
-            host: EndpointAddr::from_parts(id, addrs),
-            secret,
-        })
+        Self::normalize(text).map(|c| Self::from_code(&c))
+    }
+
+    /// The host's iroh key.
+    fn host_key(&self) -> iroh::SecretKey {
+        iroh::SecretKey::from_bytes(&self.key)
+    }
+
+    /// The host's iroh ID: what members look up.
+    pub fn host_id(&self) -> iroh::EndpointId {
+        self.host_key().public()
     }
 }
 
@@ -243,18 +262,38 @@ pub(crate) fn local() -> bool {
         || std::env::var_os("ICHIOSHI_PARTY_LOCAL").is_some()
 }
 
-/// The party's connection: iroh's relays (to find a way between home
-/// networks) and nothing published about it elsewhere: members dial what
-/// the invite says.
-pub async fn endpoint() -> anyhow::Result<Endpoint> {
-    let builder = Endpoint::builder(presets::Minimal).alpns(vec![ALPN.to_vec()]);
+/// Where local parties (tests, the self-test) are found: in this process.
+fn local_lookup() -> &'static iroh::address_lookup::MemoryLookup {
+    static LOOKUP: OnceLock<iroh::address_lookup::MemoryLookup> = OnceLock::new();
+    LOOKUP.get_or_init(Default::default)
+}
+
+/// The party's connection: iroh's free public relays (to find a way
+/// between home networks) and its public lookup, where a host (`key`,
+/// worked out from the code) publishes which relay it's on (`publish`;
+/// never its IP addresses) and members look that up. Nothing to set up.
+pub async fn endpoint(key: Option<iroh::SecretKey>, publish: bool) -> anyhow::Result<Endpoint> {
+    use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
+    let mut builder = Endpoint::builder(presets::Minimal).alpns(vec![ALPN.to_vec()]);
+    if let Some(key) = key {
+        builder = builder.secret_key(key);
+    }
     let builder = if local() {
         builder
             .relay_mode(iroh::RelayMode::Disabled)
             .bind_addr("127.0.0.1:0")
             .map_err(|e| anyhow!("{e}"))?
+            .address_lookup(local_lookup().clone())
     } else {
-        builder.relay_mode(iroh::endpoint::default_relay_mode())
+        let builder = builder
+            .relay_mode(iroh::endpoint::default_relay_mode())
+            .address_lookup(PkarrResolver::n0_dns())
+            .address_lookup(DnsAddressLookup::n0_dns());
+        if publish {
+            builder.address_lookup(PkarrPublisher::n0_dns())
+        } else {
+            builder
+        }
     };
     builder
         .bind()
@@ -262,14 +301,39 @@ pub async fn endpoint() -> anyhow::Result<Endpoint> {
         .map_err(|e| anyhow!("couldn't start the party's connection: {e}"))
 }
 
-/// 16 random bytes.
-fn secret() -> [u8; 16] {
-    use ring::rand::SecureRandom;
-    let mut s = [0; 16];
-    ring::rand::SystemRandom::new()
-        .fill(&mut s)
-        .expect("the system's random numbers");
-    s
+/// Whether someone's on `id` already (a party with that code).
+async fn taken(looker: Option<&Endpoint>, id: iroh::EndpointId) -> bool {
+    use n0_future::StreamExt;
+    let Some(looker) = looker else {
+        return local_lookup().get_endpoint_info(id).is_some();
+    };
+    let Ok(lookup) = looker.address_lookup() else {
+        return false;
+    };
+    let mut found = lookup.resolve(id);
+    matches!(
+        tokio::time::timeout(Duration::from_secs(3), found.next()).await,
+        Ok(Some(Ok(Ok(_))))
+    )
+}
+
+/// A new party's code: one nobody's using.
+async fn free_code() -> anyhow::Result<Invite> {
+    let looker = if local() {
+        None
+    } else {
+        Some(endpoint(None, false).await?)
+    };
+    for _ in 0..5 {
+        let invite = tokio::task::spawn_blocking(Invite::random).await?;
+        if !taken(looker.as_ref(), invite.host_id()).await {
+            if let Some(l) = looker {
+                l.close().await;
+            }
+            return Ok(invite);
+        }
+    }
+    bail!("couldn't find a free party code")
 }
 
 fn same_secret(a: &[u8; 16], b: &[u8; 16]) -> bool {
@@ -316,18 +380,17 @@ pub struct Hosting {
 }
 
 impl Hosting {
-    /// Start a party: members join with `invite.code()`; what they do comes
+    /// Start a party: members join with `invite.code`; what they do comes
     /// through `events`.
     pub async fn start(events: impl Fn(HostEvent) + Send + Sync + 'static) -> anyhow::Result<Self> {
-        let endpoint = endpoint().await?;
-        if !local() {
-            // With a relay's address in it, the code works from anywhere.
+        let invite = free_code().await?;
+        let endpoint = endpoint(Some(invite.host_key()), true).await?;
+        if local() {
+            local_lookup().add_endpoint_info(endpoint.addr());
+        } else {
+            // On a relay, and published, before the code's given out.
             let _ = tokio::time::timeout(Duration::from_secs(8), endpoint.online()).await;
         }
-        let invite = Invite {
-            host: endpoint.addr(),
-            secret: secret(),
-        };
         let members: Arc<Mutex<HashMap<MemberId, mpsc::UnboundedSender<ToMember>>>> =
             Arc::default();
         let events = Arc::new(events);
@@ -370,6 +433,9 @@ impl Hosting {
         self.members.lock().unwrap().clear();
         // What's queued goes out before the connection closes.
         tokio::time::sleep(Duration::from_millis(300)).await;
+        if local() {
+            local_lookup().remove_endpoint_info(self.endpoint.id());
+        }
         self.endpoint.close().await;
     }
 }
@@ -470,14 +536,28 @@ impl Joined {
         name: &str,
         events: impl Fn(MemberEvent) + Send + Sync + 'static,
     ) -> anyhow::Result<Self> {
-        let endpoint = endpoint().await?;
-        let conn = tokio::time::timeout(
-            Duration::from_secs(30),
-            endpoint.connect(invite.host.clone(), ALPN),
-        )
-        .await
-        .map_err(|_| anyhow!("couldn't reach the host (is the party still on?)"))?
-        .map_err(|e| anyhow!("couldn't reach the host: {e}"))?;
+        let endpoint = endpoint(None, false).await?;
+        // The host's published where it is (a party that's just started may
+        // not be findable for a moment): try for a while.
+        let host = EndpointAddr::new(invite.host_id());
+        let patience = Duration::from_secs(if local() { 2 } else { 20 });
+        let until = Instant::now() + patience;
+        let conn = loop {
+            match tokio::time::timeout(
+                Duration::from_secs(20),
+                endpoint.connect(host.clone(), ALPN),
+            )
+            .await
+            {
+                Ok(Ok(conn)) => break conn,
+                Ok(Err(e)) if Instant::now() >= until => {
+                    tracing::info!("joining a party: {e}");
+                    bail!("No party with that code (is it right, and is the party still on?)");
+                }
+                Ok(Err(_)) => tokio::time::sleep(Duration::from_secs(2)).await,
+                Err(_) => bail!("Couldn't reach the host (is the party still on?)"),
+            }
+        };
         let (mut send, recv) = conn.open_bi().await?;
         let mut recv = BufReader::new(recv);
         send_line(
@@ -619,44 +699,26 @@ mod tests {
     }
 
     #[test]
-    fn codes_round_trip() {
-        let invite = Invite {
-            host: EndpointAddr::new(iroh::SecretKey::generate().public()),
-            secret: [7; 16],
-        };
-        let code = invite.code();
-        assert!(code.starts_with(PREFIX));
-        // With a relay: only the relay (members find the rest), so it's short.
-        let relayed = Invite {
-            host: EndpointAddr::from_parts(
-                invite.host.id,
-                [
-                    iroh::TransportAddr::Relay(
-                        "https://use1-1.relay.n0.iroh.link./".parse().unwrap(),
-                    ),
-                    iroh::TransportAddr::Ip("203.0.113.5:4433".parse().unwrap()),
-                ],
-            ),
-            secret: [7; 16],
-        };
-        let short = Invite::parse(&relayed.code()).unwrap();
-        assert_eq!(short.host.addrs.len(), 1);
-        assert!(short.host.addrs.iter().all(|a| a.is_relay()));
-        assert!(relayed.code().len() < 160, "{}", relayed.code().len());
-        // Without one: its addresses.
-        let direct = Invite {
-            host: EndpointAddr::from_parts(
-                invite.host.id,
-                [iroh::TransportAddr::Ip("127.0.0.1:4433".parse().unwrap())],
-            ),
-            secret: [7; 16],
-        };
-        assert_eq!(Invite::parse(&direct.code()).unwrap(), direct);
-        // Pasted broken over lines, or without its start.
-        let broken = format!("  {}\n{}  ", &code[..20], &code[20..]);
-        assert_eq!(Invite::parse(&broken).unwrap(), invite);
-        assert_eq!(Invite::parse(&code[PREFIX.len()..]).unwrap(), invite);
-        assert!(Invite::parse("hello").is_err());
+    fn codes_are_four_easy_characters() {
+        let invite = Invite::random();
+        assert_eq!(invite.code.len(), CODE_LEN);
+        assert!(invite.code.bytes().all(|b| ALPHABET.contains(&b)));
+        // Typed any way: the same party.
+        assert_eq!(Invite::parse(&invite.code).unwrap(), invite);
+        let messy = format!(" {}-{} ", &invite.code[..2], &invite.code[2..]).to_lowercase();
+        assert_eq!(Invite::parse(&messy).unwrap(), invite);
+        // Look-alikes read as what they look like.
+        assert_eq!(Invite::normalize("oIl9").unwrap(), "0119");
+        // Not a code.
+        for bad in ["K7Q", "K7QXZ", "K7Q!", "UUUU", ""] {
+            assert!(Invite::parse(bad).is_err(), "{bad}");
+        }
+        // Each code its own host and secret, the same every time.
+        let a = Invite::from_code("K7QX");
+        let b = Invite::from_code("K7QY");
+        assert_eq!(a, Invite::from_code("K7QX"));
+        assert_ne!(a.host_id(), b.host_id());
+        assert_ne!(a.secret, b.secret);
     }
 
     #[test]
@@ -761,6 +823,36 @@ mod tests {
             *e == MemberEvent::Lost("The host ended the party".into())
         })
         .await;
+    }
+
+    /// Join a party by its code (by hand: `ICHIOSHI_PARTY_RELAY=1
+    /// PARTY_CODE=…`, a phone's, say), and see who's there.
+    #[tokio::test]
+    #[ignore = "by hand, with PARTY_CODE"]
+    async fn joins_a_party_by_hand() {
+        let Some(code) = std::env::var("PARTY_CODE").ok() else {
+            eprintln!("skipping: by hand, with PARTY_CODE");
+            return;
+        };
+        let invite = Invite::parse(&code).unwrap();
+        let (got, events) = collect::<MemberEvent>();
+        let joined = Joined::join(&invite, "Desk", events).await.unwrap();
+        let members = until(&got, |e| {
+            matches!(e, MemberEvent::Said(ToMember::Members(_)))
+        })
+        .await;
+        eprintln!("in the party: {members:?}");
+        joined.leave().await;
+    }
+
+    #[tokio::test]
+    async fn a_code_nobody_hosts_finds_no_party() {
+        let (_got, events) = collect::<MemberEvent>();
+        let e = Joined::join(&Invite::random(), "Mai", events)
+            .await
+            .err()
+            .unwrap();
+        assert!(e.to_string().contains("No party with that code"), "{e}");
     }
 
     #[tokio::test]

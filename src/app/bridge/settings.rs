@@ -1008,7 +1008,7 @@ fn party(ui: &mut Ui) -> Vec<Value> {
                 field(
                     ui,
                     "Party code",
-                    "Paste the code your friend sent",
+                    "4 letters and numbers",
                     &code,
                     false,
                     |app, v| app.party_action(P::SetCode(v)),
@@ -1029,12 +1029,12 @@ fn party(ui: &mut Ui) -> Vec<Value> {
             let code = h.code.clone();
             items.push(boxed(vec![
                 heading("Your party's code", None),
+                super::form::big_code(code),
                 said(
-                    "Send it to your friends (anyone with it can join): they paste it under \
-                     More › Watch party.",
+                    "Tell your friends (anyone with it can join): they enter it under More › \
+                     Watch party.",
                     "muted",
                 ),
-                copy("Copy the code", code),
             ]));
             items.push(watching(ui));
             items.push(people(ui));

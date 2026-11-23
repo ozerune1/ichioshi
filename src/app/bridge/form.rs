@@ -86,6 +86,11 @@ pub(super) fn copy(label: &str, value: String) -> Value {
     json!({"t": "copy", "label": label, "value": value})
 }
 
+/// A short code to read out or copy, shown large (a watch party's).
+pub(super) fn big_code(value: String) -> Value {
+    json!({"t": "bigcode", "value": value})
+}
+
 /// Items in a box of their own.
 pub(super) fn boxed(items: Vec<Value>) -> Value {
     json!({"t": "box", "items": items})

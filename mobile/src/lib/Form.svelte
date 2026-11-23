@@ -63,6 +63,11 @@
       </div>
     {:else if it.t === "link"}
       <button class="link" onclick={() => press(it.id)}>{it.label}</button>
+    {:else if it.t === "bigcode"}
+      <div class="bigcode">
+        <span>{it.value}</span>
+        <button class="link" onclick={() => copy(it.value)}>Copy</button>
+      </div>
     {:else if it.t === "copy"}
       <div class="copy">
         <code>{it.value}</code>
@@ -120,6 +125,8 @@
   .buttons { display: flex; flex-wrap: wrap; gap: 10px; }
   .link { align-self: flex-start; background: none; border: none; color: var(--accent); font: inherit; font-size: 14px; padding: 2px 0; text-align: left; }
   .copy { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .bigcode { display: flex; align-items: center; gap: 18px; }
+  .bigcode span { font-family: ui-monospace, monospace; font-size: 40px; font-weight: 700; letter-spacing: 0.2em; }
   code { font-family: ui-monospace, monospace; font-size: 13px; background: var(--surface2); padding: 4px 8px; border-radius: 6px; }
   .box { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
   .text.accent { color: var(--accent); }

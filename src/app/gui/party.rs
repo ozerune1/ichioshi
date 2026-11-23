@@ -50,7 +50,7 @@ impl Gui {
                     ),
                 ]
                 .spacing(10);
-                let code = field("Paste the code your friend sent", &p.code)
+                let code = field("4 letters and numbers", &p.code)
                     .id("party-code")
                     .on_input(|s| party(PartyAction::SetCode(s)))
                     .on_submit(party(PartyAction::Join));
@@ -73,11 +73,14 @@ impl Gui {
                 c = c.push(card(
                     column![
                         text("Your party's code").size(17).font(SEMI).color(TEXT),
+                        text(code.chars().map(String::from).collect::<Vec<_>>().join(" "))
+                            .size(44)
+                            .font(BOLD)
+                            .color(TEXT),
                         weak(
-                            "Send it to your friends (anyone with it can join): they paste it \
-                             on their Watch party page."
+                            "Tell your friends (anyone with it can join): they enter it on their \
+                             Watch party page."
                         ),
-                        text(clip(&code, 90)).size(12).color(MUTED),
                         row![
                             primary(
                                 "Copy the code",

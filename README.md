@@ -30,7 +30,8 @@ For Linux, Windows and Android.</p>
 - **Plays it.** The built-in player draws subtitles with libass and can
   skip openings and endings. It moves on to the next episode and remembers
   where you stopped.
-- **Watches together.** Start a watch party and send friends its code.
+- **Watches together.** Start a watch party and tell friends its
+  4-character code.
   When you play an episode, it starts for everyone once they all have it
   on disk, and their players follow yours: play, pause and seek. Only the
   host controls playback; a member's pause button asks the host.
@@ -44,8 +45,10 @@ For Linux, Windows and Android.</p>
     only until they have the episode. From outside your network, it needs
     your router to allow a port mapping (UPnP, NAT-PMP or PCP); otherwise
     the member downloads it as usual.
-  - Nothing to set up: no server of your own. Parties use iroh's free
-    public relays, and sharing uses your router's port mapping.
+  - Nothing to set up: no server of your own. The host is found by its
+    code through iroh's free public lookup (which says only which relay it's
+    on, never its IP address), parties connect through iroh's free public
+    relays, and sharing uses your router's port mapping.
 - **Tracks it.** Signs in to AniList and MyAnimeList with one button.
   Status, score and progress update as you watch.
 - **Discovers.** Browse trending and seasonal anime, see an airing calendar,

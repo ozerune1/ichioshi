@@ -3809,7 +3809,7 @@ dependencies = [
 
 [[package]]
 name = "ichioshi"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3831,6 +3831,7 @@ dependencies = [
  "libloading 0.8.9",
  "librqbit",
  "librqbit-core",
+ "n0-future",
  "ndk-context",
  "nzb-nntp",
  "nzb-rs",
@@ -3860,7 +3861,7 @@ dependencies = [
 
 [[package]]
 name = "ichioshi-mobile"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ichioshi",
  "serde_json",
