@@ -20,5 +20,6 @@ rm -rf "$stage" && mkdir -p "$stage" dist
 cp target/x86_64-unknown-linux-gnu/release/ichioshi assets/linux/ichioshi.desktop \
     assets/icon/ichioshi.svg scripts/linux/install.sh "$stage/"
 cp assets/icon/png/ichioshi-256.png "$stage/ichioshi.png"
-tar -C "$(dirname "$stage")" -czf dist/Ichioshi-linux-x86_64.tar.gz Ichioshi
+tar -C "$(dirname "$stage")" --owner=0 --group=0 --numeric-owner -czf \
+    dist/Ichioshi-linux-x86_64.tar.gz Ichioshi
 ls -la dist/Ichioshi-linux-x86_64.tar.gz
