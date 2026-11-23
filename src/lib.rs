@@ -208,6 +208,17 @@ fn self_test(out: &std::path::Path, video: Option<&std::path::Path>) -> bool {
             _ => "libass draws NOTHING".into(),
         });
     }
+    // The watch party's connection (iroh), between two ends on this machine.
+    // SAFETY: before any other thread is started.
+    unsafe { std::env::set_var("ICHIOSHI_PARTY_LOCAL", "1") };
+    let party = tokio::runtime::Runtime::new()
+        .map_err(anyhow::Error::from)
+        .and_then(|rt| rt.block_on(party::loopback()));
+    ok &= party.is_ok();
+    lines.push(match party {
+        Ok(()) => "watch party connection ok".into(),
+        Err(e) => format!("watch party connection FAILED: {e:#}"),
+    });
     // A video plays through (to nowhere).
     if let Some(video) = video {
         let played = play_through(video);

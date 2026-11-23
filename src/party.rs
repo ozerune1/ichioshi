@@ -560,6 +560,44 @@ impl Joined {
     }
 }
 
+/// A party on this machine: a host, a member joining it, a message each
+/// way (the self-test's check that a build's connection works).
+pub async fn loopback() -> anyhow::Result<()> {
+    let (tx, mut hosted) = mpsc::unbounded_channel();
+    let hosting = Hosting::start(move |e| {
+        let _ = tx.send(e);
+    })
+    .await?;
+    let (tx, mut heard) = mpsc::unbounded_channel();
+    let joined = Joined::join(&hosting.invite, "self-test", move |e| {
+        let _ = tx.send(e);
+    })
+    .await?;
+    let have = ToHost::Have {
+        series: 1,
+        episode: 1,
+        have: Have::Ready,
+    };
+    joined.send(have.clone());
+    let both = async {
+        while let Some(e) = hosted.recv().await {
+            if matches!(&e, HostEvent::Said { msg, .. } if *msg == have) {
+                break;
+            }
+        }
+        hosting.send_all(ToMember::Episode(None));
+        while let Some(e) = heard.recv().await {
+            if e == MemberEvent::Said(ToMember::Episode(None)) {
+                break;
+            }
+        }
+    };
+    let answered = tokio::time::timeout(Duration::from_secs(15), both).await;
+    joined.leave().await;
+    hosting.end("Done").await;
+    answered.map_err(|_| anyhow!("no answer"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,6 +743,11 @@ mod tests {
         joined.leave().await;
         until(&host_got, |e| *e == HostEvent::Left { id: 1 }).await;
         hosting.end("Bye").await;
+    }
+
+    #[tokio::test]
+    async fn the_self_test_connects() {
+        loopback().await.unwrap();
     }
 
     #[tokio::test]
