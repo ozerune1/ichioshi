@@ -17,6 +17,8 @@ export type View = {
   search: string;
   /** The dialog open (a sheet), if any. */
   dialog: any;
+  /** An episode's discussion, open over the page. */
+  discussion: any;
   tab: "library" | "discover" | "downloads" | "more";
   servers: boolean;
   downloading: number;

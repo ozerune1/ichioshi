@@ -10,6 +10,7 @@
 
 mod browse;
 mod dialogs;
+mod discussion;
 mod downloads;
 mod form;
 mod library;

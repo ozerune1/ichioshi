@@ -13,6 +13,7 @@
   import Downloads from "./pages/Downloads.svelte";
   import { press } from "./lib/api";
   import Sheet from "./lib/Sheet.svelte";
+  import Discussion from "./lib/Discussion.svelte";
 
   start();
   // Back: out of an open settings group first, then the app's own.
@@ -122,6 +123,9 @@
     {/if}
   </main>
 
+  {#if app.view?.discussion}
+    <Discussion d={app.view.discussion} />
+  {/if}
   {#if app.view?.dialog}
     <Sheet d={app.view.dialog} />
   {/if}
