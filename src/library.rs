@@ -133,6 +133,52 @@ pub struct Series {
     /// How far each episode has been watched, by episode number.
     #[serde(default)]
     pub watched: BTreeMap<u32, Watch>,
+    /// Where it is on your servers (when the library is there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<Remote>,
+}
+
+/// A series on your servers: Sonarr's series (one season of it) or
+/// Radarr's film, and Jellyfin's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Remote {
+    pub arr: ArrRef,
+    /// Its folder on the server.
+    pub path: String,
+    /// Its page's name in Sonarr or Radarr.
+    pub slug: String,
+    pub monitored: bool,
+    /// Jellyfin's series or film.
+    pub jellyfin: Option<String>,
+    /// Its episodes, by AniList's numbering (a film is episode 1).
+    pub episodes: BTreeMap<u32, RemoteEpisode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArrRef {
+    /// The series in Sonarr; which TVDB season this anime is, and how many
+    /// of the season's episodes come before its first.
+    Sonarr {
+        id: u64,
+        tvdb: u64,
+        season: u32,
+        offset: u32,
+    },
+    Radarr {
+        id: u64,
+        tmdb: u64,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RemoteEpisode {
+    /// Sonarr's episode.
+    pub arr_id: Option<u64>,
+    pub monitored: bool,
+    /// Its file: name and size.
+    pub file: Option<(String, u64)>,
+    /// Jellyfin's episode (or film).
+    pub jellyfin: Option<String>,
 }
 
 /// How far an episode has been watched.
@@ -178,7 +224,11 @@ impl Series {
     pub fn one_episode(&self) -> bool {
         let d = self.details.as_ref();
         self.episodes.or(d.and_then(|d| d.episodes)) == Some(1)
-            || self.format.as_deref().or(d.and_then(|d| d.format.as_deref())) == Some("MOVIE")
+            || self
+                .format
+                .as_deref()
+                .or(d.and_then(|d| d.format.as_deref()))
+                == Some("MOVIE")
     }
 
     /// The video files in its folder (and folders inside it), sorted.
@@ -359,6 +409,7 @@ impl Library {
             details: None,
             applied: BTreeMap::new(),
             watched: BTreeMap::new(),
+            remote: None,
         });
         self.save_or_warn();
         self.series.last_mut().unwrap()

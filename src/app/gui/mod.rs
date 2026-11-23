@@ -23,6 +23,7 @@ mod playlist;
 mod remux;
 mod search;
 mod series;
+mod servers;
 mod settings;
 mod style;
 #[cfg(test)]
@@ -75,6 +76,12 @@ pub(super) enum Message {
     Wake,
     Tick,
     Image(String, Option<images::Picture>),
+    /// What's in an episode's file on Jellyfin, to stream it.
+    Stream {
+        id: u64,
+        episode: u32,
+        result: Result<Box<crate::servers::jellyfin::Playable>, String>,
+    },
     Key(Key, keyboard::Modifiers),
     /// The window's size (logical) and display scale.
     Resized(iced::Size),
@@ -90,6 +97,7 @@ impl std::fmt::Debug for Message {
             Message::Player(m) => write!(f, "Player({m:?})"),
             Message::Key(k, _) => write!(f, "Key({k:?})"),
             Message::Image(url, _) => write!(f, "Image({url})"),
+            Message::Stream { id, episode, .. } => write!(f, "Stream({id}, {episode})"),
             other => f.write_str(match other {
                 Message::Act(_) => "Act",
                 Message::Edit(_) => "Edit",
@@ -193,6 +201,18 @@ impl Gui {
                 self.images.loaded(url, handle);
                 Task::none()
             }
+            Message::Stream {
+                id,
+                episode,
+                result,
+            } => match result {
+                Ok(p) => self.open_stream(id, episode, *p),
+                Err(e) => {
+                    self.app
+                        .set_error(format!("Couldn't play it from Jellyfin: {e}"));
+                    Task::none()
+                }
+            },
             Message::Key(key, modifiers) => self.key(key, modifiers),
             Message::Resized(size) => {
                 self.window = size;
@@ -232,6 +252,7 @@ impl Gui {
         a.request_release_files();
         a.request_browse();
         a.request_episode_scores();
+        a.servers_tick();
         a.save_settings();
     }
 
@@ -350,16 +371,31 @@ impl Gui {
             },
         );
         self.app.library.save_or_warn();
+        if self.app.servers_mode() {
+            self.app.report_watched(id, episode, pos, done || before);
+        }
         if done && !before {
             self.app.sync_watched(id, episode);
         }
     }
 
-    /// The next (or previous) episode of the one playing, on disk.
+    /// The next (or previous) episode of the one playing, on disk (or in
+    /// Jellyfin).
     fn neighbour(&self, forward: bool) -> Option<u32> {
         let p = self.player.as_ref()?;
         let series = self.app.library.find(p.series)?;
-        let files = episode_files(series, &self.app.busy_files());
+        let files: std::collections::BTreeMap<u32, ()> = match &series.remote {
+            Some(r) => r
+                .episodes
+                .iter()
+                .filter(|(_, e)| e.jellyfin.is_some())
+                .map(|(n, _)| (*n, ()))
+                .collect(),
+            None => episode_files(series, &self.app.busy_files())
+                .into_keys()
+                .map(|n| (n, ()))
+                .collect(),
+        };
         if forward {
             files.range(p.episode + 1..).next().map(|(e, _)| *e)
         } else {
@@ -368,6 +404,9 @@ impl Gui {
     }
 
     fn play(&mut self, id: u64, episode: u32) -> Task<Message> {
+        if self.app.servers_mode() {
+            return self.play_from_jellyfin(id, episode);
+        }
         self.save_progress();
         let busy = self.app.busy_files();
         let Some(series) = self.app.library.find(id) else {
@@ -376,6 +415,99 @@ impl Gui {
         let Some(path) = episode_files(series, &busy).remove(&episode) else {
             self.app
                 .set_error(format!("Episode {episode} isn't in the library"));
+            return Task::none();
+        };
+        // Your languages choose the audio and subtitles (the series' own,
+        // else the library's), as they do for remuxes.
+        let prefs = self.app.prefs_for(series);
+        let described = crate::gst_video::describe(&path, Some(&prefs));
+        let uri = match crate::gst_video::file_uri(&path) {
+            Ok(u) => u,
+            Err(e) => {
+                self.app.set_error(format!("Couldn't play it: {e:#}"));
+                return Task::none();
+            }
+        };
+        // The subtitles and fonts, read off the UI thread.
+        let read = path.clone();
+        let subs = async move {
+            tokio::task::spawn_blocking(move || crate::mkv::text_subtitles(&read))
+                .await
+                .ok()
+                .and_then(Result::ok)
+        };
+        self.start_player(id, episode, &uri, path, described, subs)
+    }
+
+    /// Ask Jellyfin what's in the episode's file; it plays once that's in.
+    fn play_from_jellyfin(&mut self, id: u64, episode: u32) -> Task<Message> {
+        self.save_progress();
+        let Some(j) = self.app.jellyfin() else {
+            self.app
+                .set_error("Sign in to Jellyfin in Settings to watch from your servers");
+            return Task::none();
+        };
+        let item = self
+            .app
+            .library
+            .find(id)
+            .and_then(|s| s.remote.as_ref()?.episodes.get(&episode)?.jellyfin.clone());
+        let Some(item) = item else {
+            self.app.set_error(format!(
+                "Jellyfin doesn't have episode {episode} (yet: it shows up once Jellyfin has \
+                 scanned it)"
+            ));
+            return Task::none();
+        };
+        self.app.set_info("Opening it from Jellyfin…");
+        Task::perform(
+            async move {
+                j.playable(&item)
+                    .await
+                    .map(Box::new)
+                    .map_err(|e| format!("{e:#}"))
+            },
+            move |result| Message::Stream {
+                id,
+                episode,
+                result,
+            },
+        )
+    }
+
+    /// Jellyfin said what's in the file: stream it.
+    fn open_stream(
+        &mut self,
+        id: u64,
+        episode: u32,
+        p: crate::servers::jellyfin::Playable,
+    ) -> Task<Message> {
+        let (Some(j), Some(series)) = (self.app.jellyfin(), self.app.library.find(id)) else {
+            return Task::none();
+        };
+        let prefs = self.app.prefs_for(series);
+        let described = crate::gst_video::describe_info(
+            &crate::servers::jellyfin::track_info(&p),
+            Some(&prefs),
+        );
+        let uri = j.stream_url(&p);
+        let key = PathBuf::from(format!("jellyfin/{}", p.item));
+        let subs = async move { Some(j.text_subtitles(&p).await) };
+        self.start_player(id, episode, &uri, key, described, subs)
+    }
+
+    /// Play `uri` (named `key`): episode `episode` of series `id`, from
+    /// where it was left; its text subtitles and fonts arrive from `subs`.
+    fn start_player(
+        &mut self,
+        id: u64,
+        episode: u32,
+        uri: &str,
+        key: PathBuf,
+        described: crate::gst_video::Described,
+        subs: impl std::future::Future<Output = Option<crate::mkv::TextSubtitles>> + Send + 'static,
+    ) -> Task<Message> {
+        let Some(series) = self.app.library.find(id) else {
             return Task::none();
         };
         let start = series.watched.get(&episode).and_then(Watch::resume_at);
@@ -395,22 +527,16 @@ impl Gui {
             .map_or(self.app.settings.player.volume, |p| p.volume);
         // The old one stops before the new one starts.
         self.player = None;
-        // Your languages choose the audio and subtitles (the series' own,
-        // else the library's), as they do for remuxes.
-        let prefs = self.app.prefs_for(series);
-        let described = crate::gst_video::describe(&path, Some(&prefs));
-        let opened = crate::gst_video::file_uri(&path).and_then(|uri| {
-            player::Player::open(
-                &uri,
-                &path,
-                described,
-                start,
-                (id, episode),
-                title,
-                name,
-                volume,
-            )
-        });
+        let opened = player::Player::open(
+            uri,
+            &key,
+            described,
+            start,
+            (id, episode),
+            title,
+            name,
+            volume,
+        );
         match opened {
             Ok(p) => {
                 self.player = Some(p);
@@ -419,16 +545,9 @@ impl Gui {
                     self.app
                         .set_info(format!("Resuming at {}", player::clock(at)));
                 }
-                // The subtitles and fonts, read off the UI thread.
                 Task::perform(
-                    async move {
-                        let read = path.clone();
-                        let subs =
-                            tokio::task::spawn_blocking(move || crate::mkv::text_subtitles(&read))
-                                .await;
-                        (path, subs.ok().and_then(Result::ok).map(Arc::new))
-                    },
-                    |(path, subs)| Message::Player(player::Msg::SubsLoaded(path, subs)),
+                    async move { (key, subs.await.map(Arc::new)) },
+                    |(key, subs)| Message::Player(player::Msg::SubsLoaded(key, subs)),
                 )
             }
             Err(e) => {

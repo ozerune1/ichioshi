@@ -495,7 +495,7 @@ async fn nyaa_fallback_ranks_shows_without_seadex_entries() {
                 r.rank.label,
                 r.episodes_label(),
                 r.quality_label(),
-                crate::app::fmt_bytes_pub(r.size),
+                crate::app::fmt_bytes(r.size),
                 r.seeders_label(),
                 r.title()
             );

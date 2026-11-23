@@ -1383,6 +1383,347 @@ fn downloads_and_plays_a_film() {
     assert_eq!(files.get(&1), Some(&folder.join(film)));
 }
 
+/// The library on your servers (all mocks): set up Jellyfin, Sonarr and
+/// Radarr in Settings; the library as they have it; a series' page with
+/// what's there, what's downloading and what to search for; handing
+/// Sonarr SeaDex's release; adding an anime; streaming an episode from
+/// Jellyfin with its subtitles, and telling Jellyfin how far it got; and
+/// back to the library on this computer, untouched.
+#[test]
+#[ignore = "renders screenshots; needs GStreamer and ffmpeg"]
+fn library_on_your_servers() {
+    let _net = crate::mock_http::mocked();
+    use crate::mock_http::{Req, Resp, mock, reply};
+    use serde_json::{Value, json};
+    use std::sync::Mutex;
+
+    if !crate::gst_video::available() {
+        eprintln!("skipping: no GStreamer");
+        return;
+    }
+    let (base, out) = dir("servers-screens");
+    let base = base.path();
+    let Some(video) = crate::gst_video::tests::typeset_sample(&base.join("sample")) else {
+        return;
+    };
+    let video_bytes = std::fs::read(&video).unwrap();
+    let ass = std::fs::read(base.join("sample").join("typeset.ass")).unwrap();
+    let torrent = crate::debrid::jobs::tests::make_torrent(
+        "[Group] Frieren S01",
+        &[
+            ("Frieren - 01.mkv", 1000),
+            ("Frieren - 02.mkv", 1000),
+            ("Frieren - 03.mkv", 1000),
+        ],
+    );
+    let seen: Arc<Mutex<Vec<Req>>> = Arc::default();
+    let log = seen.clone();
+    const LINK_CLICK: u64 = 126403;
+    let server = rt_block(mock(move |req| {
+        log.lock().unwrap().push(req.clone());
+        let path = req.target.split('?').next().unwrap();
+        let q = req.query();
+        let ep = |id: u64, n: u32, file: u64| {
+            json!({"id": id, "seasonNumber": 1, "episodeNumber": n, "hasFile": file > 0,
+                   "monitored": n != 2, "episodeFileId": file})
+        };
+        let v: Value = match (req.method.as_str(), path) {
+            ("GET", "/mapping") => json!([
+                {"type": "TV", "anilist_id": FRIEREN, "tvdb_id": 424536, "season": {"tvdb": 1}},
+                {"type": "TV", "anilist_id": LINK_CLICK, "tvdb_id": 404070, "season": {"tvdb": 1}},
+                {"type": "MOVIE", "anilist_id": 112151, "themoviedb_id": {"movie": [635302]}}]),
+            ("GET", "/sonarr/api/v3/system/status") => {
+                json!({"appName": "Sonarr", "version": "4.0.15"})
+            }
+            ("GET", "/radarr/api/v3/system/status") => {
+                json!({"appName": "Radarr", "version": "5.26.2"})
+            }
+            ("GET", "/sonarr/api/v3/qualityprofile" | "/radarr/api/v3/qualityprofile") => {
+                json!([{"id": 4, "name": "HD-1080p"}, {"id": 6, "name": "Remux"}])
+            }
+            ("GET", "/sonarr/api/v3/rootfolder") => {
+                json!([{"path": "/tv/anime", "freeSpace": 4_000_000_000_000_u64}])
+            }
+            ("GET", "/radarr/api/v3/rootfolder") => {
+                json!([{"path": "/films/anime", "freeSpace": 4_000_000_000_000_u64}])
+            }
+            ("GET", "/sonarr/api/v3/series") => {
+                json!([{"id": 1, "title": "Frieren: Beyond Journey's End",
+                "tvdbId": 424536, "titleSlug": "frieren", "path": "/tv/anime/Frieren", "monitored": true,
+                "seasons": [{"seasonNumber": 1, "monitored": true}]}])
+            }
+            ("GET", "/sonarr/api/v3/episode") => {
+                json!([ep(11, 1, 100), ep(12, 2, 0), ep(13, 3, 0)])
+            }
+            ("GET", "/sonarr/api/v3/episodefile") => json!([{"id": 100,
+                "relativePath": "Season 01/Frieren - S01E01.mkv", "size": video_bytes.len()}]),
+            ("GET", "/sonarr/api/v3/queue") => json!({"records": [
+                {"seriesId": 1, "episodeId": 13, "size": 100.0, "sizeleft": 40.0}]}),
+            ("GET", "/radarr/api/v3/movie") => json!([]),
+            ("GET", "/radarr/api/v3/queue") => json!({"records": []}),
+            ("PUT", "/sonarr/api/v3/episode/monitor") => json!([]),
+            ("POST", "/sonarr/api/v3/command") => json!({"id": 1}),
+            ("POST", "/sonarr/api/v3/release/push") => {
+                json!([{"approved": true, "rejections": []}])
+            }
+            ("GET", "/sonarr/api/v3/series/lookup") => {
+                json!([{"title": "Link Click", "tvdbId": 404070,
+                "seasons": [{"seasonNumber": 1}, {"seasonNumber": 2}]}])
+            }
+            ("POST", "/sonarr/api/v3/series") => json!({"id": 2}),
+            ("POST", "/jf/Users/AuthenticateByName") => {
+                json!({"AccessToken": "jtok", "User": {"Id": "u1"}})
+            }
+            ("GET", "/jf/System/Info/Public") => json!({"ServerName": "nas"}),
+            ("GET", "/jf/Items") => json!({"Items": [{"Id": "js1", "Type": "Series",
+                "ProviderIds": {"Tvdb": "424536"}, "Path": "/media/anime/Frieren"}]}),
+            ("GET", "/jf/Shows/js1/Episodes") => json!({"Items": [{"Id": "je1",
+                "ParentIndexNumber": 1, "IndexNumber": 1,
+                "Path": "/media/anime/Frieren/Season 01/Frieren - S01E01.mkv", "RunTimeTicks": 50_000_000,
+                "UserData": {"Played": false, "PlaybackPositionTicks": 0}}]}),
+            ("GET", "/jf/Items/je1") => json!({"RunTimeTicks": 50_000_000,
+                "Chapters": [{"StartPositionTicks": 0, "Name": "Opening"},
+                             {"StartPositionTicks": 20_000_000, "Name": "Part A"}],
+                "MediaSources": [{"Id": "src1", "MediaStreams": [
+                    {"Index": 0, "Type": "Video", "Codec": "h264"},
+                    {"Index": 1, "Type": "Audio", "Codec": "flac", "Language": "jpn", "Channels": 1,
+                     "IsDefault": true},
+                    {"Index": 2, "Type": "Subtitle", "Codec": "ass", "Language": "eng",
+                     "Title": "Full Subtitles", "IsDefault": true}]}]}),
+            ("GET", "/jf/Videos/je1/stream") => return Resp::binary(200, video_bytes.clone()),
+            ("GET", "/jf/Videos/je1/src1/Subtitles/2/Stream.ass") => {
+                return Resp::binary(200, ass.clone());
+            }
+            ("POST", "/jf/UserItems/je1/UserData") => json!({}),
+            ("GET", "/download/777.torrent") => return Resp::binary(200, torrent.clone()),
+            (_, "/seadex") => {
+                if q.get("filter")
+                    .is_some_and(|f| f.contains(&FRIEREN.to_string()))
+                {
+                    json!({"items": [{"alID": FRIEREN, "notes": "", "expand": {"trs": [{
+                        "releaseGroup": "Group", "isBest": true, "dualAudio": false, "tracker": "Nyaa",
+                        "url": "https://nyaa.si/view/777", "infoHash": "a".repeat(40),
+                        "files": [{"length": 3000}]}]}}]})
+                } else {
+                    json!({"items": []})
+                }
+            }
+            (_, p) if p.starts_with("/kitsu") => json!({"data": [], "included": []}),
+            ("POST", "/anilist") => {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                if let Some(ids) = body["variables"]["ids"].as_array() {
+                    json!({"data": {"Page": {"media": ids.iter().map(|id| json!({"id": id,
+                        "title": {"english": if *id == FRIEREN { "Frieren: Beyond Journey’s End" } else { "Link Click" },
+                                  "romaji": "Sousou no Frieren"},
+                        "format": "TV", "episodes": 28, "seasonYear": 2023})).collect::<Vec<_>>()}}})
+                } else {
+                    json!({"data": {"Media": {"status": "FINISHED", "format": "TV", "episodes": 28,
+                        "genres": ["Fantasy"], "studios": {"nodes": []}, "startDate": {}, "endDate": {}}}})
+                }
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        reply(200, v)
+    }));
+    *crate::servers::mapping::BASE.lock().unwrap() = Some(format!("{server}/mapping"));
+    *crate::seadex::SEADEX_BASE.lock().unwrap() = Some(format!("{server}/seadex"));
+    *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = Some(server.clone());
+    let _details = DetailsMocked::at(&server);
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            *crate::servers::mapping::BASE.lock().unwrap() = None;
+            *crate::seadex::SEADEX_BASE.lock().unwrap() = None;
+            *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = None;
+        }
+    }
+    let _reset = Reset;
+    let sent = |method: &str, path: &str| -> Vec<Value> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == method && r.target.split('?').next() == Some(path))
+            .map(|r| serde_json::from_slice(&r.body).unwrap_or(Value::Null))
+            .collect()
+    };
+
+    // A series in the library on this computer, which stays as it was.
+    let mut h = app_harness(base);
+    let local = crate::library::NewSeries {
+        anilist_id: 1,
+        english: Some("On this computer".into()),
+        ..Default::default()
+    };
+    h.app.library.add(&local, &base.join("downloads"));
+
+    // Settings: the servers.
+    click(&mut h, "Settings");
+    click(&mut h, "Jellyfin, Sonarr and Radarr");
+    assert!(h.app.servers_mode());
+    assert!(h.app.library.series.is_empty(), "the servers' own library");
+    type_into(&mut h, "sonarr-url", &format!("{server}/sonarr"), false);
+    type_into(&mut h, "sonarr-key", "skey", true);
+    type_into(&mut h, "radarr-url", &format!("{server}/radarr/"), false);
+    type_into(&mut h, "radarr-key", "rkey", true);
+    wait_until(&mut h, "Sonarr and Radarr checked", |g| {
+        g.app.servers.config.sonarr.root_folder.is_some()
+            && g.app.servers.config.radarr.root_folder.is_some()
+    });
+    assert!(shows(&h, "Sonarr 4.0.15") && shows(&h, "Radarr 5.26.2"));
+    assert_eq!(
+        h.app.servers.config.sonarr.quality_profile,
+        Some(4),
+        "the first, until changed"
+    );
+    type_into(&mut h, "jellyfin-url", &format!("{server}/jf"), false);
+    type_into(&mut h, "jellyfin-user", "me", false);
+    type_into(&mut h, "jellyfin-password", "secret", true);
+    wait_until(&mut h, "signed in to Jellyfin", |g| {
+        g.app.servers.config.jellyfin.signed_in()
+    });
+    assert!(shows(&h, "Signed in as me on nas"));
+    assert!(h.app.servers.password.is_empty(), "the password isn't kept");
+    let saved = std::fs::read_to_string(base.join("state").join("servers.json")).unwrap();
+    assert!(!saved.contains("secret"));
+    save(&h, &out, "1-settings");
+
+    // The library, as the servers have it.
+    click(&mut h, "Library");
+    wait_until(&mut h, "the servers read", |g| {
+        g.app
+            .library
+            .find(FRIEREN)
+            .is_some_and(|s| s.remote.is_some())
+            && !g.app.pages.stats.is_empty()
+    });
+    assert!(shows(&h, "Frieren: Beyond Journey’s End"));
+    assert!(shows_containing(&h, "Sonarr · Radarr · Jellyfin"));
+    save(&h, &out, "2-library");
+
+    // Its page: episode 1 plays from Jellyfin; 2 is missing; 3 downloads.
+    click(&mut h, "Frieren: Beyond Journey’s End");
+    wait_until(&mut h, "its release read", has_release);
+    assert!(shows(&h, "▶ Play"));
+    assert!(shows(&h, "60%"), "Sonarr's download of episode 3");
+    assert!(shows(&h, "On Sonarr"));
+    save(&h, &out, "3-series");
+    click_nth(&mut h, "⌕ Search", 0);
+    wait_until(&mut h, "Sonarr searching", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text.contains("searching"))
+    });
+    assert_eq!(
+        sent("POST", "/sonarr/api/v3/command"),
+        [json!({"name": "EpisodeSearch", "episodeIds": [12]})]
+    );
+    assert_eq!(
+        sent("PUT", "/sonarr/api/v3/episode/monitor"),
+        [json!({"episodeIds": [12], "monitored": true})],
+        "watched for, so it's looked for"
+    );
+    click(&mut h, "↓  Send the release to Sonarr");
+    wait_until(&mut h, "Sonarr downloading", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Sonarr is downloading it")
+    });
+    let pushed = &sent("POST", "/sonarr/api/v3/release/push")[0];
+    assert_eq!(pushed["title"], "[Group] Frieren S01");
+    assert_eq!(
+        pushed["downloadUrl"],
+        format!("{server}/download/777.torrent")
+    );
+
+    // Streaming episode 1 from Jellyfin (the simulator doesn't run tasks:
+    // what Jellyfin says about the file is read here).
+    let jelly = h.app.jellyfin().unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let playable = rt.block_on(jelly.playable("je1")).unwrap();
+    let _ = h.open_stream(FRIEREN, 1, playable.clone());
+    assert!(
+        h.player.is_some(),
+        "{:?}",
+        h.app.status.as_ref().map(|s| &s.text)
+    );
+    let subs = rt.block_on(jelly.text_subtitles(&playable));
+    h.player.as_mut().unwrap().subs_loaded(Arc::new(subs));
+    let p = h.player.as_ref().unwrap();
+    let labels: Vec<String> = p.tracks.iter().map(crate::player::Track::label).collect();
+    assert_eq!(labels, ["Japanese · FLAC 1.0", "English · Full Subtitles"]);
+    assert_eq!((p.audio, p.subs), (Some(0), Some(0)), "your languages");
+    wait(&mut h, "playing", |g| {
+        g.player.as_ref().unwrap().position() > 0.5
+    });
+    send(&mut h, [Message::Player(player::Msg::Frame)]);
+    assert!(
+        h.player.as_ref().unwrap().overlay.is_some(),
+        "Jellyfin's subtitles, by libass"
+    );
+    save(&h, &out, "4-streaming");
+    send(&mut h, [Message::Player(player::Msg::TogglePause)]);
+    wait(&mut h, "paused", |g| g.player.as_ref().unwrap().paused());
+    send(&mut h, [Message::Player(player::Msg::Back)]);
+    wait_until(&mut h, "Jellyfin told", |_| {
+        !sent("POST", "/jf/UserItems/je1/UserData").is_empty()
+    });
+    let told = &sent("POST", "/jf/UserItems/je1/UserData")[0];
+    assert!(
+        told["PlaybackPositionTicks"].as_i64().unwrap() > 5_000_000,
+        "{told}"
+    );
+
+    // An anime not on the servers yet.
+    let link_click = crate::browse::Media {
+        id: LINK_CLICK,
+        english: Some("Link Click".into()),
+        format: Some("ONA".into()),
+        episodes: Some(11),
+        ..Default::default()
+    };
+    send(
+        &mut h,
+        [act(Action::OpenMedia(
+            Box::new(link_click),
+            Origin::Discover,
+        ))],
+    );
+    wait_for(&mut h, "+  Add to Sonarr");
+    assert!(shows(&h, "Not on your servers"));
+    save(&h, &out, "5-not-on-servers");
+    click(&mut h, "+  Add to Sonarr");
+    wait_until(&mut h, "added", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Added Link Click to Sonarr")
+    });
+    let added = &sent("POST", "/sonarr/api/v3/series")[0];
+    assert_eq!(added["seriesType"], "anime");
+    assert_eq!(added["rootFolderPath"], "/tv/anime");
+    assert_eq!(added["seasons"][0]["monitored"], true);
+    assert_eq!(
+        added["seasons"][1]["monitored"], false,
+        "just the anime's season"
+    );
+
+    // Back to the library on this computer, as it was.
+    click(&mut h, "Settings");
+    click(&mut h, "On this computer");
+    assert!(!h.app.servers_mode());
+    let titles: Vec<&str> = h.app.library.series.iter().map(|s| s.title()).collect();
+    assert_eq!(titles, ["On this computer"]);
+    assert!(base.join("state").join("servers-library.json").exists());
+}
+
+fn rt_block<T>(f: impl std::future::Future<Output = T>) -> T {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| tokio::runtime::Runtime::new().unwrap())
+        .block_on(f)
+}
+
 /// Old downloads move into the library: a finished Usenet download in the
 /// old download folder, and an old remux folder named after the series.
 #[test]

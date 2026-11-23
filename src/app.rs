@@ -34,6 +34,7 @@ mod handover;
 mod library_ui;
 mod playlist_page;
 mod remux_page;
+mod servers_ui;
 mod tracking_ui;
 mod usenet_ui;
 mod vpn_ui;
@@ -158,6 +159,7 @@ fn default_library_dir() -> PathBuf {
 /// Results of background work, sent back to the UI thread.
 enum Msg {
     Tracking(tracking_ui::TrackingMsg),
+    Servers(servers_ui::ServersMsg),
     Engine {
         seq: u64,
         result: Result<Arc<Engine>, String>,
@@ -429,6 +431,7 @@ enum Action {
     AskDeleteRemux(PathBuf),
     DeleteRemux(PathBuf),
     Tracking(tracking_ui::TrackingAction),
+    Servers(servers_ui::ServersAction),
 }
 
 /// What the delete confirmation is about.
@@ -772,6 +775,8 @@ pub struct App {
     usenet: UsenetState,
     /// AniList and MyAnimeList accounts, and your lists on them.
     tracking: tracking_ui::TrackingState,
+    /// Jellyfin, Sonarr and Radarr, when the library is there.
+    servers: servers_ui::ServersState,
     /// AniList's lists to discover anime in.
     discover: discover_ui::DiscoverState,
     /// What's airing.
@@ -808,8 +813,9 @@ impl App {
         let debrid = DebridState::load(&state_dir, rt.clone(), ctx.clone());
         let vpn = VpnState::load(&state_dir, &rt, ctx.clone());
         let usenet = UsenetState::load(&state_dir, rt.clone(), ctx.clone(), http.clone());
+        let servers = servers_ui::ServersState::load(&state_dir);
         let library = Library::load(
-            state_dir.join("library.json"),
+            servers_ui::library_file(&state_dir, servers.config.mode),
             &expand_home(&settings.library_dir),
         );
 
@@ -848,6 +854,7 @@ impl App {
             vpn,
             usenet,
             tracking: tracking_ui::TrackingState::load(&state_dir),
+            servers,
             discover: Default::default(),
             calendar: Default::default(),
             episode_scores: Default::default(),
@@ -1124,6 +1131,7 @@ impl App {
                 Msg::DefaultsDone => self.defaults_done(),
                 Msg::HandedOver(result) => self.handled_over(result),
                 Msg::Tracking(msg) => self.handle_tracking_msg(msg),
+                Msg::Servers(msg) => self.handle_servers_msg(msg),
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
@@ -1290,6 +1298,9 @@ impl App {
             Action::OpenDiscussion { id, episode } => self.open_discussion(id, episode),
             Action::DiscussionMore => self.discussion_more(),
             Action::OpenSeries(id) => self.open_series(id),
+            Action::AddToLibrary if self.servers_mode() => {
+                self.servers_action(servers_ui::ServersAction::Add)
+            }
             Action::AddToLibrary => self.add_to_library(),
             Action::RemoveSeries { id, delete_files } => self.remove_series(id, delete_files),
             Action::AskRemoveSeries(id) => {
@@ -1300,11 +1311,16 @@ impl App {
             Action::OpenLanguages => self.pages.languages = Some(self.settings.prefs.clone()),
             Action::SetSeriesPrefs { id, prefs } => self.set_series_prefs(id, prefs),
             Action::RemuxLibrary { id, files } => self.remux_library(id, files),
+            // The servers download whole releases themselves.
+            Action::DownloadEpisodes(_) if self.servers_mode() => {
+                self.servers_action(servers_ui::ServersAction::Push)
+            }
             Action::DownloadEpisodes(episodes) => self.download_episodes(episodes),
             Action::AddToPlaylist { id, files } => self.add_episodes_to_playlist(id, files),
             // The GUI plays (it has the player).
             Action::Player(_) => {}
             Action::Tracking(action) => self.tracking_action(action),
+            Action::Servers(action) => self.servers_action(action),
             Action::DebridCheck => self.debrid_check(),
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),
@@ -1894,12 +1910,7 @@ fn is_video(path: &str) -> bool {
         .is_some_and(|ext| VIDEO_EXTENSIONS.iter().any(|v| v.eq_ignore_ascii_case(ext)))
 }
 
-#[cfg(test)]
-pub(crate) fn fmt_bytes_pub(bytes: u64) -> String {
-    fmt_bytes(bytes)
-}
-
-fn fmt_bytes(bytes: u64) -> String {
+pub(crate) fn fmt_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
     let mut unit = 0;

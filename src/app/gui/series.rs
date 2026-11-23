@@ -210,11 +210,60 @@ impl Gui {
                     }))),
                 ));
             }
+        } else if self.app.servers_mode() {
+            let to = match self.app.server_place(id) {
+                Some((crate::servers::arr::Kind::Radarr, _)) => "Radarr",
+                _ => "Sonarr",
+            };
+            let why = self.app.why_not_addable(id);
+            let busy = self.app.servers.busy.contains(&id);
+            let add = primary(
+                format!("+  Add to {to}"),
+                (why.is_none() && !busy).then(|| act(Action::AddToLibrary)),
+            );
+            buttons = buttons.push(match why {
+                Some(why) => with_tip(add, why),
+                None => add,
+            });
         } else {
             buttons = buttons.push(primary(
                 "+  Add to library",
                 Some(act(Action::AddToLibrary)),
             ));
+        }
+        if self.app.servers_mode() {
+            // The servers download whole releases, with their own client.
+            let to = match series.and_then(|s| s.remote.as_ref()).map(|r| r.arr) {
+                Some(crate::library::ArrRef::Radarr { .. }) => "Radarr",
+                Some(_) => "Sonarr",
+                None => match self.app.server_place(id) {
+                    Some((crate::servers::arr::Kind::Radarr, _)) => "Radarr",
+                    _ => "Sonarr",
+                },
+            };
+            let busy = self.app.servers.busy.contains(&id);
+            let ready = !matches!(
+                coverage,
+                Coverage::Nothing(_) | Coverage::Loading | Coverage::Failed(_)
+            );
+            buttons = buttons.push(with_tip(
+                secondary(
+                    format!("↓  Send the release to {to}"),
+                    (ready && !busy).then(|| act(Action::DownloadEpisodes(Vec::new()))),
+                ),
+                format!(
+                    "{to} downloads the release chosen below (all of it) with its download \
+                     client, and puts it in place."
+                ),
+            ));
+            let lists: Element<'_, Message> = if self.app.tracking.any() {
+                self.lists_panel(id)
+            } else {
+                space().into()
+            };
+            return row![buttons, space::horizontal(), lists]
+                .align_y(Alignment::Center)
+                .into();
         }
         let download = match missing.len() {
             0 => "↓  Download series".to_owned(),
@@ -392,7 +441,15 @@ impl Gui {
             .filter_map(|e| e.file.as_ref().map(|f| f.1))
             .sum();
         let downloading = episodes.iter().filter(|e| e.downloading.is_some()).count();
-        let mut summary = format!("{have} of {} in your library", episodes.len());
+        let mut summary = format!(
+            "{have} of {} {}",
+            episodes.len(),
+            if self.app.servers_mode() {
+                "on your servers"
+            } else {
+                "in your library"
+            }
+        );
         if bytes > 0 {
             summary += &format!(" · {}", fmt_bytes(bytes));
         }
@@ -400,7 +457,7 @@ impl Gui {
             summary += &format!(" · {downloading} downloading");
         }
         let mut tools = Row::new().spacing(8).align_y(Alignment::Center);
-        if let Some(s) = series {
+        if let Some(s) = series.filter(|s| s.remote.is_none()) {
             let files: Vec<PathBuf> = episodes
                 .iter()
                 .filter_map(|e| e.file.as_ref().map(|(rel, _)| s.folder.join(rel)))
@@ -542,6 +599,29 @@ impl Gui {
             .spacing(10)
             .align_y(Alignment::Center)
             .into()
+        } else if let (Some((_, len)), Some(r)) = (&e.file, series.and_then(|s| s.remote.as_ref()))
+        {
+            // On the servers: it plays from Jellyfin.
+            let playable = r.episodes.get(&n).is_some_and(|x| x.jellyfin.is_some());
+            let play: Element<'_, Message> = if done {
+                text("✓ Watched").size(12).font(SEMI).color(GREEN).into()
+            } else if !playable {
+                with_tip(
+                    text("Not in Jellyfin").size(12).color(FAINT).into(),
+                    "Jellyfin hasn't found the file yet (or you're not signed in to it)".into(),
+                )
+            } else if watch.and_then(crate::library::Watch::resume_at).is_some() {
+                text("▶ Resume").size(12).font(SEMI).color(ACCENT).into()
+            } else {
+                text("▶ Play").size(12).font(SEMI).color(ACCENT).into()
+            };
+            row![
+                text(fmt_bytes(*len)).size(12).color(FAINT),
+                container(play).width(110).align_x(Alignment::End),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into()
         } else if let (Some((rel, len)), Some(s)) = (&e.file, series) {
             let path = s.folder.join(rel);
             let in_playlist = self.app.playlist.items.iter().any(|i| i.path == path);
@@ -580,6 +660,31 @@ impl Gui {
             .into()
         } else if !e.out {
             text("Not out yet").size(12).color(FAINT).into()
+        } else if let Some(r) = series.and_then(|s| s.remote.as_ref()).filter(|r| {
+            // Sonarr can only look for episodes it knows of.
+            matches!(r.arr, crate::library::ArrRef::Radarr { .. })
+                || r.episodes.get(&n).is_some_and(|e| e.arr_id.is_some())
+        }) {
+            let to = match r.arr {
+                crate::library::ArrRef::Radarr { .. } => "Radarr",
+                _ => "Sonarr",
+            };
+            with_tip(
+                small(
+                    "⌕ Search",
+                    (!self.app.servers.busy.contains(&id)).then(|| {
+                        act(Action::Servers(
+                            crate::app::servers_ui::ServersAction::Search {
+                                id,
+                                episodes: vec![n],
+                            },
+                        ))
+                    }),
+                ),
+                format!("Have {to} look for it with its own indexers"),
+            )
+        } else if self.app.servers_mode() {
+            space().width(0).into()
         } else if coverage.has(n) {
             small("↓ Download", Some(act(Action::DownloadEpisodes(vec![n]))))
         } else {
@@ -999,6 +1104,28 @@ impl Gui {
 
     fn library_box<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
         let anime = &ap.anime;
+        if self.app.servers_mode() {
+            if let Some(r) = self
+                .app
+                .library
+                .find(anime.anilist_id)
+                .and_then(|s| s.remote.as_ref())
+            {
+                return self.remote_box(anime.anilist_id, r);
+            }
+            let why = self.app.why_not_addable(anime.anilist_id);
+            return card(
+                column![
+                    text("Not on your servers").size(16).font(SEMI).color(TEXT),
+                    weak(why.unwrap_or_else(|| {
+                        "Adding it puts it in Sonarr or Radarr, watched for (not searched \
+                         for: send them the release above, or have them search)."
+                            .into()
+                    })),
+                ]
+                .spacing(4),
+            );
+        }
         let Some(series) = self.app.library.find(anime.anilist_id) else {
             let folder = self
                 .app

@@ -63,11 +63,40 @@ impl Gui {
     }
 
     fn library_settings(&self) -> Element<'_, Message> {
+        use crate::app::servers_ui::ServersAction;
+        use crate::servers::LibraryMode;
         let s = &self.app.settings;
+        let on_servers = self.app.servers_mode();
+        let mode = row![
+            chip(
+                "On this computer",
+                !on_servers,
+                Some(act(Action::Servers(ServersAction::SetMode(
+                    LibraryMode::Local
+                ))))
+            ),
+            chip(
+                "Jellyfin, Sonarr and Radarr",
+                on_servers,
+                Some(act(Action::Servers(ServersAction::SetMode(
+                    LibraryMode::Servers
+                ))))
+            ),
+        ]
+        .spacing(8);
+        if on_servers {
+            return group(
+                "Library",
+                "Your servers keep the library; the one on this computer is kept as it was, \
+                 for when you switch back.",
+                column![mode, self.servers_settings()].spacing(14),
+            );
+        }
         group(
             "Library",
             "Each series gets its own folder here; downloads go straight into it.",
             column![
+                mode,
                 row![
                     field("Library folder", &s.library_dir.display().to_string())
                         .on_input(|t| edit(move |g| g.app.settings.library_dir = PathBuf::from(&t)))

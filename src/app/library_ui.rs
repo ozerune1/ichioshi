@@ -62,12 +62,16 @@ impl App {
         ) {
             return;
         }
-        if !self.settings.migrated {
-            self.settings.migrated = true;
-            self.move_old_remuxes();
+        // The library's folders are on this computer only in its own
+        // library (the servers' have none here).
+        if !self.servers_mode() {
+            if !self.settings.migrated {
+                self.settings.migrated = true;
+                self.move_old_remuxes();
+            }
+            self.move_finished_torrents();
+            self.move_finished_jobs();
         }
-        self.move_finished_torrents();
-        self.move_finished_jobs();
         self.hand_over_failed();
     }
 
@@ -138,7 +142,8 @@ impl App {
     /// Every few seconds: set default tracks on episodes that need it, one
     /// at a time in the background. Nothing is removed from the files.
     pub(super) fn apply_defaults(&mut self) {
-        if self.lib.applying
+        if self.servers_mode()
+            || self.lib.applying
             || self
                 .lib
                 .last_defaults
@@ -564,6 +569,10 @@ impl App {
             return;
         }
         self.pages.last_stats = Some(Instant::now());
+        if self.servers_mode() {
+            self.servers_stats();
+            return;
+        }
         let mut active: HashSet<String> = HashSet::new();
         if let Some(engine) = self.engine() {
             for (_, h) in engine.torrents() {

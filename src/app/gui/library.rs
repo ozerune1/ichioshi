@@ -303,6 +303,21 @@ impl Gui {
         let a = &self.app;
         let episodes: usize = a.pages.stats.values().map(|s| s.files.len()).sum();
         let bytes: u64 = a.pages.stats.values().map(|s| s.bytes).sum();
+        let top_line: Element<'_, Message> = if a.servers_mode() {
+            self.servers_line()
+        } else {
+            row![
+                weak("Languages"),
+                text(a.settings.prefs.summary())
+                    .size(13)
+                    .font(SEMI)
+                    .color(TEXT),
+                link("Change…", Some(act(Action::OpenLanguages))),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        };
         let header = row![
             page_title(
                 "Library",
@@ -314,16 +329,7 @@ impl Gui {
             ),
             space::horizontal(),
             column![
-                row![
-                    weak("Languages"),
-                    text(a.settings.prefs.summary())
-                        .size(13)
-                        .font(SEMI)
-                        .color(TEXT),
-                    link("Change…", Some(act(Action::OpenLanguages))),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
+                top_line,
                 field("Search your library", &self.lib_search)
                     .on_input(|s| edit(move |g| g.lib_search = s.clone()))
                     .width(320),
@@ -333,6 +339,14 @@ impl Gui {
         ]
         .align_y(Alignment::End);
 
+        if a.library.series.is_empty() && a.servers_mode() {
+            return page(column![
+                header,
+                iced::widget::container(self.servers_empty())
+                    .center_x(Fill)
+                    .padding([120, 0])
+            ]);
+        }
         if a.library.series.is_empty() {
             let empty = column![
                 text("Your library is empty")

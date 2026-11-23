@@ -254,6 +254,22 @@ pub async fn schedule(client: &reqwest::Client, from: i64, to: i64) -> Result<Ve
     Ok(out)
 }
 
+/// Anime by AniList ID (50 a request), in no particular order.
+pub async fn by_ids(client: &reqwest::Client, ids: &[u64]) -> Result<Vec<Media>> {
+    let q = format!(
+        "query ($ids: [Int], $page: Int) {{ Page(page: $page, perPage: 50) {{ \
+         pageInfo {{ hasNextPage }} media(id_in: $ids, type: ANIME) {{ {MEDIA} }} }} }}"
+    );
+    let mut out = Vec::new();
+    for chunk in ids.chunks(50) {
+        let data = query(client, &q, json!({ "ids": chunk, "page": 1 })).await?;
+        if let Some(list) = data["Page"]["media"].as_array() {
+            out.extend(list.iter().map(media).filter(|m| m.id != 0));
+        }
+    }
+    Ok(out)
+}
+
 async fn query(client: &reqwest::Client, q: &str, variables: Value) -> Result<Value> {
     let resp = client
         .post(crate::seadex::anilist_url())

@@ -59,7 +59,7 @@ pub(super) fn scan_remuxes(root: &Path) -> Vec<Remuxed> {
             }
         })
         .collect();
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|r| r.name.to_lowercase());
     out
 }
 

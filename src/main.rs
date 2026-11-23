@@ -19,6 +19,7 @@ mod playlist;
 mod prefs;
 mod remux;
 mod seadex;
+mod servers;
 mod storage;
 mod subs;
 mod tiers;
