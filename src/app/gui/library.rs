@@ -9,7 +9,7 @@ use iced::widget::{
 use iced::{Alignment, Background, Border, Color, Element, Fill, Shadow, Vector, gradient};
 
 use super::{Filter, Gui, Message, act, edit};
-use crate::app::player_ui::{PlayerAction, clock, up_next};
+use crate::app::watching::{PlayerAction, clock, up_next};
 use crate::app::{Action, EngineState, Page, fmt_bytes};
 use crate::library::Series;
 use crate::tracking::{Change, Status};
@@ -147,7 +147,7 @@ impl Gui {
         .align_y(Alignment::Center);
 
         let mut accounts = Column::new().spacing(6);
-        let names = crate::view::accounts(&self.app.tracking.config);
+        let names = signed_in_as(&self.app.tracking.config);
         if !names.is_empty() {
             accounts = accounts.push(label("Lists"));
             for a in names {
@@ -703,6 +703,18 @@ impl Gui {
             .interaction(iced::mouse::Interaction::Pointer)
             .into()
     }
+}
+
+/// "AniList · jake", "MyAnimeList · jake": the lists signed in to.
+fn signed_in_as(tracking: &crate::tracking::Config) -> Vec<String> {
+    let mut accounts = Vec::new();
+    if let Some(u) = &tracking.anilist.user {
+        accounts.push(format!("AniList · {}", u.name));
+    }
+    if let Some(u) = &tracking.mal.user {
+        accounts.push(format!("MyAnimeList · {u}"));
+    }
+    accounts
 }
 
 /// A thin line between things.

@@ -11,7 +11,7 @@ use iced::{Alignment, Background, Color, Element, Fill, Length, gradient};
 use super::library::{change, rule};
 use super::{Gui, Message, act, edit};
 use crate::app::library_ui::Coverage;
-use crate::app::player_ui::{PlayerAction, clock, up_next};
+use crate::app::watching::{PlayerAction, clock, up_next};
 use crate::app::{
     Action, AnimePage, MAX_NYAA_ROWS, NyaaSearch, Page, chosen_release, fmt_bytes,
     nyaa_release_label, release_label,
@@ -855,7 +855,7 @@ impl Gui {
         } else {
             cell(r.rank.label.clone())
         };
-        let rank = match problem.clone() {
+        let rank = match problem {
             Some(p) => with_tip(rank, p.to_string()),
             None => rank,
         };
@@ -1005,9 +1005,9 @@ impl Gui {
         let mut languages = column![
             label("Languages"),
             check("Use different languages for this series", own, move |on| {
-                let prefs = on.then(|| LangPrefs::default());
+                // Starting from the library's.
                 edit(move |g| {
-                    let prefs = prefs.as_ref().map(|_| g.app.settings.prefs.clone());
+                    let prefs = on.then(|| g.app.settings.prefs.clone());
                     g.app.perform(Action::SetSeriesPrefs { id, prefs });
                 })
             }),

@@ -221,7 +221,7 @@ pub(super) fn one_series(base: &Path, files: &[(&str, &Path)]) -> PathBuf {
     state
 }
 
-/// The demo library (`DEMO_DIR`, made by `view::demo`), copied so nothing
+/// The demo library (`DEMO_DIR`, made by `demo::make`), copied so nothing
 /// in it changes; its covers and lists shown as if fetched.
 fn demo(base: &Path) -> Option<Harness> {
     let dir = PathBuf::from(std::env::var_os("DEMO_DIR")?);

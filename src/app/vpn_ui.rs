@@ -6,11 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use eframe::egui::{self, RichText, Ui};
-
-use super::{Action, App, EngineState, GREEN, Msg};
+use super::{App, EngineState, Msg};
 use crate::engine::Engine;
-use crate::vpn::{self, Config, Env, Fix, Forwarding, Monitor, Network, Port, Service, Status};
+use crate::vpn::{self, Config, Env, Fix, Monitor, Network, Status};
 
 pub(super) struct VpnState {
     pub(super) config: Config,
@@ -215,188 +213,10 @@ impl App {
         self.vpn.monitor.check_now();
     }
 
-    /// The VPN part of the settings menu.
-    pub(super) fn vpn_settings(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        ui.strong("VPN");
-        if !vpn::SUPPORTED {
-            ui.weak("Downloading over a VPN isn't supported on this system yet.");
-            return;
-        }
-        if ui
-            .checkbox(
-                &mut self.vpn.config.enabled,
-                "Only download torrents over a VPN",
-            )
-            .changed()
-        {
-            self.vpn.save();
-        }
-        if !self.vpn.config.enabled {
-            ui.weak(
-                "Torrents use your normal connection, or whatever VPN the whole computer is on.",
-            );
-            return;
-        }
-        ui.indent("vpn", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for s in Service::ALL {
-                    if ui.radio_value(&mut self.vpn.config.service, s, s.name()).changed() {
-                        self.vpn.port_text = self.vpn.config.manual_port().map(|p| p.to_string()).unwrap_or_default();
-                        self.vpn.save();
-                    }
-                }
-            });
-            let service = self.vpn.config.service;
-            let status = self.vpn.monitor.status();
-            vpn_status_line(ui, &status);
-            if let Some(fix) = status.fix() {
-                let label = match fix {
-                    Fix::PiaConnect => "Connect PIA",
-                    Fix::PiaForwardPorts => "Turn on port forwarding in PIA (reconnects)",
-                };
-                if ui.add_enabled(!self.vpn.busy, egui::Button::new(label)).clicked() {
-                    actions.push(Action::VpnFix(fix));
-                }
-            }
-
-            ui.add_space(4.0);
-            ui.label(RichText::new("Port forwarding").strong());
-            ui.weak(service.forwarding_help());
-            if service.forwarding() == Forwarding::Manual {
-                ui.horizontal(|ui| {
-                    ui.label("Forwarded port");
-                    let edit = ui.add(egui::TextEdit::singleline(&mut self.vpn.port_text).desired_width(70.0).hint_text("none"));
-                    if edit.changed() {
-                        let port = self.vpn.port_text.trim().parse::<u16>().ok().filter(|p| *p > 0);
-                        match port {
-                            Some(p) => self.vpn.config.ports.insert(service, p),
-                            None => self.vpn.config.ports.remove(&service),
-                        };
-                        self.vpn.save();
-                    }
-                    if !self.vpn.port_text.trim().is_empty() && self.vpn.config.manual_port().is_none() {
-                        ui.colored_label(ui.visuals().error_fg_color, "not a port number");
-                    }
-                });
-            }
-
-            egui::CollapsingHeader::new("Network interface").id_salt("vpn_interface").show(ui, |ui| {
-                ui.weak("Torrents are bound to this connection. Automatic finds your VPN's.");
-                let mut chosen = self.vpn.config.interface.clone();
-                ui.radio_value(&mut chosen, None, "Automatic");
-                let mut list = vpn::interfaces();
-                list.retain(|i| !i.loopback && i.up && i.ipv4.is_some());
-                list.sort_by_key(|i| (!i.tunnel, i.name.clone()));
-                if let Some(name) = chosen.clone()
-                    && !list.iter().any(|i| i.name == name)
-                {
-                    ui.radio_value(&mut chosen, Some(name.clone()), format!("{name} (not connected)"));
-                }
-                for i in &list {
-                    let ip = i.ipv4.map(|ip| ip.to_string()).unwrap_or_default();
-                    let kind = if i.mesh() {
-                        " · mesh network"
-                    } else if i.tunnel {
-                        " · tunnel"
-                    } else {
-                        ""
-                    };
-                    ui.radio_value(&mut chosen, Some(i.name.clone()), format!("{} · {ip}{kind}", i.name));
-                }
-                if chosen != self.vpn.config.interface {
-                    self.vpn.config.interface = chosen;
-                    self.vpn.save();
-                }
-            });
-            ui.weak(
-                "Every torrent connection (peers, DHT, trackers) is tied to the VPN, so nothing can go out \
-                 over your normal connection. If the VPN drops, torrents stop until it's back.",
-            );
-        });
-    }
-
-    /// The VPN's part of the status bar.
-    pub(super) fn vpn_status(&self, ui: &mut Ui) {
-        let (color, text) = match self.vpn.monitor.status() {
-            Status::Off => return,
-            Status::Checking => (ui.visuals().text_color(), "VPN: checking…".to_owned()),
-            Status::Down { .. } => (ui.visuals().warn_fg_color, "VPN: not connected".to_owned()),
-            Status::Up {
-                interface,
-                port: Port::Open(p),
-                ..
-            } => (GREEN, format!("VPN: {interface} · port {p}")),
-            Status::Up { interface, .. } => (GREEN, format!("VPN: {interface}")),
-        };
-        super::status_dot(ui, color);
-        ui.label(RichText::new(text).color(color));
-    }
-
     /// The engine is running without any network (the VPN is down).
     #[cfg(test)]
     pub(super) fn engine_offline(&self) -> bool {
         self.engine_net.as_ref().is_some_and(|n| n.offline)
-    }
-
-    /// Shown in the downloads panel while torrents wait for the VPN.
-    pub(super) fn vpn_banner(&self, ui: &mut Ui, reason: &str, actions: &mut Vec<Action>) {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new("⏸ Torrents are waiting for the VPN")
-                    .strong()
-                    .color(ui.visuals().warn_fg_color),
-            );
-            if !reason.is_empty() {
-                ui.label(reason);
-            }
-            if self.vpn.monitor.status().fix() == Some(Fix::PiaConnect)
-                && ui
-                    .add_enabled(!self.vpn.busy, egui::Button::new("Connect PIA"))
-                    .clicked()
-            {
-                actions.push(Action::VpnFix(Fix::PiaConnect));
-            }
-            ui.weak("They continue as soon as it connects. Nothing goes out without it.");
-        });
-    }
-}
-
-fn vpn_status_line(ui: &mut Ui, status: &Status) {
-    match status {
-        Status::Off => {}
-        Status::Checking => {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Looking for the VPN…");
-            });
-        }
-        Status::Down { reason, .. } => {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!("Not connected: {reason}"),
-            );
-        }
-        Status::Up {
-            interface,
-            ip,
-            port,
-            ..
-        } => {
-            ui.colored_label(GREEN, format!("✔ Connected through {interface} ({ip})"));
-            let (color, text) = match port {
-                Port::Open(p) => (GREEN, format!("✔ Port {p} forwarded")),
-                Port::Requesting => (
-                    ui.visuals().text_color(),
-                    "Getting a forwarded port…".to_owned(),
-                ),
-                Port::Unavailable(why) | Port::None(why) => (
-                    ui.visuals().weak_text_color(),
-                    format!("No forwarded port: {why}"),
-                ),
-            };
-            ui.colored_label(color, text);
-        }
     }
 }
 

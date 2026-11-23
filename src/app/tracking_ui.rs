@@ -8,12 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, RichText, Ui};
-
-use super::{Action, App, Msg, Page};
-use crate::tracking::{
-    self, Change, Config, Endpoints, Entry, Service, SignedOut, Status, anilist, mal,
-};
+use super::{App, Msg, Page};
+use crate::tracking::{Change, Config, Endpoints, Entry, Service, SignedOut, anilist, mal};
 
 /// How often the lists are read again (changes made on the sites show up).
 const REFRESH: Duration = Duration::from_secs(15 * 60);
@@ -43,7 +39,6 @@ pub(super) struct TrackingState {
     pub(super) errors: HashMap<Service, String>,
     pub(super) signing_in: Option<SignIn>,
     seq: u64,
-    pub(super) dialog: bool,
     /// Episodes finished in the player, to put on the lists once they're
     /// read (by AniList ID: the latest episode).
     pub(super) to_sync: BTreeMap<u64, u32>,
@@ -95,8 +90,6 @@ pub(super) enum TrackingMsg {
 
 #[derive(Clone, Debug)]
 pub(super) enum TrackingAction {
-    OpenDialog,
-    CloseDialog,
     SignIn(Service),
     CancelSignIn,
     SignOut(Service),
@@ -123,7 +116,6 @@ impl TrackingState {
             errors: HashMap::new(),
             signing_in: None,
             seq: 0,
-            dialog: false,
             to_sync: BTreeMap::new(),
         }
     }
@@ -491,11 +483,6 @@ impl App {
 
     pub(super) fn tracking_action(&mut self, action: TrackingAction) {
         match action {
-            TrackingAction::OpenDialog => self.tracking.dialog = true,
-            TrackingAction::CloseDialog => {
-                self.tracking.dialog = false;
-                self.tracking.save();
-            }
             TrackingAction::SignIn(service) => self.tracking_sign_in(service),
             TrackingAction::CancelSignIn => {
                 if let Some(job) = self.tracking.signing_in.take() {
@@ -637,351 +624,6 @@ impl App {
     }
 
     // ── Drawing ───────────────────────────────────────────────────────
-
-    /// The accounts, in the settings menu.
-    pub(super) fn tracking_settings(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        ui.strong("Anime lists");
-        for service in [Service::AniList, Service::Mal] {
-            let who = match service {
-                Service::AniList => self
-                    .tracking
-                    .config
-                    .anilist
-                    .user
-                    .as_ref()
-                    .map(|u| u.name.clone()),
-                Service::Mal => self.tracking.config.mal.user.clone(),
-            };
-            match who.filter(|_| self.tracking.signed_in(service)) {
-                Some(name) => ui.label(format!("{}: signed in as {name}", service.name())),
-                None => ui.weak(format!("{}: not signed in", service.name())),
-            };
-        }
-        if ui.button("AniList & MyAnimeList…").clicked() {
-            actions.push(Action::Tracking(TrackingAction::OpenDialog));
-            ui.close();
-        }
-        ui.weak("Change status, score and episodes watched from the library.");
-    }
-
-    /// Signing in and out.
-    pub(super) fn tracking_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        if !self.tracking.dialog {
-            return;
-        }
-        let modal = egui::Modal::new(egui::Id::unique("tracking_accounts")).show(ctx, |ui| {
-            ui.set_width(560.0);
-            ui.heading("AniList & MyAnimeList");
-            ui.label("Sign in to change your lists from the library. Changes go to every list you're signed in to.");
-            for service in [Service::AniList, Service::Mal] {
-                ui.add_space(8.0);
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    self.account_box(ui, service, actions);
-                });
-            }
-            ui.add_space(8.0);
-            ui.checkbox(
-                &mut self.tracking.config.sync_watched,
-                "Update episodes watched when I finish one in the player",
-            )
-            .on_hover_text("Plan to watch, on hold or dropped become watching; the last episode completes it.");
-            ui.add_space(8.0);
-            if ui.button("Close").clicked() {
-                actions.push(Action::Tracking(TrackingAction::CloseDialog));
-            }
-        });
-        if modal.should_close() {
-            actions.push(Action::Tracking(TrackingAction::CloseDialog));
-        }
-    }
-
-    fn account_box(&mut self, ui: &mut Ui, service: Service, actions: &mut Vec<Action>) {
-        let t = &mut self.tracking;
-        ui.strong(service.name());
-        if let Some(e) = t.errors.get(&service) {
-            ui.colored_label(ui.visuals().error_fg_color, e);
-        }
-        if t.signed_in(service) {
-            let who = match service {
-                Service::AniList => t.config.anilist.user.as_ref().map(|u| u.name.clone()),
-                Service::Mal => t.config.mal.user.clone(),
-            }
-            .unwrap_or_default();
-            ui.horizontal(|ui| {
-                ui.label(format!("Signed in as {who}"));
-                if ui.button("Sign out").clicked() {
-                    actions.push(Action::Tracking(TrackingAction::SignOut(service)));
-                }
-            });
-            return;
-        }
-        if let Some(job) = t.signing_in.as_ref().filter(|j| j.service == service) {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Finish signing in in your browser…");
-                if ui.button("Cancel").clicked() {
-                    actions.push(Action::Tracking(TrackingAction::CancelSignIn));
-                }
-            });
-            if let Some(url) = &job.url {
-                ui.hyperlink_to("Open the sign-in page again ↗", url);
-            }
-            return;
-        }
-        let redirect = tracking::redirect_url(service);
-        let (site, site_url, kind) = match service {
-            Service::AniList => (
-                "anilist.co/settings/developer",
-                "https://anilist.co/settings/developer",
-                "any name",
-            ),
-            Service::Mal => (
-                "myanimelist.net/apiconfig",
-                "https://myanimelist.net/apiconfig",
-                "App Type \"other\", any name and description",
-            ),
-        };
-        ui.horizontal_wrapped(|ui| {
-            ui.label("1. Make an API client at");
-            ui.hyperlink_to(format!("{site} ↗"), site_url);
-            ui.label(format!("({kind})."));
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("2. Give it the redirect URL");
-            ui.code(&redirect);
-            if ui.small_button("Copy").clicked() {
-                ui.ctx().copy_text(redirect.clone());
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("3. Its client ID:");
-            let id = match service {
-                Service::AniList => &mut t.config.anilist.client_id,
-                Service::Mal => &mut t.config.mal.client_id,
-            };
-            ui.add(
-                egui::TextEdit::singleline(id)
-                    .desired_width(300.0)
-                    .hint_text("Client ID"),
-            );
-        });
-        if service == Service::Mal {
-            ui.horizontal(|ui| {
-                ui.label("    and its client secret, if it shows one:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut t.config.mal.client_secret)
-                        .password(true)
-                        .desired_width(220.0)
-                        .hint_text("Client secret"),
-                );
-            });
-        }
-        let busy = t.signing_in.is_some();
-        let label = format!("Sign in with {}", service.name());
-        if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
-            actions.push(Action::Tracking(TrackingAction::SignIn(service)));
-        }
-    }
-
-    /// Status, score and episodes watched, on a series page.
-    pub(super) fn lists_section(&self, ui: &mut Ui, id: u64, actions: &mut Vec<Action>) {
-        let t = &self.tracking;
-        if !t.any() {
-            return;
-        }
-        let episodes = self.episode_count(id);
-        let shown = t.shown(id).cloned();
-        let pending = t.pending(id);
-        let change = |actions: &mut Vec<Action>, change: Change| {
-            actions.push(Action::Tracking(TrackingAction::Change { id, change }))
-        };
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.strong("Your lists");
-                ui.add_space(6.0);
-                ui.add_enabled_ui(!pending, |ui| {
-                    let label = shown.as_ref().map_or("Add to list", |e| e.status.name());
-                    egui::ComboBox::from_id_salt(("list-status", id))
-                        .selected_text(label)
-                        .width(130.0)
-                        .show_ui(ui, |ui| {
-                            for s in Status::ALL {
-                                if ui
-                                    .selectable_label(
-                                        shown.as_ref().is_some_and(|e| e.status == s),
-                                        s.name(),
-                                    )
-                                    .clicked()
-                                {
-                                    change(actions, Change::Status(s));
-                                }
-                            }
-                        });
-                    let Some(e) = &shown else { return };
-                    ui.add_space(8.0);
-                    ui.label("Score");
-                    egui::ComboBox::from_id_salt(("list-score", id))
-                        .selected_text(format!("★ {}", e.score_text()))
-                        .width(70.0)
-                        .show_ui(ui, |ui| {
-                            score_options(ui, e.score, |score| {
-                                change(actions, Change::Score(score))
-                            });
-                        });
-                    ui.add_space(8.0);
-                    ui.label("Episodes");
-                    let key = egui::Id::unique(("list-progress", id));
-                    let mut value: u32 = ui.data(|d| d.get_temp(key)).unwrap_or(e.progress);
-                    let max = episodes.filter(|n| *n > 0).unwrap_or(9999);
-                    let r = ui.add(egui::DragValue::new(&mut value).range(0..=max).speed(0.1));
-                    if (r.drag_stopped()
-                        || r.lost_focus()
-                        || (r.changed() && !r.dragged() && !r.has_focus()))
-                        && value != e.progress
-                    {
-                        change(actions, Change::Progress(value));
-                    }
-                    if r.dragged() || r.has_focus() {
-                        ui.data_mut(|d| d.insert_temp(key, value));
-                    } else {
-                        ui.data_mut(|d| d.remove::<u32>(key));
-                    }
-                    if let Some(n) = episodes {
-                        ui.label(format!("/ {n}"));
-                    }
-                    if ui
-                        .add_enabled(e.progress < max, egui::Button::new("+1").small())
-                        .on_hover_text("One more episode watched")
-                        .clicked()
-                    {
-                        change(actions, Change::Progress(e.progress + 1));
-                    }
-                });
-                if pending {
-                    ui.spinner();
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .small_button("⟳")
-                        .on_hover_text("Read your lists again")
-                        .clicked()
-                    {
-                        actions.push(Action::Tracking(TrackingAction::Refresh));
-                    }
-                });
-            });
-            // What each list says.
-            ui.horizontal_wrapped(|ui| {
-                for service in t.services() {
-                    let text = match (t.entry(service, id), t.key(service, id)) {
-                        _ if !t.lists.contains_key(&service) => "reading your list…".to_owned(),
-                        (Some(e), _) => entry_text(e, episodes),
-                        (None, None) if t.no_mal.contains(&id) => "not on MyAnimeList".to_owned(),
-                        (None, None) => "finding it…".to_owned(),
-                        (None, Some(_)) => "not on your list".to_owned(),
-                    };
-                    let saving = t
-                        .key(service, id)
-                        .is_some_and(|k| t.saving.contains(&(service, k)));
-                    ui.weak(format!("{}: {text}", service.name()));
-                    if saving {
-                        ui.spinner();
-                    }
-                    ui.add_space(12.0);
-                }
-                let entries: Vec<&Entry> = t
-                    .services()
-                    .into_iter()
-                    .filter_map(|s| t.entry(s, id))
-                    .collect();
-                if entries.len() == 2 && !same(entries[0], entries[1]) {
-                    ui.colored_label(ui.visuals().warn_fg_color, "⚠ Not the same on both")
-                        .on_hover_text(
-                            "A change here goes to both (each keeps what you don't change).",
-                        );
-                }
-            });
-        });
-    }
-
-    /// Status and score under a library card.
-    pub(super) fn list_chips(&self, ui: &mut Ui, id: u64, actions: &mut Vec<Action>) {
-        let t = &self.tracking;
-        if !t.any() {
-            return;
-        }
-        let shown = t.shown(id).cloned();
-        let episodes = self.episode_count(id);
-        let pending = t.pending(id);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.add_enabled_ui(!pending, |ui| {
-                let status = shown
-                    .as_ref()
-                    .map_or("+ Add to list".to_owned(), |e| e.status.name().to_owned());
-                ui.menu_button(RichText::new(status).small(), |ui| {
-                    for s in Status::ALL {
-                        if ui
-                            .selectable_label(
-                                shown.as_ref().is_some_and(|e| e.status == s),
-                                s.name(),
-                            )
-                            .clicked()
-                        {
-                            actions.push(Action::Tracking(TrackingAction::Change {
-                                id,
-                                change: Change::Status(s),
-                            }));
-                        }
-                    }
-                });
-                if let Some(e) = &shown {
-                    ui.menu_button(
-                        RichText::new(format!("★ {}", e.score_text())).small(),
-                        |ui| {
-                            score_options(ui, e.score, |score| {
-                                actions.push(Action::Tracking(TrackingAction::Change {
-                                    id,
-                                    change: Change::Score(score),
-                                }));
-                            });
-                        },
-                    );
-                    let progress = match episodes {
-                        Some(n) => format!("{}/{n}", e.progress),
-                        None => e.progress.to_string(),
-                    };
-                    ui.label(RichText::new(progress).small().weak())
-                        .on_hover_text("Episodes watched");
-                }
-            });
-        });
-    }
-}
-
-fn score_options(ui: &mut Ui, current: f32, mut pick: impl FnMut(f32)) {
-    if ui.selectable_label(current <= 0.0, "No score").clicked() {
-        pick(0.0);
-    }
-    for n in (1..=10u32).rev() {
-        let on = (current - n as f32).abs() < 0.05;
-        if ui
-            .selectable_label(on, format!("{n} · {}", tracking::score_word(n)))
-            .clicked()
-        {
-            pick(n as f32);
-        }
-    }
-}
-
-fn entry_text(e: &Entry, episodes: Option<u32>) -> String {
-    let progress = match episodes {
-        Some(n) => format!("{}/{n}", e.progress),
-        None => format!("{} watched", e.progress),
-    };
-    format!("{} · ★ {} · {progress}", e.status.name(), e.score_text())
 }
 
 /// The same entry, as far as each site can say (MyAnimeList's scores are

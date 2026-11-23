@@ -6,6 +6,8 @@
 //! (moving finished downloads into the library, setting default tracks,
 //! reading lists), as egui ran them every frame.
 
+#[cfg(test)]
+mod demo;
 mod dialogs;
 mod downloads;
 #[cfg(test)]
@@ -32,7 +34,7 @@ use iced::widget::{button, container, row, stack, text};
 use iced::{Alignment, Element, Fill, Subscription, Task, Theme};
 use tokio::sync::Notify;
 
-use super::player_ui::{PlayerAction, episode_files};
+use super::watching::{PlayerAction, episode_files};
 use super::{Action, App, Page, Waker};
 use crate::library::Watch;
 use style::*;
@@ -239,10 +241,6 @@ impl Gui {
     fn act(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::Player(PlayerAction::Play { id, episode }) => self.play(id, episode),
-            Action::Player(PlayerAction::Settings(s)) => {
-                self.app.settings.player = s;
-                Task::none()
-            }
             other => {
                 self.app.perform(other);
                 Task::none()
@@ -542,7 +540,7 @@ impl Gui {
         }
         let page: Element<'_, Message> = match &self.app.page {
             Page::Anime(ap) => self.series_page(ap),
-            Page::Home | Page::Player(_) => self.library_page(),
+            Page::Home => self.library_page(),
             Page::Results => self.search_page(),
             Page::Files(fp) => self.files_page(fp),
             Page::Downloads => self.downloads_page(),

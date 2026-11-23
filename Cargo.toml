@@ -9,9 +9,6 @@ base64 = "0.23"
 chrono = "0.4"
 dirs = "7"
 # glow: the video player draws with OpenGL (mpv's render API).
-eframe = { version = "0.37", features = ["persistence", "glow"] }
-egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
-egui_extras = { version = "0.37", features = ["http", "image"] }
 fancy-regex = "0.20"
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
@@ -49,11 +46,8 @@ gstreamer-app = "0.23"
 gstreamer-video = "0.23"
 
 [dev-dependencies]
-egui_kittest = { version = "0.37", features = ["eframe", "snapshot", "wgpu"] }
-egui_system_font_provider = "0.37"
 iced_test = "0.14"
 # A headless OpenGL context for testing the player's video output.
-khronos-egl = { version = "6", features = ["dynamic"] }
 rcgen = "0.14"
 tokio = { version = "1", features = ["test-util"] }
 tokio-rustls = "0.26"

@@ -3,7 +3,7 @@
 
 use iced::widget::{
     Space, button, checkbox, column, container, image, mouse_area, opaque, pick_list, progress_bar,
-    row, scrollable, space, stack, text, text_input, toggler,
+    row, scrollable, space, stack, text, text_input,
 };
 use iced::{
     Alignment, Background, Border, Color, ContentFit, Element, Fill, Font, Length, Shadow, Theme,
@@ -397,38 +397,6 @@ pub(super) fn check<'a>(
     .on_press(flip)
     .interaction(iced::mouse::Interaction::Pointer)
     .into()
-}
-
-pub(super) fn switch<'a>(
-    label: impl text::IntoFragment<'a>,
-    on: bool,
-    on_toggle: impl Fn(bool) -> Message + 'a,
-) -> Element<'a, Message> {
-    toggler(on)
-        .label(label)
-        .on_toggle(on_toggle)
-        .size(20)
-        .text_size(14)
-        .spacing(12)
-        .style(|_, status| {
-            let on = matches!(
-                status,
-                toggler::Status::Active { is_toggled: true }
-                    | toggler::Status::Hovered { is_toggled: true }
-            );
-            toggler::Style {
-                background: fill_color(if on { ACCENT } else { SURFACE2 }),
-                background_border_width: 1.0,
-                background_border_color: if on { ACCENT } else { LINE },
-                foreground: fill_color(Color::WHITE),
-                foreground_border_width: 0.0,
-                foreground_border_color: Color::TRANSPARENT,
-                text_color: Some(TEXT),
-                border_radius: None,
-                padding_ratio: 0.1,
-            }
-        })
-        .into()
 }
 
 pub(super) fn pick_style(_: &Theme, _: pick_list::Status) -> pick_list::Style {
