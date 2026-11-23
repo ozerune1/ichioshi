@@ -15,6 +15,7 @@ mod downloads;
 mod form;
 mod library;
 mod manage;
+mod pages;
 mod play;
 mod series;
 mod settings;
@@ -91,25 +92,41 @@ impl Bridge {
                 let changed = |core: &Core| (core.emit)("changed", Value::Null);
                 app.duties();
                 loop {
-                    match inbox.recv_timeout(Duration::from_millis(500)) {
-                        Ok(Job::Read(f)) => f(&app, &mut core),
-                        Ok(Job::Write(f)) => {
-                            f(&mut app, &mut core);
-                            app.duties();
-                            changed(&core);
-                        }
-                        Ok(Job::Wake) => {
-                            app.duties();
-                            changed(&core);
-                        }
+                    let job = match inbox.recv_timeout(Duration::from_millis(500)) {
+                        Ok(job) => Some(job),
                         // Progress (downloads) moves without messages.
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            app.duties();
-                            if view::moving(&app) {
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    // A panic in one job is said, and the app carries on.
+                    let ran =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
+                            Some(Job::Read(f)) => f(&app, &mut core),
+                            Some(Job::Write(f)) => {
+                                f(&mut app, &mut core);
+                                app.duties();
                                 changed(&core);
                             }
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            Some(Job::Wake) => {
+                                app.duties();
+                                changed(&core);
+                            }
+                            None => {
+                                app.duties();
+                                if view::moving(&app) {
+                                    changed(&core);
+                                }
+                            }
+                        }));
+                    if let Err(e) = ran {
+                        let what = e
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                            .or_else(|| e.downcast_ref::<&str>().copied())
+                            .unwrap_or("a panic");
+                        tracing::error!("the core panicked: {what}");
+                        app.set_error(format!("Something went wrong: {what}"));
+                        changed(&core);
                     }
                 }
                 app.save_settings();
@@ -129,7 +146,8 @@ impl Bridge {
                 let _ = tx.send(f(app, core));
             })))
             .map_err(|_| "the app has stopped".to_owned())?;
-        rx.await.map_err(|_| "the app has stopped".to_owned())
+        rx.await
+            .map_err(|_| "the app couldn't show this (see the note)".to_owned())
     }
 
     async fn write<T: Send + 'static>(

@@ -11,6 +11,7 @@
   import Search from "./pages/Search.svelte";
   import Files from "./pages/Files.svelte";
   import Downloads from "./pages/Downloads.svelte";
+  import Sections from "./pages/Sections.svelte";
   import { press } from "./lib/api";
   import Sheet from "./lib/Sheet.svelte";
   import Discussion from "./lib/Discussion.svelte";
@@ -55,8 +56,11 @@
   let noteError = $derived(!app.note && !!app.view?.note?.error);
   // The app's notes go after a while (errors stay longer).
   let noteTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastNote: string | undefined;
   $effect(() => {
     const text = app.view?.note?.text;
+    if (text === lastNote) return;
+    lastNote = text;
     clearTimeout(noteTimer);
     if (text) {
       noteTimer = setTimeout(
@@ -118,6 +122,8 @@
       <Files {page} />
     {:else if page.kind === "downloads"}
       <Downloads {page} />
+    {:else if page.kind === "playlist" || page.kind === "remux"}
+      <Sections {page} />
     {:else}
       <p class="muted center">{page.kind}: coming soon</p>
     {/if}

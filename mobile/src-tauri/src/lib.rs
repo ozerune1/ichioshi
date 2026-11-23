@@ -82,8 +82,49 @@ async fn command(
     bridge.command(command).await
 }
 
+/// Android: the core's log and panics go to logcat (tag "SeaDex").
+#[cfg(target_os = "android")]
+fn log_to_logcat() {
+    use std::ffi::{CString, c_char, c_int};
+    #[link(name = "log")]
+    unsafe extern "C" {
+        fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+    }
+    fn write(text: &str) {
+        if let Ok(text) = CString::new(text.replace('\0', " ")) {
+            // SAFETY: both strings are NUL-terminated and outlive the call.
+            unsafe {
+                __android_log_write(4, c"SeaDex".as_ptr(), text.as_ptr());
+            }
+        }
+    }
+    struct Logcat;
+    impl std::io::Write for Logcat {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            write(String::from_utf8_lossy(buf).trim_end());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+        .with_ansi(false)
+        .without_time()
+        .with_writer(|| Logcat)
+        .try_init();
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        write(&format!("panic: {info}"));
+        default(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "android")]
+    log_to_logcat();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(player_plugin())

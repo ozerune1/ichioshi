@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ui::{Handler, Handles, Ui};
-use super::{Core, browse, dialogs, discussion, downloads, library, play, series, settings};
+use super::{Core, browse, dialogs, discussion, downloads, library, pages, play, series, settings};
 use crate::app::watching::PlayerAction;
 use crate::app::{Action, App, Origin, Page};
 
@@ -144,8 +144,8 @@ pub(super) fn view(app: &App, handles: &mut Handles) -> Value {
         Page::Anime(ap) => series::page(&mut ui, ap),
         Page::Results => browse::search(&mut ui),
         Page::Files(fp) => browse::files(&mut ui, fp),
-        Page::Remux(_) => json!({"kind": "remux"}),
-        Page::Playlist(_) => json!({"kind": "playlist"}),
+        Page::Remux(rp) => pages::remux(&mut ui, rp),
+        Page::Playlist(pp) => pages::playlist(&mut ui, pp),
     };
     let dialog = dialogs::dialog(&mut ui);
     let discussion = discussion::view(&mut ui);

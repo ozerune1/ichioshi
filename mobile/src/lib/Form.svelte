@@ -68,6 +68,15 @@
         <code>{it.value}</code>
         <button class="link" onclick={() => copy(it.value)}>Copy</button>
       </div>
+    {:else if it.t === "radios"}
+      <div class="radios">
+        {#each it.options as o}
+          <button class="radio" class:on={o.on} class:off={!o.id} onclick={() => o.id && press(o.id)}>
+            <span class="dot" class:on={o.on}></span>
+            <span class="what"><span>{o.label}</span>{#if o.note}<span class="note">{o.note}</span>{/if}</span>
+          </button>
+        {/each}
+      </div>
     {:else if it.t === "box"}
       <div class="box"><Self items={it.items} /></div>
     {/if}
@@ -109,4 +118,13 @@
   .copy { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   code { font-family: ui-monospace, monospace; font-size: 13px; background: var(--surface2); padding: 4px 8px; border-radius: 6px; }
   .box { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .text.accent { color: var(--accent); }
+  .radios { display: flex; flex-direction: column; gap: 6px; }
+  .radio { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 10px; border: none; background: none; color: var(--muted); font: inherit; font-size: 13px; text-align: left; }
+  .radio.on { background: rgba(139, 124, 255, 0.1); color: var(--text); }
+  .radio.off { opacity: 0.6; }
+  .radio .dot { flex: none; width: 16px; height: 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface2); margin-top: 1px; }
+  .radio .dot.on { background: var(--accent); border: 4px solid #c9c2ff; }
+  .radio .what { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .radio .note { font-size: 12px; color: var(--faint); }
 </style>
