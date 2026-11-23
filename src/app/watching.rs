@@ -25,16 +25,24 @@ pub(super) fn clock(secs: f64) -> String {
 /// A series' episodes on disk, by number (files still downloading left out).
 pub(super) fn episode_files(series: &Series, busy: &HashSet<PathBuf>) -> BTreeMap<u32, PathBuf> {
     let mut out = BTreeMap::new();
-    for path in series.video_files() {
-        if busy.contains(&path) {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        if let Some(ep) = crate::title::episode_of_file(&name) {
+    let files: Vec<(PathBuf, String, u64)> = series
+        .video_files()
+        .into_iter()
+        .filter(|p| !busy.contains(p))
+        .map(|p| {
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            (p, name, len)
+        })
+        .collect();
+    let named: Vec<(&str, u64)> = files.iter().map(|(_, n, l)| (n.as_str(), *l)).collect();
+    let eps = crate::title::episodes_of_files(&named, series.one_episode());
+    for ((path, _, _), ep) in files.into_iter().zip(eps) {
+        if let Some(ep) = ep {
             out.entry(ep).or_insert(path);
         }
     }

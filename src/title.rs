@@ -404,19 +404,72 @@ mod tests {
 /// "Show.S01E07.1080p.mkv"); `None` for openings, endings, OVAs, specials
 /// and the like.
 pub fn episode_of_file(name: &str) -> Option<u32> {
+    if is_extra(name) {
+        return None;
+    }
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    parse(stem).single_episode()
+}
+
+/// Which episode each file is (`files`: names and sizes), in their order.
+/// For an anime of one episode (a film), its largest video that has no
+/// episode number (and isn't an extra) is episode 1, unless a file says it
+/// is.
+pub fn episodes_of_files(files: &[(&str, u64)], one_episode: bool) -> Vec<Option<u32>> {
+    let mut out: Vec<Option<u32>> = files
+        .iter()
+        .map(|(n, _)| episode_of_file(n.rsplit('/').next().unwrap_or(n)))
+        .collect();
+    if one_episode && !out.contains(&Some(1)) {
+        let main = files
+            .iter()
+            .enumerate()
+            .filter(|(i, (name, _))| {
+                out[*i].is_none()
+                    && crate::remux::is_video(std::path::Path::new(name))
+                    && !is_extra(name)
+            })
+            .max_by_key(|(_, (_, size))| *size)
+            .map(|(i, _)| i);
+        if let Some(i) = main {
+            out[i] = Some(1);
+        }
+    }
+    out
+}
+
+/// An opening, ending, preview or the like (not the work itself).
+fn is_extra(name: &str) -> bool {
     static EXTRA: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)\b(NC ?(?:OP|ED)|OVA|OAD|SP ?\d|Specials?|Menu|PV|CM|Preview|Trailer|Creditless|Opening|Ending)\b").unwrap()
     });
+    let name = name.rsplit('/').next().unwrap_or(name);
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-    if EXTRA.is_match(stem) {
-        return None;
-    }
-    parse(stem).single_episode()
+    EXTRA.is_match(stem)
 }
 
 #[cfg(test)]
 mod episode_tests {
-    use super::episode_of_file;
+    use super::{episode_of_file, episodes_of_files};
+
+    /// A film's file has no episode number: it's episode 1 (of a film, not
+    /// of a series); its extras aren't.
+    #[test]
+    fn a_films_file_is_its_episode() {
+        let film = "Sword.Art.Online.Progressive.Scherzo.of.Deep.Night.2022.1080p.BluRay.Opus5.1.x265-Legion.mkv";
+        assert_eq!(episode_of_file(film), None);
+        assert_eq!(episodes_of_files(&[(film, 24 << 30)], true), [Some(1)]);
+        assert_eq!(episodes_of_files(&[(film, 24 << 30)], false), [None]);
+        let files = [
+            ("Extras/Film NCED.mkv", 900),
+            ("Film.2020.1080p.mkv", 9000),
+            ("Film.2020.1080p.en.ass", 90_000),
+            ("Extras/Making of.mkv", 3000),
+        ];
+        assert_eq!(episodes_of_files(&files, true), [None, Some(1), None, None]);
+        let numbered = [("Film - 01.mkv", 10), ("Other.mkv", 99)];
+        assert_eq!(episodes_of_files(&numbered, true), [Some(1), None]);
+    }
 
     #[test]
     fn reads_episode_numbers_from_file_names() {

@@ -174,6 +174,13 @@ impl Series {
         }
     }
 
+    /// A film, or anything else that's one episode.
+    pub fn one_episode(&self) -> bool {
+        let d = self.details.as_ref();
+        self.episodes.or(d.and_then(|d| d.episodes)) == Some(1)
+            || self.format.as_deref().or(d.and_then(|d| d.format.as_deref())) == Some("MOVIE")
+    }
+
     /// The video files in its folder (and folders inside it), sorted.
     pub fn video_files(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();

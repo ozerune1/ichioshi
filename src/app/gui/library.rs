@@ -56,14 +56,7 @@ pub(super) fn on_disk(gui: &Gui, id: u64) -> BTreeSet<u32> {
         .pages
         .stats
         .get(&id)
-        .map(|s| {
-            s.files
-                .iter()
-                .filter_map(|(rel, _)| {
-                    crate::title::episode_of_file(rel.rsplit('/').next().unwrap_or(rel))
-                })
-                .collect()
-        })
+        .map(|s| s.episodes.keys().copied().collect())
         .unwrap_or_default()
 }
 

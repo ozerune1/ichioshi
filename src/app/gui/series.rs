@@ -2,7 +2,6 @@
 //! download), the release episodes come from, and its place in the
 //! library.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use iced::widget::{Column, Row, column, container, mouse_area, row, space, stack, text, tooltip};
@@ -193,13 +192,15 @@ impl Gui {
         if let Some(s) = series {
             let disk = episodes.iter().filter(|e| e.file.is_some()).map(|e| e.n);
             if let Some(next) = up_next(s, disk) {
-                let label = match s
+                let resume = s
                     .watched
                     .get(&next)
-                    .and_then(crate::library::Watch::resume_at)
-                {
-                    Some(at) => format!("▶  Resume episode {next} · {}", clock(at)),
-                    None => format!("▶  Play episode {next}"),
+                    .and_then(crate::library::Watch::resume_at);
+                let label = match (resume, s.one_episode()) {
+                    (Some(at), true) => format!("▶  Resume · {}", clock(at)),
+                    (None, true) => "▶  Play".to_owned(),
+                    (Some(at), false) => format!("▶  Resume episode {next} · {}", clock(at)),
+                    (None, false) => format!("▶  Play episode {next}"),
                 };
                 buttons = buttons.push(primary(
                     label,
@@ -328,17 +329,13 @@ impl Gui {
         let stats = self.app.pages.stats.get(&id).cloned().unwrap_or_default();
         let coverage = self.app.coverage(ap);
         let now = chrono::Utc::now().timestamp();
-        let mut on_disk: BTreeMap<u32, (String, u64)> = BTreeMap::new();
-        let mut extras = Vec::new();
-        for (rel, len) in &stats.files {
-            let name = rel.rsplit('/').next().unwrap_or(rel);
-            match crate::title::episode_of_file(name) {
-                Some(ep) if !on_disk.contains_key(&ep) => {
-                    on_disk.insert(ep, (rel.clone(), *len));
-                }
-                _ => extras.push((rel.clone(), *len)),
-            }
-        }
+        let on_disk = stats.episodes.clone();
+        let extras: Vec<(String, u64)> = stats
+            .files
+            .iter()
+            .filter(|f| !on_disk.values().any(|e| e == *f))
+            .cloned()
+            .collect();
         let last = [
             details
                 .and_then(|d| d.episodes)

@@ -474,8 +474,10 @@ use crate::seadex::Anime;
 /// What the library page shows about a series (refreshed every few seconds).
 #[derive(Clone, Default)]
 pub(super) struct SeriesStats {
-    /// Episodes on disk: path within the folder, and size.
+    /// Videos on disk: path within the folder, and size.
     pub(super) files: Vec<(String, u64)>,
+    /// Which of them is each episode.
+    pub(super) episodes: BTreeMap<u32, (String, u64)>,
     pub(super) bytes: u64,
     /// Episodes whose default tracks aren't set yet.
     pub(super) pending: usize,
@@ -587,7 +589,7 @@ impl App {
                 .map(|v| v.job.info_hash),
         );
         // How far along each downloading file is, by info hash.
-        let mut files_progress: HashMap<String, Vec<(String, f32)>> = HashMap::new();
+        let mut files_progress: HashMap<String, Vec<(String, u64, f32)>> = HashMap::new();
         if let Some(engine) = self.engine() {
             for (_, h) in engine.torrents() {
                 let stats = h.stats();
@@ -609,6 +611,7 @@ impl App {
                     let have = stats.file_progress.get(f.index).copied().unwrap_or(0);
                     entry.push((
                         f.path.clone(),
+                        f.len,
                         if f.len == 0 {
                             1.0
                         } else {
@@ -629,6 +632,7 @@ impl App {
             for (i, f) in v.job.files.iter().enumerate().filter(|(_, f)| f.wanted) {
                 entry.push((
                     f.path.clone(),
+                    f.len,
                     if f.len == 0 {
                         1.0
                     } else {
@@ -648,6 +652,7 @@ impl App {
             for (i, f) in v.job.files.iter().enumerate().filter(|(_, f)| f.wanted) {
                 entry.push((
                     f.path.clone(),
+                    f.len,
                     if f.len == 0 {
                         1.0
                     } else {
@@ -673,17 +678,34 @@ impl App {
                     Some((rel, std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)))
                 })
                 .collect();
+            let one = series.one_episode();
+            let mut episodes = BTreeMap::new();
+            let named: Vec<(&str, u64)> = files.iter().map(|(r, l)| (r.as_str(), *l)).collect();
+            for (f, ep) in files
+                .iter()
+                .zip(crate::title::episodes_of_files(&named, one))
+            {
+                if let Some(ep) = ep {
+                    episodes.entry(ep).or_insert_with(|| f.clone());
+                }
+            }
             let mut progress = BTreeMap::new();
             for hash in &series.downloads {
-                for (path, done) in files_progress.get(hash).into_iter().flatten() {
-                    let name = path.rsplit('/').next().unwrap_or(path);
-                    if let Some(ep) = crate::title::episode_of_file(name) {
+                let list = files_progress.get(hash).map(Vec::as_slice).unwrap_or(&[]);
+                let named: Vec<(&str, u64)> =
+                    list.iter().map(|(p, len, _)| (p.as_str(), *len)).collect();
+                for ((_, _, done), ep) in list
+                    .iter()
+                    .zip(crate::title::episodes_of_files(&named, one))
+                {
+                    if let Some(ep) = ep {
                         progress.insert(ep, done.clamp(0.0, 1.0));
                     }
                 }
             }
             let s = SeriesStats {
                 bytes: files.iter().map(|f| f.1).sum(),
+                episodes,
                 files,
                 pending: self.pending_defaults(series).len(),
                 downloading: series.downloads.iter().any(|h| active.contains(h)),
@@ -978,6 +1000,22 @@ impl App {
         self.pages.release_files.insert(id, files);
     }
 
+    /// Whether the anime on a page is one episode (a film).
+    pub(super) fn one_episode(&self, ap: &AnimePage) -> bool {
+        let id = ap.anime.anilist_id;
+        if let Some(s) = self.library.find(id) {
+            return s.one_episode();
+        }
+        let d = self.details(id);
+        ap.anime.episodes.or(d.and_then(|d| d.episodes)) == Some(1)
+            || ap
+                .anime
+                .format
+                .as_deref()
+                .or(d.and_then(|d| d.format.as_deref()))
+                == Some("MOVIE")
+    }
+
     /// What the release chosen on a series page has, episode by episode.
     pub(super) fn coverage<'a>(&'a self, ap: &'a AnimePage) -> Coverage<'a> {
         if let Some(search) = &ap.nyaa
@@ -999,10 +1037,15 @@ impl App {
             Some(ReleaseFiles::Failed(e)) => Coverage::Failed(e),
             Some(ReleaseFiles::Ready(listing)) => {
                 let mut files = BTreeMap::new();
-                for f in &listing.files {
-                    let name = f.path.rsplit('/').next().unwrap_or(&f.path);
-                    if crate::remux::is_video(Path::new(name))
-                        && let Some(ep) = crate::title::episode_of_file(name)
+                let named: Vec<(&str, u64)> = listing
+                    .files
+                    .iter()
+                    .map(|f| (f.path.as_str(), f.len))
+                    .collect();
+                let eps = crate::title::episodes_of_files(&named, self.one_episode(ap));
+                for (f, ep) in listing.files.iter().zip(eps) {
+                    if crate::remux::is_video(Path::new(&f.path))
+                        && let Some(ep) = ep
                     {
                         files.entry(ep).or_insert(f.index);
                     }

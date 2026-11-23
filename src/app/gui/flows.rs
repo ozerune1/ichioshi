@@ -1233,6 +1233,125 @@ fn per_episode_releases_prefer_usenet() {
     );
 }
 
+/// A film: its release is one file with no episode number in its name
+/// (SeaDex's pick for Sword Art Online Progressive: Scherzo of Deep Night).
+/// It's the film's one episode: it can be downloaded, and once it's in the
+/// series' folder it plays.
+#[test]
+#[ignore = "renders screenshots"]
+fn downloads_and_plays_a_film() {
+    let _net = crate::mock_http::mocked();
+    use crate::mock_http::{Resp, mock, reply};
+    use serde_json::json;
+
+    let film = "Sword.Art.Online.Progressive.Scherzo.of.Deep.Night.2022.1080p.BluRay.Opus5.1.x265-Legion.mkv";
+    let torrent = crate::debrid::jobs::tests::make_torrent(
+        "Sword.Art.Online.Progressive.Scherzo.of.Deep.Night.2022.1080p.BluRay.Opus5.1.x265-Legion",
+        &[(film, 240_000)],
+    );
+    let hash = crate::engine::info_hash_of(&torrent).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(mock(move |req| {
+        let path = req.target.split('?').next().unwrap();
+        match path {
+            "/download/1892585.torrent" => Resp::binary(200, torrent.clone()),
+            p if p.starts_with("/kitsu") => reply(200, json!({"data": [], "included": []})),
+            _ => reply(
+                200,
+                json!({"data": {"Media": {"status": "FINISHED", "format": "MOVIE",
+                    "episodes": 1, "duration": 100, "genres": [], "studios": {"nodes": []},
+                    "startDate": {}, "endDate": {}}}}),
+            ),
+        }
+    }));
+    let _details = DetailsMocked::at(&server);
+    *crate::nyaa::DOWNLOAD_BASE.lock().unwrap() = Some(server.clone());
+    let _nyaa = ResetNyaa;
+
+    let (base, out) = dir("film-screens");
+    let base = base.path();
+    let mut h = app_harness(base);
+    wait_until(&mut h, "engine", |g| {
+        matches!(g.app.engine, EngineState::Ready(_))
+    });
+    let release = crate::seadex::Release {
+        group: "Legion".into(),
+        is_best: true,
+        dual_audio: true,
+        tracker: "Nyaa".into(),
+        url: "https://nyaa.si/view/1892585".into(),
+        info_hash: hash.clone(),
+        tags: vec![],
+        files: vec![],
+    };
+    let mut page = anime_page(140999, 1, Some(release));
+    if let Page::Anime(ap) = &mut page {
+        ap.anime.format = Some("MOVIE".into());
+        ap.anime.title = "Sword Art Online the Movie -Progressive- Scherzo of Deep Night".into();
+        ap.anime.english = Some(ap.anime.title.clone());
+    }
+    h.app.page = page;
+    wait_until(
+        &mut h,
+        "the release's file",
+        |g| matches!(&g.app.page, Page::Anime(ap) if g.app.coverage(ap).has(1)),
+    );
+    save(&h, &out, "film-1-page");
+    assert!(shows(&h, "↓  Download 1 missing"));
+
+    // Downloading it adds it to the library, into its own folder.
+    click(&mut h, "↓  Download 1 missing");
+    wait_until(&mut h, "downloading", |g| {
+        g.app.engine().is_some_and(|e| e.torrents().len() == 1)
+    });
+    let folder = h.app.library.find(140999).unwrap().folder.clone();
+    let (_, t) = h
+        .app
+        .engine()
+        .unwrap()
+        .torrents()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(t.only_files(), Some(vec![0]));
+    assert_eq!(t.output_folder(), folder);
+    wait_until(&mut h, "its progress", |g| {
+        g.app
+            .pages
+            .stats
+            .get(&140999)
+            .is_some_and(|s| s.progress.contains_key(&1))
+    });
+
+    // Once it's there (the torrent stopped; its file put in place), it's
+    // the film's episode, and plays.
+    let engine = h.app.engine().unwrap();
+    let (id, _) = engine.torrents().into_iter().next().unwrap();
+    rt.block_on(engine.remove(id, false)).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join(film),
+        crate::mkv::tests::with_tracks(&[(1, 1, "und", "Video", None)]),
+    )
+    .unwrap();
+    h.app.pages.last_stats = None;
+    wait_until(&mut h, "the film on disk", |g| {
+        g.app
+            .pages
+            .stats
+            .get(&140999)
+            .is_some_and(|s| s.episodes.contains_key(&1))
+    });
+    save(&h, &out, "film-2-in-library");
+    assert!(shows(&h, "▶  Play"), "the film plays");
+    assert!(shows_containing(&h, "1 of 1 in your library"));
+    let files = crate::app::watching::episode_files(
+        h.app.library.find(140999).unwrap(),
+        &Default::default(),
+    );
+    assert_eq!(files.get(&1), Some(&folder.join(film)));
+}
+
 /// Old downloads move into the library: a finished Usenet download in the
 /// old download folder, and an old remux folder named after the series.
 #[test]
