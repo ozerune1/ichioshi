@@ -17,8 +17,8 @@ pub(super) enum Handler {
     Input(Box<dyn Fn(&mut App, String)>),
 }
 
-/// The handles of the last few views (a tap on a view just replaced still
-/// counts).
+/// The handles of the last views (a tap on a view just replaced, or text
+/// typed as views change underneath, still counts).
 #[derive(Default)]
 pub(super) struct Handles {
     generation: u64,
@@ -29,7 +29,7 @@ impl Handles {
     fn start(&mut self) {
         self.generation += 1;
         self.views.push_back((self.generation, Vec::new()));
-        while self.views.len() > 4 {
+        while self.views.len() > 64 {
             self.views.pop_front();
         }
     }

@@ -5,6 +5,8 @@
   import Field from "../lib/Field.svelte";
   import Poster from "../lib/Poster.svelte";
   import Select from "../lib/Select.svelte";
+  import Chips from "../lib/Chips.svelte";
+  import Form from "../lib/Form.svelte";
   import { press } from "../lib/api";
 
   let { page }: { page: any } = $props();
@@ -74,8 +76,14 @@
     {@const b = page.library}
     <div class="box">
       {#if b.t === "manage"}
-        <b>On Sonarr</b>
-        <p class="muted small">Managing it from here comes next: until then, Sonarr's own page has it.</p>
+        {@const p = b.panel}
+        <div class="mhead"><span class="kind">{p.kind}</span><b>{p.title}</b></div>
+        <p class="faint small">{p.place}</p>
+        {#if p.links.length}
+          <div class="tags">{#each p.links as l}<button class="link" onclick={() => press(l.id)}>{l.label}</button>{/each}</div>
+        {/if}
+        <Chips options={p.tabs} scroll />
+        <Form items={p.items} />
       {:else}
         <b class:green={b.t === "in_library"}>{b.title}</b>
         <p class="muted small">{b.note}</p>
@@ -123,6 +131,9 @@
           </span>
           {#if e.score}<span class="score">{e.score}</span>{/if}
         </div>
+        {#if e.details}
+          <div class="details"><Form items={e.details} /></div>
+        {/if}
         {#if e.progress}
           <div class="watched"><span class="bar"><span style="width: {e.progress.fraction * 100}%"></span></span><span class="faint small">{e.progress.text}</span></div>
         {/if}
@@ -199,6 +210,10 @@
   .box { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
   .box p { margin: 0; }
   .green { color: var(--green); }
+  .mhead { display: flex; align-items: center; gap: 8px; }
+  .mhead b { font-size: 16px; }
+  .kind { font-size: 11px; font-weight: 600; color: white; background: var(--green); padding: 2px 8px; border-radius: 999px; }
+  .details { background: var(--surface2); border-radius: 10px; padding: 12px; }
   .lists .row2 { display: grid; grid-template-columns: 3fr 2fr; gap: 8px; }
   .progress { display: flex; align-items: center; gap: 10px; }
   .grow { flex: 1; }

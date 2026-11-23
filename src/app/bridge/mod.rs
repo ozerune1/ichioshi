@@ -13,6 +13,7 @@ mod dialogs;
 mod downloads;
 mod form;
 mod library;
+mod manage;
 mod play;
 mod series;
 mod settings;

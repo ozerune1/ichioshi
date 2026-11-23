@@ -13,9 +13,18 @@
     if (!editing) value = f.value;
   });
 
+  // What's typed goes to the core once typing pauses (and at once when
+  // the field's left or submitted), not at every key.
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  function send() {
+    clearTimeout(pending);
+    pending = undefined;
+    if (value !== f.value) typed(f.id, value);
+  }
   function onInput(e: Event) {
     value = (e.target as HTMLInputElement).value;
-    typed(f.id, value);
+    clearTimeout(pending);
+    pending = setTimeout(send, 250);
   }
 </script>
 
@@ -28,7 +37,11 @@
       placeholder={hint}
       oninput={onInput}
       onfocus={() => (editing = true)}
-      onblur={() => (editing = false)}
+      onblur={() => {
+        send();
+        editing = false;
+      }}
+      onkeydown={(e) => e.key === "Enter" && send()}
       autocapitalize="off"
       autocomplete="off"
       spellcheck="false"

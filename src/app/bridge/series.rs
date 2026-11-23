@@ -246,8 +246,8 @@ fn library_box(ui: &mut Ui, ap: &AnimePage) -> Value {
     let anime = &ap.anime;
     let id = anime.anilist_id;
     if app.servers_mode() {
-        if app.manage.as_ref().is_some_and(|m| m.anilist == id) {
-            return json!({"t": "manage"});
+        if let Some(m) = app.manage.as_ref().filter(|m| m.anilist == id) {
+            return json!({"t": "manage", "panel": super::manage::panel(ui, m)});
         }
         if let Some(r) = app.library.find(id).and_then(|s| s.remote.as_ref()) {
             let kind = match r.arr {
@@ -499,8 +499,10 @@ fn episode(ui: &mut Ui, id: u64, e: &EpisodeRow, coverage: &Coverage<'_>) -> Val
             Some(Action::Manage(ManageAction::Look(Looking::Episode(n)))),
         ));
     }
+    let details = super::manage::episode_details(ui, n);
     json!({
         "n": n,
+        "details": details,
         "title": e.title,
         "present": e.file.is_some() || e.downloading.is_some(),
         "done": done,
