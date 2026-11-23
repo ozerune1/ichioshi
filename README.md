@@ -16,8 +16,9 @@ For Linux, Windows and Android.</p>
   [TRaSH Guides](https://trash-guides.info) release-group tiers.
 - **Downloads only what you pick.** Choose single episodes or a whole series.
   - **BitTorrent** is built in. It **never seeds**: uploading is switched
-    off entirely. On Linux it can be tied to your VPN's connection, with
-    port forwarding for PIA and ProtonVPN.
+    off entirely. (The one exception is a watch party, below.) On Linux it
+    can be tied to your VPN's connection, with port forwarding for PIA and
+    ProtonVPN.
   - **Debrid services:** Real-Debrid, AllDebrid, Premiumize, TorBox and
     Debrid-Link.
   - **Usenet:** your own providers, with NZBs from AnimeTosho and TsukiHime.
@@ -29,6 +30,19 @@ For Linux, Windows and Android.</p>
 - **Plays it.** The built-in player draws subtitles with libass and can
   skip openings and endings. It moves on to the next episode and remembers
   where you stopped.
+- **Watches together.** Start a watch party and send friends its code.
+  When you play an episode, it starts for everyone once they all have it
+  on disk, and their players follow yours: play, pause and seek. Only the
+  host controls playback; a member's pause button asks the host.
+  - Members connect to the host over [iroh](https://iroh.computer), through
+    its public relays when a direct connection isn't possible. Only the
+    party's own small messages go that way, never video.
+  - A member downloading the episode with BitTorrent can get it from
+    members who already have it (however they got it). This is the one
+    time Ichioshi seeds: only to that member, on a port of its own that
+    nothing announces, and only until they have the episode. From outside
+    your network, it needs your router to allow a port mapping (UPnP,
+    NAT-PMP or PCP); otherwise the member downloads it as usual.
 - **Tracks it.** Signs in to AniList and MyAnimeList with one button.
   Status, score and progress update as you watch.
 - **Discovers.** Browse trending and seasonal anime, see an airing calendar,

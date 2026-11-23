@@ -86,7 +86,7 @@ pub(super) fn page(ui: &mut Ui) -> Value {
         (true, Some(s)) => format!("from Usenet first, then {s}"),
         (true, None) => "from Usenet first, then BitTorrent".to_owned(),
         (false, Some(s)) => format!("through {s}"),
-        (false, None) => "as torrents · nothing is ever seeded".to_owned(),
+        (false, None) => "as torrents · never seeded, except to a watch party".to_owned(),
     };
     let mut notes = Vec::new();
     match &app.engine {

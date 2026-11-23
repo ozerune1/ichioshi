@@ -156,6 +156,22 @@ impl Playback {
     }
 }
 
+/// A member downloading the party's episode with BitTorrent: whoever has
+/// it may seed it to them, and only to them (`crate::party_seed`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Wanted {
+    /// Who wants it (the host says).
+    pub member: MemberId,
+    pub series: u64,
+    pub episode: u32,
+    /// The .torrent (base64).
+    pub torrent: String,
+    /// Its file that's the episode.
+    pub file: usize,
+    /// Their BitTorrent ID (hex): the seeder lets only it in.
+    pub peer_id: String,
+}
+
 /// What a member asks the host's player to do (only the host controls it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ask {
@@ -180,6 +196,11 @@ pub enum ToMember {
         name: String,
         ask: Ask,
     },
+    /// A member's downloading the episode with BitTorrent: seed it to
+    /// them, if you have it.
+    Wanted(Wanted),
+    /// Members seeding the episode to you: connect to them.
+    Seeders(Vec<std::net::SocketAddr>),
     /// For the clock: the host's time when a ping arrived.
     Pong {
         nonce: u64,
@@ -206,6 +227,13 @@ pub enum ToHost {
     Ask(Ask),
     Ping {
         nonce: u64,
+    },
+    /// You're downloading the episode with BitTorrent.
+    Torrenting(Wanted),
+    /// You're seeding it to member `to`, there.
+    Seeding {
+        to: MemberId,
+        addrs: Vec<std::net::SocketAddr>,
     },
 }
 

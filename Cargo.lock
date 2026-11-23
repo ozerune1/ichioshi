@@ -3835,6 +3835,7 @@ dependencies = [
  "nzb-nntp",
  "nzb-rs",
  "par2-rs",
+ "portmapper",
  "rcgen",
  "regex",
  "reqwest",

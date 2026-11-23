@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::{App, EngineState, Msg};
-use crate::library::{Applied, Series, move_files};
+use crate::library::{Applied, Original, Series, move_files};
 use crate::prefs::LangPrefs;
 
 #[derive(Default)]
@@ -337,10 +337,12 @@ impl App {
             for (anilist_id, rel, path, prefs) in work {
                 let result = crate::mkv::probe(&path).and_then(|info| {
                     let on = crate::prefs::pick_defaults(&info.tracks, &prefs);
-                    crate::mkv::set_default_tracks(&path, &on)
+                    crate::mkv::set_default_tracks_keeping(&path, &on)
                 });
                 match &result {
-                    Ok(edit) => tracing::info!("default tracks of {}: {edit:?}", path.display()),
+                    Ok((edit, _)) => {
+                        tracing::info!("default tracks of {}: {edit:?}", path.display())
+                    }
                     Err(e) => tracing::warn!(
                         "couldn't set the default tracks of {}: {e:#}",
                         path.display()
@@ -349,11 +351,16 @@ impl App {
                 let Some((len, modified)) = stamp(&path) else {
                     continue;
                 };
+                let (original, error) = match result {
+                    Ok((_, was)) => (was.map(|(at, b)| Original::new(at, &b)), None),
+                    Err(e) => (None, Some(format!("{e:#}"))),
+                };
                 let applied = Applied {
                     key: prefs.key(),
                     len,
                     modified,
-                    error: result.err().map(|e| format!("{e:#}")),
+                    error,
+                    original,
                 };
                 let _ = tx.send(Msg::DefaultsApplied {
                     anilist_id,
@@ -374,6 +381,16 @@ impl App {
         applied: Applied,
     ) {
         if let Some(series) = self.library.find_mut(anilist_id) {
+            // What the file had before its first edit stays: a later edit
+            // (other languages) only replaced the first one's bytes. A file
+            // of another size is another file.
+            let mut applied = applied;
+            if let Some(before) = series.applied.get(&rel)
+                && before.len == applied.len
+                && before.original.is_some()
+            {
+                applied.original = before.original.clone();
+            }
             series.applied.insert(rel, applied);
             self.library.save_or_warn();
         }

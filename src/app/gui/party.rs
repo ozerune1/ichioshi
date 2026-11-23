@@ -201,6 +201,9 @@ impl Gui {
             },
             None => {}
         }
+        for line in app.share_lines() {
+            c = c.push(weak(line));
+        }
         card(c)
     }
 

@@ -37,8 +37,10 @@ pub(crate) struct PartyState {
     pub(crate) busy: bool,
     /// Why the last try didn't work.
     pub(crate) error: Option<String>,
-    seq: u64,
+    pub(super) seq: u64,
     looked: Option<Instant>,
+    /// Sharing the episode with members (and getting it from them).
+    pub(crate) share: super::party_share::Sharing,
 }
 
 pub(crate) enum Role {
@@ -80,7 +82,17 @@ pub(crate) struct MemberSide {
     opened: Option<Instant>,
 }
 
+impl HostSide {
+    pub(super) fn hosting(&self) -> Option<&Hosting> {
+        self.hosting.as_ref()
+    }
+}
+
 impl MemberSide {
+    pub(super) fn joined(&self) -> Option<&Joined> {
+        self.joined.as_ref()
+    }
+
     /// The host's player is playing (or paused) an episode.
     pub(crate) fn host_playing(&self) -> bool {
         self.playback.is_some() && self.episode.is_some()
@@ -117,6 +129,12 @@ pub(super) enum PartyMsg {
     },
     Host(u64, HostEvent),
     Member(u64, MemberEvent),
+    /// Seeding the episode to member `to` (or why not).
+    Seeding {
+        seq: u64,
+        to: MemberId,
+        result: Result<crate::party_seed::Seeder, String>,
+    },
 }
 
 /// What this app's player is playing.
@@ -266,6 +284,7 @@ impl App {
     fn leave_party(&mut self) {
         // News from this party is old news now.
         self.party.seq += 1;
+        self.share_reset();
         match self.party.role.take() {
             Some(Role::Host(mut h)) => {
                 if let Some(hosting) = h.hosting.take() {
@@ -287,6 +306,7 @@ impl App {
     /// The app's closing: the party ends (or you leave it), said before
     /// the app goes.
     pub(super) fn party_shut_down(&mut self) {
+        self.share_reset();
         let end = match self.party.role.take() {
             Some(Role::Host(mut h)) => h.hosting.take().map(|hosting| {
                 Box::pin(async move { hosting.end("The host closed Ichioshi").await })
@@ -373,10 +393,27 @@ impl App {
             PartyMsg::Host(seq, event) if seq == self.party.seq => self.host_event(event),
             PartyMsg::Member(seq, event) if seq == self.party.seq => self.member_event(event),
             PartyMsg::Host(..) | PartyMsg::Member(..) => {}
+            PartyMsg::Seeding { seq, to, result } => {
+                // (An old party's seeder stops here, dropped.)
+                if seq == self.party.seq {
+                    self.share_started(to, result);
+                }
+            }
         }
     }
 
     fn host_event(&mut self, event: HostEvent) {
+        let event = match event {
+            HostEvent::Said {
+                id,
+                msg: ToHost::Torrenting(w),
+            } => return self.share_wanted(id, w),
+            HostEvent::Said {
+                msg: ToHost::Seeding { to, addrs },
+                ..
+            } => return self.share_seeding(to, addrs),
+            other => other,
+        };
         let Some(Role::Host(h)) = &mut self.party.role else {
             return;
         };
@@ -443,6 +480,11 @@ impl App {
     }
 
     fn member_event(&mut self, event: MemberEvent) {
+        let event = match event {
+            MemberEvent::Said(ToMember::Wanted(w)) => return self.seed_for(w),
+            MemberEvent::Said(ToMember::Seeders(addrs)) => return self.share_peers(addrs),
+            other => other,
+        };
         let Some(Role::Member(m)) = &mut self.party.role else {
             return;
         };
@@ -451,6 +493,7 @@ impl App {
             MemberEvent::Said(ToMember::Episode(episode)) => {
                 if episode != m.episode {
                     m.episode = episode;
+                    self.party.share = Default::default();
                     m.me = Have::Missing;
                     m.sent_have = None;
                     m.following = true;
@@ -463,6 +506,7 @@ impl App {
             MemberEvent::Lost(why) => {
                 self.party.role = None;
                 self.party.seq += 1;
+                self.party.share = Default::default();
                 self.set_info(why);
             }
         }
@@ -548,6 +592,7 @@ impl App {
             }
             None => {}
         }
+        self.share_tick();
     }
 
     /// The host: everyone else who doesn't have the episode yet.
@@ -660,6 +705,7 @@ impl App {
                 let changed = h.episode.as_ref() != Some(&new);
                 if changed {
                     h.episode = Some(new.clone());
+                    self.party.share = Default::default();
                     for m in h.members.values_mut() {
                         m.have = Have::Missing;
                     }
@@ -737,6 +783,7 @@ impl App {
                             };
                             hosting.send_all(ToMember::Episode(Some(e.clone())));
                             h.episode = Some(e);
+                            self.party.share = Default::default();
                             for m in h.members.values_mut() {
                                 m.have = Have::Missing;
                             }

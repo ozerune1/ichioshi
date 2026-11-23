@@ -206,7 +206,10 @@ fn it_waits_for_everyone_to_have_the_episode() {
 #[test]
 #[ignore = "by hand, with a phone"]
 fn hosts_for_a_phone() {
-    let sample = std::path::PathBuf::from(std::env::var_os("PARTY_SAMPLE").unwrap());
+    let Some(sample) = std::env::var_os("PARTY_SAMPLE").map(std::path::PathBuf::from) else {
+        eprintln!("skipping: by hand, with PARTY_SAMPLE and PARTY_CODE_FILE");
+        return;
+    };
     let base = tempfile::tempdir().unwrap();
     let hb = base.path().join("host");
     let mut host = harness(&hb, &one_series(&hb, &[("Show - 01.mkv", &sample)]));
@@ -275,4 +278,129 @@ fn hosts_for_a_phone() {
             step += 1;
         }
     }
+}
+
+/// A member downloading the episode with BitTorrent gets it from the host
+/// (the torrent has no other peers), and the host stops sharing it once
+/// the member has it; then it plays for both.
+#[test]
+#[ignore = "needs GStreamer and ffmpeg"]
+fn the_host_shares_the_episode_with_a_member() {
+    if !crate::gst_video::available() {
+        eprintln!("skipping: no GStreamer");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let Some(sample) = crate::gst_video::tests::plain_sample(&base.path().join("sample"), 20)
+    else {
+        return;
+    };
+    let (hb, mb) = (base.path().join("host"), base.path().join("member"));
+    let mut host = harness(&hb, &one_series(&hb, &[("Show - 01.mkv", &sample)]));
+    let mut member = harness(&mb, &one_series(&mb, &[]));
+    wait(&mut member, "the member's torrent engine", |g| {
+        g.app.engine().is_some()
+    });
+
+    send(
+        &mut host,
+        [
+            act(Action::Party(PartyAction::SetName("Ren".into()))),
+            act(Action::Party(PartyAction::Host)),
+        ],
+    );
+    wait(&mut host, "the party to start", |g| {
+        g.app.party_size().is_some()
+    });
+    let code = match &host.app.party.role {
+        Some(Role::Host(h)) => h.code.clone(),
+        _ => unreachable!(),
+    };
+    send(
+        &mut member,
+        [
+            act(Action::Party(PartyAction::SetName("Mai".into()))),
+            act(Action::Party(PartyAction::SetCode(code))),
+            act(Action::Party(PartyAction::Join)),
+        ],
+    );
+    both(&mut host, &mut member, "the member to join", |h, _| {
+        h.app.party_size() == Some(2)
+    });
+
+    // The host's app sets the episode's default tracks, in the file: the
+    // host's copy isn't quite the release any more, but it keeps what it
+    // changed.
+    wait(&mut host, "the host's default tracks", |g| {
+        let s = g.app.library.find(9).unwrap();
+        g.app.pending_defaults(s).is_empty()
+    });
+    let host_file = host
+        .app
+        .library
+        .find(9)
+        .unwrap()
+        .folder
+        .join("Show - 01.mkv");
+    assert_ne!(
+        std::fs::read(&host_file).unwrap(),
+        std::fs::read(&sample).unwrap(),
+        "the host's copy changed"
+    );
+    assert!(
+        host.app.library.find(9).unwrap().applied["Show - 01.mkv"]
+            .original
+            .is_some()
+    );
+
+    // The member downloads the release (as it came) with BitTorrent.
+    let bytes = std::fs::read(&sample).unwrap();
+    let torrent = crate::party_seed::tests::torrent(&[("Show - 01.mkv", &bytes)], 65_536);
+    let hash = crate::engine::info_hash_of(&torrent).unwrap();
+    let folder = member.app.library.find(9).unwrap().folder.clone();
+    member
+        .app
+        .library
+        .find_mut(9)
+        .unwrap()
+        .downloads
+        .insert(hash.clone());
+    let engine = member.app.engine().unwrap();
+    member
+        ._rt_handle()
+        .block_on(engine.download(torrent, None, folder.clone()))
+        .unwrap();
+
+    // The host plays it: it waits for the member, who gets it from the host.
+    send(&mut host, [play(9, 1)]);
+    assert!(host.player.is_none(), "it waits");
+    both(&mut host, &mut member, "the host to share it", |h, _| {
+        !h.app.party.share.seeding.is_empty()
+    });
+    assert!(
+        note(&host).contains("Sharing the episode with Mai"),
+        "{}",
+        note(&host)
+    );
+    both(&mut host, &mut member, "the member to have it", |h, m| {
+        h.app.party.share.seeding.is_empty()
+            && m.app.party_waiting_for().is_empty()
+            && h.app.party_waiting_for().is_empty()
+    });
+    assert_eq!(
+        std::fs::metadata(folder.join("Show - 01.mkv"))
+            .unwrap()
+            .len(),
+        bytes.len() as u64
+    );
+    assert!(
+        note(&host).contains("Mai has the episode now: stopped sharing it")
+            || host.player.is_some(),
+        "{}",
+        note(&host)
+    );
+    both(&mut host, &mut member, "both to play", |h, m| {
+        position(h) > 0.5 && position(m) > 0.5
+    });
+    send(&mut host, [act(Action::Party(PartyAction::Leave))]);
 }

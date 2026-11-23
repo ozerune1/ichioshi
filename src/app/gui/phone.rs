@@ -310,7 +310,7 @@ impl Gui {
                     (Some(s), true) => format!("Usenet first, then {s}"),
                     (Some(s), false) => format!("Through {s}"),
                     (None, true) => "Usenet first, then BitTorrent".to_owned(),
-                    (None, false) => "BitTorrent; nothing is ever seeded".to_owned(),
+                    (None, false) => "BitTorrent; never seeded, except to a watch party".to_owned(),
                 },
             ),
             (

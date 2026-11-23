@@ -47,7 +47,7 @@ pub(super) fn page(ui: &mut Ui) -> Value {
                 (Some(s), true) => format!("Usenet first, then {s}"),
                 (Some(s), false) => format!("Through {s}"),
                 (None, true) => "Usenet first, then BitTorrent".to_owned(),
-                (None, false) => "BitTorrent; nothing is ever seeded".to_owned(),
+                (None, false) => "BitTorrent; never seeded, except to a watch party".to_owned(),
             },
             downloading(ui),
         ),
@@ -126,7 +126,10 @@ fn section(key: &str, icon: &str, name: &str, note: String, items: Vec<Value>) -
 /// How downloading is (the engine, a debrid service), as the desktop's
 /// sidebar says.
 fn status(app: &App) -> Vec<Value> {
-    let (tone, line) = if let Some(service) = app.debrid.service() {
+    let (tone, line) = if !app.party.share.seeding.is_empty() {
+        // The one time anything's seeded: to a watch party's members.
+        ("good", "Sharing the episode with your party".to_owned())
+    } else if let Some(service) = app.debrid.service() {
         ("good", format!("Downloads through {service}"))
     } else {
         match &app.engine {
@@ -473,7 +476,9 @@ fn downloading(ui: &mut Ui) -> Vec<Value> {
     if !enabled {
         items.push(said(
             "Uploading is turned off: nothing is seeded, and each torrent stops as soon as the \
-             files you picked are complete.",
+             files you picked are complete. The one exception is a watch party: there, the \
+             episode is shared with members who are downloading it, and only until they have \
+             it.",
             "muted",
         ));
         return items;
@@ -956,6 +961,9 @@ fn party(ui: &mut Ui) -> Vec<Value> {
                 }
             },
             None => {}
+        }
+        for line in app.share_lines() {
+            box_items.push(said(line, "muted"));
         }
         boxed(box_items)
     };

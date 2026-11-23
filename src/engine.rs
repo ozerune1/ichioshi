@@ -8,6 +8,10 @@
 //! forwards to us: peers that connect in can then send us pieces, but still
 //! get none.
 //!
+//! The one exception is a watch party, and it isn't this engine: a member
+//! who has the party's episode serves it to the members downloading it,
+//! and to nobody else, until they have it ([`crate::party_seed`]).
+//!
 //! Over a VPN ([`crate::vpn`]), every socket (peers, DHT, trackers) is bound
 //! to the VPN's network interface, so nothing can go out any other way.
 //!
@@ -15,7 +19,7 @@
 //! selected.
 
 use std::collections::HashSet;
-use std::net::Ipv6Addr;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,6 +91,7 @@ impl Listing {
 pub struct Engine {
     session: Arc<Session>,
     registry: Arc<Registry>,
+    peer_id: [u8; 20],
 }
 
 impl Engine {
@@ -110,6 +115,7 @@ impl Engine {
         } else {
             "dht.json"
         };
+        let peer_id = librqbit_core::peer_id::generate_azereus_style(*b"rQ", (9, 1, 0, 0));
         let opts = SessionOptions {
             // Offline: no DHT and no trackers, so nothing even looks up a name.
             disable_trackers: network.offline,
@@ -141,13 +147,20 @@ impl Engine {
                 }),
             disable_local_service_discovery: true,
             default_storage_factory: Some(SelectiveStorageFactory::new(registry.clone()).boxed()),
+            // Its own (as librqbit makes them), so a watch party's members
+            // can let it in: see `crate::party_seed`.
+            peer_id: Some(peer_id),
             ..Default::default()
         };
         let session = Session::new_with_opts(default_download_dir, opts)
             .await
             .context("could not start the torrent engine")?;
         tokio::spawn(stop_finished_torrents(session.clone()));
-        Ok(Self { session, registry })
+        Ok(Self {
+            session,
+            registry,
+            peer_id: peer_id.0,
+        })
     }
 
     /// Read a torrent's file list without downloading anything.
@@ -396,6 +409,40 @@ impl Engine {
 
     pub async fn stop(&self) {
         self.session.stop().await;
+    }
+
+    /// This engine's BitTorrent ID (what peers know it by).
+    pub fn peer_id(&self) -> [u8; 20] {
+        self.peer_id
+    }
+
+    /// Try these peers for a torrent too: watch party members sharing it
+    /// (`crate::party_seed`). librqbit only takes peers it's given when a
+    /// torrent's added, so it's added again with them; what's on disk is
+    /// kept, and checked again.
+    pub async fn add_peers(&self, info_hash_hex: &str, peers: Vec<SocketAddr>) -> Result<()> {
+        let id = TorrentIdOrHash::parse(info_hash_hex)
+            .map_err(|e| anyhow::anyhow!("not a torrent: {e}"))?;
+        let handle = self.session.get(id).context("it isn't downloading")?;
+        let torrent_bytes = handle.with_metadata(|m| m.torrent_bytes.to_vec())?;
+        let only_files = handle.only_files();
+        let output_folder = handle.output_folder().to_owned();
+        self.session
+            .delete(TorrentIdOrHash::Hash(handle.info_hash()), false)
+            .await
+            .context("could not restart the torrent")?;
+        let opts = AddTorrentOptions {
+            only_files,
+            output_folder: Some(output_folder.to_string_lossy().into_owned()),
+            overwrite: true,
+            initial_peers: Some(peers),
+            ..Default::default()
+        };
+        self.session
+            .add_torrent(AddTorrent::from_bytes(torrent_bytes), Some(opts))
+            .await
+            .context("could not re-add the torrent")?;
+        Ok(())
     }
 
     #[cfg(test)]

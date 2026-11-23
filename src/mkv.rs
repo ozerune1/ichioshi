@@ -226,7 +226,21 @@ pub enum DefaultsEdit {
 /// default flags that are on, so turning one off adds three bytes; those
 /// come out of the padding and the rest of the file stays put. Without
 /// room, the file is rewritten (through a temporary copy beside it).
+#[cfg(test)]
 pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit> {
+    set_default_tracks_keeping(path, on).map(|(edit, _)| edit)
+}
+
+/// What an edit replaced: where in the file, and the bytes that were there.
+pub type Replaced = (u64, Vec<u8>);
+
+/// The same, and what an edit in place replaced. With it, the file can be
+/// read back as it was (a watch party seeds an episode as its torrent has
+/// it).
+pub fn set_default_tracks_keeping(
+    path: &Path,
+    on: &HashSet<u64>,
+) -> Result<(DefaultsEdit, Option<Replaced>)> {
     let src = Source::open(path)?;
     let layout = layout(&src, false)?;
     let at = layout
@@ -279,7 +293,7 @@ pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit
         }
     }
     if !changed {
-        return Ok(DefaultsEdit::Unchanged);
+        return Ok((DefaultsEdit::Unchanged, None));
     }
     let new_tracks = element(TRACKS, &body);
     let room_end = match layout.top.get(at + 1) {
@@ -294,6 +308,7 @@ pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit
             let pad = room - bytes.len();
             bytes.extend(void(pad));
         }
+        let was = src.read(tracks.start, room_end)?;
         drop(src);
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -301,7 +316,7 @@ pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit
             .with_context(|| format!("opening {}", path.display()))?;
         write_all_at(&file, &bytes, tracks.start)?;
         file.sync_data()?;
-        return Ok(DefaultsEdit::InPlace);
+        return Ok((DefaultsEdit::InPlace, Some((tracks.start, was))));
     }
 
     // No room: rewrite the file with every track, flags changed.
@@ -330,7 +345,7 @@ pub fn set_default_tracks(path: &Path, on: &HashSet<u64>) -> Result<DefaultsEdit
         return Err(e);
     }
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-    Ok(DefaultsEdit::Rewritten)
+    Ok((DefaultsEdit::Rewritten, None))
 }
 
 /// Write a copy of `input` to `output` with only `keep.tracks`. `progress`

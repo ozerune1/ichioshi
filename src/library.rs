@@ -99,6 +99,36 @@ pub struct Applied {
     /// Why it couldn't be done (not Matroska, say); not retried until the file changes.
     #[serde(default)]
     pub error: Option<String>,
+    /// What the first edit in place replaced, so the file can be read back
+    /// as it came (`crate::party_seed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<Original>,
+}
+
+/// Bytes a file had at `at`, before it was edited there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Original {
+    pub at: u64,
+    /// Base64.
+    pub bytes: String,
+}
+
+impl Original {
+    pub fn new(at: u64, bytes: &[u8]) -> Self {
+        use base64::Engine as _;
+        Self {
+            at,
+            bytes: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+
+    pub fn decoded(&self) -> Option<crate::mkv::Replaced> {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.bytes)
+            .ok()?;
+        Some((self.at, bytes))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

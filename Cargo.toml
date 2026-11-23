@@ -45,6 +45,9 @@ iced = { version = "0.14", features = ["image", "svg", "tokio", "advanced"], opt
 # Watch parties: their members find and reach each other (the video itself
 # never goes this way; see `party`).
 iroh = { version = "1.5", default-features = false, features = ["tls-ring", "portmapper"] }
+# A watch party member seeding to the party: the router's port for it (UPnP,
+# NAT-PMP or PCP; iroh brings it already).
+portmapper = "0.20"
 
 # The player (GStreamer) and file dialogs: not on Android, where videos open
 # in a player app and paths are typed in.

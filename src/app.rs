@@ -37,6 +37,7 @@ mod import_ui;
 mod library_ui;
 mod manage_ui;
 mod offline_ui;
+mod party_share;
 mod party_ui;
 mod playlist_page;
 mod remux_page;

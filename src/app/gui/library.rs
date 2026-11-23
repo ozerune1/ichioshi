@@ -313,6 +313,10 @@ impl Gui {
     /// How downloading is: the torrent engine, the VPN, a debrid service.
     fn engine_line(&self) -> (Color, String) {
         let a = &self.app;
+        // The one time anything's seeded: to a watch party's members.
+        if !a.party.share.seeding.is_empty() {
+            return (ACCENT, "Sharing the episode with your party".into());
+        }
         if let Some(service) = a.debrid.service() {
             return (ACCENT, format!("Downloads through {service}"));
         }

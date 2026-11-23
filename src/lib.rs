@@ -35,6 +35,7 @@ mod mock_http;
 mod net;
 mod nyaa;
 mod party;
+mod party_seed;
 mod pick;
 mod player;
 mod playlist;
