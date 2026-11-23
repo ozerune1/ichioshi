@@ -183,6 +183,7 @@ impl std::error::Error for SignedOut {}
 #[derive(Clone, Debug)]
 pub struct Endpoints {
     pub anilist_auth: String,
+    pub anilist_token: String,
     pub anilist_api: String,
     pub mal_auth: String,
     pub mal_token: String,
@@ -195,6 +196,7 @@ impl Default for Endpoints {
     fn default() -> Self {
         Self {
             anilist_auth: "https://anilist.co/api/v2/oauth/authorize".into(),
+            anilist_token: "https://anilist.co/api/v2/oauth/token".into(),
             anilist_api: "https://graphql.anilist.co".into(),
             mal_auth: "https://myanimelist.net/v1/oauth2/authorize".into(),
             mal_token: "https://myanimelist.net/v1/oauth2/token".into(),
@@ -236,6 +238,7 @@ impl Default for Config {
 #[serde(default)]
 pub struct AniListAccount {
     pub client_id: String,
+    pub client_secret: String,
     pub token: Option<String>,
     /// Unix time.
     pub expires_at: i64,

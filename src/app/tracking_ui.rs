@@ -508,7 +508,7 @@ impl App {
         let (client_id, secret) = match service {
             Service::AniList => (
                 self.tracking.config.anilist.client_id.trim().to_owned(),
-                String::new(),
+                self.tracking.config.anilist.client_secret.trim().to_owned(),
             ),
             Service::Mal => (
                 self.tracking.config.mal.client_id.trim().to_owned(),
@@ -517,6 +517,10 @@ impl App {
         };
         if client_id.is_empty() {
             self.set_error(format!("Paste the {} client ID first", service.name()));
+            return;
+        }
+        if service == Service::AniList && secret.is_empty() {
+            self.set_error("Paste the AniList client secret too");
             return;
         }
         self.tracking.save();
@@ -543,9 +547,11 @@ impl App {
                 url_ctx.request_repaint();
             };
             let result = match service {
-                Service::AniList => anilist::sign_in(&http, &ep, &client_id, &cancel, open)
-                    .await
-                    .map(Account::AniList),
+                Service::AniList => {
+                    anilist::sign_in(&http, &ep, &client_id, &secret, &cancel, open)
+                        .await
+                        .map(Account::AniList)
+                }
                 Service::Mal => mal::sign_in(&http, &ep, &client_id, &secret, &cancel, open)
                     .await
                     .map(|(tokens, name)| Account::Mal(tokens, name)),

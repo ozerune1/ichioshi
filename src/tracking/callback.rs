@@ -12,7 +12,6 @@ pub struct Request {
     pub method: String,
     pub path: String,
     pub query: HashMap<String, String>,
-    pub body: String,
 }
 
 pub async fn listen(port: u16) -> Result<TcpListener> {
@@ -64,23 +63,6 @@ pub async fn next(
         let mut first = head.lines().next().unwrap_or("").split_whitespace();
         let method = first.next().unwrap_or("").to_owned();
         let target = first.next().unwrap_or("/").to_owned();
-        let length: usize = head
-            .lines()
-            .find_map(|l| {
-                l.split_once(':')
-                    .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-                    .map(|(_, v)| v.trim().to_owned())
-            })
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
-            .min(64 << 10);
-        let mut body = data[header_end..].to_vec();
-        while body.len() < length {
-            match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
-                Ok(Ok(n)) if n > 0 => body.extend_from_slice(&buf[..n]),
-                _ => break,
-            }
-        }
         let url = url::Url::parse(&format!("http://localhost{target}")).ok();
         let request = Request {
             method,
@@ -88,7 +70,6 @@ pub async fn next(
             query: url
                 .map(|u| u.query_pairs().into_owned().collect())
                 .unwrap_or_default(),
-            body: String::from_utf8_lossy(&body).into_owned(),
         };
         return Ok((stream, request));
     }

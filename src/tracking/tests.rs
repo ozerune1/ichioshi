@@ -10,6 +10,7 @@ use crate::mock_http::{Req, mock, reply};
 fn endpoints(server: &str) -> Endpoints {
     Endpoints {
         anilist_auth: format!("{server}/anilist/authorize"),
+        anilist_token: format!("{server}/anilist/token"),
         anilist_api: format!("{server}/graphql"),
         mal_auth: format!("{server}/mal/authorize"),
         mal_token: format!("{server}/mal/token"),
@@ -113,23 +114,12 @@ fn watched_episodes_move_entries_along() {
     assert_eq!(watched(None, 1, Some(1)), e(Completed, 0.0, 1));
 }
 
-/// A browser doing what the sign-in page asks: open it, run its script.
-async fn anilist_browser(url: String, token: &str) {
+/// A browser signing in: AniList sends it back with a code.
+async fn anilist_browser(url: String, code: &str) {
     let q = query_of(&url);
-    assert_eq!(q["response_type"], "token");
+    assert_eq!(q["response_type"], "code");
     assert_eq!(q["client_id"], "1234");
-    let redirect = q["redirect_uri"].clone();
-    let page = reqwest::get(&redirect).await.unwrap().text().await.unwrap();
-    assert!(
-        page.contains("fetch('/anilist/token'"),
-        "the page hands the token over: {page}"
-    );
-    let resp = reqwest::Client::new()
-        .post(format!("{redirect}/token"))
-        .body(format!(
-            "access_token={token}&token_type=Bearer&expires_in=31536000"
-        ))
-        .send()
+    let resp = reqwest::get(format!("{}?code={code}", q["redirect_uri"]))
         .await
         .unwrap();
     assert!(resp.status().is_success());
@@ -141,6 +131,20 @@ async fn anilist_signs_in_reads_and_saves() {
     let log = seen.clone();
     let server = mock(move |req: &Req| {
         let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        // The code, with the client's secret, for a token.
+        if req.target == "/anilist/token" {
+            assert_eq!(body["grant_type"], "authorization_code");
+            assert_eq!(body["client_id"], "1234");
+            assert_eq!(body["client_secret"], "s3cret");
+            assert!(body["redirect_uri"].as_str().unwrap().starts_with("http://127.0.0.1:"));
+            return if body["code"] == "c0de" {
+                reply(200, json!({"token_type": "Bearer", "expires_in": 31536000,
+                    "access_token": "tok", "refresh_token": "r"}))
+            } else {
+                reply(400, json!({"error": "invalid_request",
+                    "hint": "Authorization code has expired"}))
+            };
+        }
         let query = body["query"].as_str().unwrap_or("").to_owned();
         let vars = body["variables"].clone();
         log.lock().unwrap().push(body.clone());
@@ -181,8 +185,8 @@ async fn anilist_signs_in_reads_and_saves() {
     // Sign in, the browser handing the token back.
     let cancel = AtomicBool::new(false);
     let (url_tx, url_rx) = tokio::sync::oneshot::channel();
-    let browser = tokio::spawn(async move { anilist_browser(url_rx.await.unwrap(), "tok").await });
-    let signed = anilist::sign_in(&http, &ep, "1234", &cancel, move |url| {
+    let browser = tokio::spawn(async move { anilist_browser(url_rx.await.unwrap(), "c0de").await });
+    let signed = anilist::sign_in(&http, &ep, "1234", "s3cret", &cancel, move |url| {
         url_tx.send(url).unwrap();
     })
     .await
@@ -262,13 +266,54 @@ async fn anilist_sign_in_can_be_refused() {
             .await
             .unwrap();
     });
-    let result = anilist::sign_in(&reqwest::Client::new(), &ep, "1234", &cancel, move |url| {
-        url_tx.send(url).unwrap();
-    })
+    let result = anilist::sign_in(
+        &reqwest::Client::new(),
+        &ep,
+        "1234",
+        "s3cret",
+        &cancel,
+        move |url| {
+            url_tx.send(url).unwrap();
+        },
+    )
     .await;
     browser.await.unwrap();
     let err = result.err().expect("refused");
     assert!(format!("{err:#}").contains("access_denied"));
+}
+
+/// A code AniList won't trade (expired, or the wrong secret): it says why.
+#[tokio::test]
+async fn anilist_sign_in_reports_a_refused_code() {
+    let server = mock(|req: &Req| {
+        assert_eq!(req.target, "/anilist/token");
+        reply(
+            400,
+            json!({"error": "invalid_client", "message": "Client authentication failed"}),
+        )
+    })
+    .await;
+    let ep = endpoints(&server);
+    let cancel = AtomicBool::new(false);
+    let (url_tx, url_rx) = tokio::sync::oneshot::channel::<String>();
+    let browser = tokio::spawn(async move { anilist_browser(url_rx.await.unwrap(), "c0de").await });
+    let result = anilist::sign_in(
+        &reqwest::Client::new(),
+        &ep,
+        "1234",
+        "wrong",
+        &cancel,
+        move |url| {
+            url_tx.send(url).unwrap();
+        },
+    )
+    .await;
+    browser.await.unwrap();
+    let err = format!("{:#}", result.err().expect("refused"));
+    assert!(
+        err.contains("Client authentication failed") && err.contains("secret"),
+        "{err}"
+    );
 }
 
 #[tokio::test]

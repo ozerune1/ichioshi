@@ -1,4 +1,4 @@
-//! AniList: sign-in (OAuth implicit grant), the list, and saving entries,
+//! AniList: sign-in (OAuth authorization code), the list, and saving entries,
 //! through its GraphQL API.
 
 use std::collections::HashMap;
@@ -24,26 +24,15 @@ pub struct SignedIn {
     pub user: User,
 }
 
-/// The token arrives in the URL's fragment, which only the page can read:
-/// it hands it to the app.
-fn page_script() -> String {
-    format!(
-        "const m=document.getElementById('m');const f=location.hash.slice(1);\
-         history.replaceState(null,'',location.pathname);\
-         if(!f){{m.textContent=\"AniList didn't send a sign-in. Start again from the app.\";}}\
-         else fetch('/anilist/token',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:f}})\
-         .then(r=>{{m.textContent=r.ok?{done:?}:'Something went wrong. Start again from the app.';}},\
-         ()=>{{m.textContent='The app stopped waiting for this sign-in. Start again from it.';}});",
-        done = callback::DONE
-    )
-}
-
-/// Sign in: `open` gets the page to show in the browser; then wait for
-/// AniList to send it back here with a token.
+/// Sign in (OAuth's authorization code grant): `open` gets the page to
+/// show in the browser; AniList sends the browser back here with a code,
+/// which the client's secret turns into a token. (AniList refuses the
+/// implicit grant to clients made for it: "unsupported_grant_type".)
 pub async fn sign_in(
     http: &reqwest::Client,
     ep: &Endpoints,
     client_id: &str,
+    client_secret: &str,
     cancel: &AtomicBool,
     open: impl FnOnce(String),
 ) -> Result<SignedIn> {
@@ -54,12 +43,12 @@ pub async fn sign_in(
         &[
             ("client_id", client_id),
             ("redirect_uri", &redirect),
-            ("response_type", "token"),
+            ("response_type", "code"),
         ],
     )?;
     open(url.to_string());
     let started = Instant::now();
-    let (token, expires_in) = loop {
+    let code = loop {
         let (stream, req) = callback::next(&listener, cancel, started).await?;
         match (req.method.as_str(), req.path.as_str()) {
             ("GET", "/anilist") if req.query.contains_key("error") => {
@@ -78,33 +67,51 @@ pub async fn sign_in(
                     .unwrap_or_default();
                 bail!("AniList sign-in didn't complete ({why})");
             }
-            ("GET", "/anilist") => {
-                callback::respond(stream, "200 OK", "Signing in…", Some(&page_script())).await
-            }
-            ("POST", "/anilist/token") => {
-                let form: HashMap<String, String> =
-                    url::form_urlencoded::parse(req.body.as_bytes())
-                        .into_owned()
-                        .collect();
-                if let Some(error) = form.get("error") {
-                    callback::respond(stream, "200 OK", "cancelled", None).await;
-                    bail!("AniList sign-in didn't complete ({error})");
+            ("GET", "/anilist") => match req.query.get("code").filter(|c| !c.is_empty()) {
+                Some(code) => {
+                    callback::respond(stream, "200 OK", callback::DONE, None).await;
+                    break code.clone();
                 }
-                match form.get("access_token").filter(|t| !t.is_empty()) {
-                    Some(t) => {
-                        callback::respond(stream, "200 OK", "ok", None).await;
-                        let expires = form
-                            .get("expires_in")
-                            .and_then(|e| e.parse::<i64>().ok())
-                            .unwrap_or(31_536_000);
-                        break (t.clone(), expires);
-                    }
-                    None => callback::respond(stream, "400 Bad Request", "no token", None).await,
+                None => {
+                    callback::respond(
+                        stream,
+                        "400 Bad Request",
+                        "AniList didn't send a sign-in code. Start again from the app.",
+                        None,
+                    )
+                    .await
                 }
-            }
+            },
             _ => callback::respond(stream, "404 Not Found", "Not found.", None).await,
         }
     };
+    let resp = http
+        .post(&ep.anilist_token)
+        .header("Accept", "application/json")
+        .json(&json!({
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect,
+            "code": code,
+        }))
+        .send()
+        .await
+        .context("could not reach AniList")?;
+    let status = resp.status();
+    let body: Value = resp
+        .json()
+        .await
+        .with_context(|| format!("unexpected answer from AniList (HTTP {status})"))?;
+    let Some(token) = body["access_token"].as_str().filter(|t| !t.is_empty()) else {
+        let why = ["hint", "message", "error"]
+            .iter()
+            .find_map(|k| body[*k].as_str())
+            .unwrap_or("no token");
+        bail!("AniList refused the sign-in ({why}); check the client ID and secret");
+    };
+    let token = token.to_owned();
+    let expires_in = body["expires_in"].as_i64().unwrap_or(31_536_000);
     let session = Session::new(http.clone(), ep.anilist_api.clone(), token.clone(), 0);
     let user = session.viewer().await?;
     Ok(SignedIn {

@@ -524,21 +524,36 @@ impl Gui {
                 .spacing(10)
                 .align_y(Alignment::Center),
             );
-        if service == Service::Mal {
-            c = c.push(
-                row![
-                    weak("    and its client secret, if it shows one"),
-                    field("Client secret", &t.config.mal.client_secret)
-                        .secure(true)
-                        .on_input(|v| edit(
-                            move |g| g.app.tracking.config.mal.client_secret = v.clone()
-                        ))
-                        .width(240),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
-            );
-        }
+        // AniList's code grant needs the secret; MyAnimeList shows one for
+        // some kinds of client only.
+        let (secret, note) = match service {
+            Service::AniList => (&t.config.anilist.client_secret, "    and its client secret"),
+            Service::Mal => (
+                &t.config.mal.client_secret,
+                "    and its client secret, if it shows one",
+            ),
+        };
+        c = c.push(
+            row![
+                weak(note),
+                field("Client secret", secret)
+                    .id(match service {
+                        Service::AniList => "anilist-secret",
+                        Service::Mal => "mal-secret",
+                    })
+                    .secure(true)
+                    .on_input(move |v| edit(move |g| {
+                        let c = &mut g.app.tracking.config;
+                        match service {
+                            Service::AniList => c.anilist.client_secret = v.clone(),
+                            Service::Mal => c.mal.client_secret = v.clone(),
+                        }
+                    }))
+                    .width(320),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        );
         c.push(primary(
             format!("Sign in with {}", service.name()),
             t.signing_in

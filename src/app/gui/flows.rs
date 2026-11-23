@@ -1784,6 +1784,17 @@ fn tracks_lists_on_anilist_and_mal() {
                     )
                 }
             }
+            ("POST", "/anilist/token") => {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(
+                    (body["code"].as_str(), body["client_secret"].as_str()),
+                    (Some("c0de"), Some("s3cret"))
+                );
+                reply(
+                    200,
+                    json!({"access_token": "al-token", "expires_in": 31536000}),
+                )
+            }
             ("POST", "/mal/token") => reply(
                 200,
                 json!({"access_token": "mal-token", "refresh_token": "r", "expires_in": 2678400}),
@@ -1820,6 +1831,7 @@ fn tracks_lists_on_anilist_and_mal() {
     let mut h = app_harness(base);
     h.app.tracking.endpoints = Endpoints {
         anilist_auth: format!("{server}/anilist/authorize"),
+        anilist_token: format!("{server}/anilist/token"),
         anilist_api: format!("{server}/graphql"),
         mal_auth: format!("{server}/mal/authorize"),
         mal_token: format!("{server}/mal/token"),
@@ -1865,17 +1877,18 @@ fn tracks_lists_on_anilist_and_mal() {
             .collect::<HashMap<String, String>>()
     };
     h.app.tracking.config.anilist.client_id = "1234".into();
+    // No secret: AniList's sign-in needs one.
+    click(&mut h, "Sign in with AniList");
+    assert!(h.app.tracking.signing_in.is_none());
+    assert!(shows(&h, "Paste the AniList client secret too"));
+    type_into(&mut h, "anilist-secret", "s3cret", false);
+    assert_eq!(h.app.tracking.config.anilist.client_secret, "s3cret");
     click(&mut h, "Sign in with AniList");
     let q = sign_in_url(&mut h);
-    let redirect = q["redirect_uri"].clone();
+    assert_eq!(q["response_type"], "code");
+    let back = format!("{}?code=c0de", q["redirect_uri"]);
     rt.spawn(async move {
-        reqwest::get(&redirect).await.unwrap();
-        reqwest::Client::new()
-            .post(format!("{redirect}/token"))
-            .body("access_token=al-token&expires_in=31536000")
-            .send()
-            .await
-            .unwrap();
+        reqwest::get(&back).await.unwrap();
     });
     wait_until(&mut h, "AniList", |g| {
         g.app.tracking.signed_in(Service::AniList)
@@ -2073,6 +2086,7 @@ fn syncs_watched_episodes_to_the_lists() {
     // Signed in to both (the sign-in itself is tested elsewhere).
     h.app.tracking.endpoints = Endpoints {
         anilist_auth: format!("{server}/x"),
+        anilist_token: format!("{server}/x"),
         anilist_api: format!("{server}/graphql"),
         mal_auth: format!("{server}/x"),
         mal_token: format!("{server}/mal/token"),
