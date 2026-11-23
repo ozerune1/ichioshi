@@ -54,19 +54,34 @@ struct Raw {
     #[serde(default)]
     themoviedb_id: Option<serde_json::Value>,
     #[serde(default)]
-    season: Option<HashMap<String, u32>>,
+    season: Option<HashMap<String, i64>>,
+    /// -1 for specials whose place among TVDB's isn't known.
     #[serde(default)]
-    episode_offset: Option<HashMap<String, u32>>,
+    episode_offset: Option<HashMap<String, i64>>,
 }
 
 impl Mapping {
     pub fn parse(json: &[u8]) -> Result<Self> {
-        let raw: Vec<Raw> = serde_json::from_slice(json).context("not the anime-lists mapping")?;
+        let raw: Vec<serde_json::Value> =
+            serde_json::from_slice(json).context("not the anime-lists mapping")?;
         let mut m = Mapping::default();
-        for r in raw {
+        // An entry that can't be read is left out, not the whole list.
+        for r in raw
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<Raw>(v).ok())
+        {
             let Some(anilist) = r.anilist_id else {
                 continue;
             };
+            let tvdb = |field: &Option<HashMap<String, i64>>| {
+                field.as_ref().and_then(|f| f.get("tvdb").copied())
+            };
+            let (season, offset) = (
+                tvdb(&r.season).unwrap_or(1),
+                tvdb(&r.episode_offset).unwrap_or(0),
+            );
+            // Where on TheTVDB isn't known: not one for Sonarr.
+            let placed = season >= 0 && offset >= 0;
             let movie = r.kind.as_deref() == Some("MOVIE");
             let tmdb_movie = r.themoviedb_id.as_ref().and_then(|t| {
                 let v = &t["movie"];
@@ -74,17 +89,9 @@ impl Mapping {
                     .or_else(|| v.get(0).and_then(serde_json::Value::as_u64))
             });
             let place = Place {
-                tvdb: r.tvdb_id,
-                season: r
-                    .season
-                    .as_ref()
-                    .and_then(|s| s.get("tvdb").copied())
-                    .unwrap_or(1),
-                offset: r
-                    .episode_offset
-                    .as_ref()
-                    .and_then(|o| o.get("tvdb").copied())
-                    .unwrap_or(0),
+                tvdb: r.tvdb_id.filter(|_| placed),
+                season: season.max(0) as u32,
+                offset: offset.max(0) as u32,
                 tmdb_movie,
                 movie,
             };
@@ -174,13 +181,20 @@ pub(crate) mod tests {
          "episode_offset": {"tvdb": 12}},
         {"type": "MOVIE", "anilist_id": 112151, "tvdb_id": 348545,
          "themoviedb_id": {"movie": [635302]}, "season": {"tvdb": 0}},
-        {"type": "TV", "mal_id": 1}
+        {"type": "TV", "mal_id": 1},
+        {"type": "OVA", "anilist_id": 13047, "tvdb_id": 81341, "season": {"tvdb": 0},
+         "episode_offset": {"tvdb": -1}},
+        {"type": "TV", "anilist_id": 77, "tvdb_id": "not a number"}
     ]"#;
 
     #[test]
     fn maps_both_ways() {
         let m = Mapping::parse(SAMPLE.as_bytes()).unwrap();
-        assert_eq!(m.len(), 5);
+        assert_eq!(m.len(), 6, "all but the unreadable one");
+        // A special whose place on TheTVDB isn't known (as in the real
+        // list): no place for Sonarr.
+        assert_eq!(m.place(13047).unwrap().tvdb, None);
+        assert!(m.seasons_of(81341).is_empty());
         let s2 = m.place(176301).unwrap();
         assert_eq!(
             (s2.tvdb, s2.season, s2.offset, s2.movie),
@@ -193,5 +207,31 @@ pub(crate) mod tests {
         assert_eq!(m.film(635302), Some(112151));
         assert!(m.seasons_of(348545).is_empty(), "films aren't seasons");
         assert_eq!(m.place(112151).unwrap().tmdb_movie, Some(635302));
+    }
+
+    /// The real list (fetched from GitHub) reads, as the app reads it.
+    #[test]
+    #[ignore = "fetches the real anime-lists mapping"]
+    fn reads_the_real_mapping() {
+        let _net = crate::mock_http::real();
+        let dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = reqwest::Client::builder()
+            .user_agent("seadex-downloader-test")
+            .build()
+            .unwrap();
+        let m = rt
+            .block_on(load(&client, &dir.path().join("anime-lists.json")))
+            .unwrap();
+        assert!(m.len() > 15_000, "{}", m.len());
+        let frieren = m.place(154587).unwrap();
+        assert_eq!((frieren.tvdb, frieren.season), (Some(424536), 1));
+        let mut apothecary = m.seasons_of(431162).to_vec();
+        apothecary.sort();
+        assert!(apothecary.contains(&(161645, 1, 0)) && apothecary.contains(&(176301, 2, 0)));
+        assert!(
+            dir.path().join("anime-lists.json").exists(),
+            "kept for next time"
+        );
     }
 }
