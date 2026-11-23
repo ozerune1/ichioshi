@@ -456,6 +456,29 @@ impl Gui {
                 self.fullscreen = !self.fullscreen;
                 set_fullscreen(self.fullscreen)
             }
+            Msg::Languages(prefs) => {
+                // The series' own, if it has them; else everyone's (the
+                // library's default tracks follow, as remuxes do).
+                let id = self.player.as_ref().map(|p| p.series);
+                let own = id
+                    .and_then(|id| self.app.library.find(id))
+                    .is_some_and(|s| s.prefs.is_some());
+                match id {
+                    Some(id) if own => self.app.perform(Action::SetSeriesPrefs {
+                        id,
+                        prefs: Some(prefs.clone()),
+                    }),
+                    _ => {
+                        self.app.settings.prefs = prefs.clone();
+                        self.app.recheck_defaults();
+                        self.app.pages.last_stats = None;
+                    }
+                }
+                if let Some(p) = &mut self.player {
+                    p.use_languages(&prefs);
+                }
+                Task::none()
+            }
             Msg::Setting(setting, on) => {
                 let s = &mut self.app.settings.player;
                 match setting {
@@ -563,11 +586,17 @@ impl Gui {
 
     fn view(&self) -> Element<'_, Message> {
         if let Some(p) = &self.player {
+            let own = self
+                .app
+                .library
+                .find(p.series)
+                .and_then(|s| s.prefs.as_ref());
             let view = p.view(
                 self.neighbour(true),
                 self.neighbour(false),
                 self.fullscreen,
                 &self.app.settings.player,
+                (own.unwrap_or(&self.app.settings.prefs), own.is_some()),
             );
             return self.with_note(match &self.app.discussion {
                 Some(d) => self.discussion(view, d),

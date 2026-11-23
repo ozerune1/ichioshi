@@ -481,6 +481,7 @@ fn plays_episodes() {
         "the typeset subtitles, by libass"
     );
     snapshot(&h, &out.join("1-opening"));
+
     click(&mut h, "Skip opening");
     wait(&mut h, "past the opening", |g| {
         g.player.as_ref().unwrap().position() >= 2.0
@@ -498,6 +499,19 @@ fn plays_episodes() {
         saved.find(9).unwrap().watched.contains_key(&1),
         "saved to disk"
     );
+
+    // Languages, from the player's own settings: no subtitles, now and
+    // for what plays next.
+    let panel = || Message::Player(player::Msg::Panel(player::Panel::Settings));
+    send(&mut h, [panel(), Message::Player(player::Msg::Frame)]);
+    assert!(shows(&h, "LANGUAGES"));
+    snapshot(&h, &out.join("2b-languages"));
+    let mut none = h.app.settings.prefs.clone();
+    none.subtitles = None;
+    send(&mut h, [Message::Player(player::Msg::Languages(none))]);
+    assert_eq!(h.player.as_ref().unwrap().subs, None, "off now");
+    assert_eq!(h.app.settings.prefs.subtitles, None, "and from now on");
+    send(&mut h, [panel()]);
 
     // On to the end: episode 1 watched, episode 2 playing.
     send(&mut h, [space()]);

@@ -84,6 +84,8 @@ pub struct Described {
     pub subs: Option<usize>,
     /// Each subtitle track's number in the file and codec, by index.
     pub sub_tracks: Vec<(u64, String)>,
+    /// The tracks as read (to choose again by other languages).
+    pub info: crate::mkv::MkvInfo,
 }
 
 /// Tracks and chapters, from the file (Matroska); with `prefs`, the audio
@@ -101,7 +103,10 @@ pub fn describe_info(
     info: &crate::mkv::MkvInfo,
     prefs: Option<&crate::prefs::LangPrefs>,
 ) -> Described {
-    let mut d = Described::default();
+    let mut d = Described {
+        info: info.clone(),
+        ..Described::default()
+    };
     let (mut audio_i, mut sub_i) = (0i64, 0i64);
     for t in &info.tracks {
         let (kind, index) = match t.kind {
@@ -142,15 +147,9 @@ pub fn describe_info(
         });
     }
     if let Some(prefs) = prefs {
-        let on = crate::prefs::pick_defaults(&info.tracks, prefs);
-        let of = |kind: crate::mkv::TrackKind| {
-            info.tracks
-                .iter()
-                .filter(|t| t.kind == kind)
-                .position(|t| on.contains(&t.number))
-        };
-        d.audio = of(crate::mkv::TrackKind::Audio).or(d.audio);
-        d.subs = of(crate::mkv::TrackKind::Subtitles);
+        let (audio, subs) = choose(info, prefs);
+        d.audio = audio.or(d.audio);
+        d.subs = subs;
     }
     if d.audio.is_none() && audio_i > 0 {
         d.audio = Some(0);
@@ -165,6 +164,25 @@ pub fn describe_info(
         })
         .collect();
     d
+}
+
+/// The audio and subtitles (indices among each kind's tracks) that `prefs`
+/// choose in a file with these tracks.
+pub fn choose(
+    info: &crate::mkv::MkvInfo,
+    prefs: &crate::prefs::LangPrefs,
+) -> (Option<usize>, Option<usize>) {
+    let on = crate::prefs::pick_defaults(&info.tracks, prefs);
+    let of = |kind: crate::mkv::TrackKind| {
+        info.tracks
+            .iter()
+            .filter(|t| t.kind == kind)
+            .position(|t| on.contains(&t.number))
+    };
+    (
+        of(crate::mkv::TrackKind::Audio),
+        of(crate::mkv::TrackKind::Subtitles),
+    )
 }
 
 /// Whether libass can draw a subtitle codec (text: SRT, ASS, WebVTT).
@@ -375,6 +393,7 @@ pub(crate) mod tests {
             audio,
             subs,
             sub_tracks,
+            ..
         } = describe(&file, None);
         assert_eq!(
             sub_tracks

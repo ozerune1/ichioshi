@@ -708,7 +708,10 @@ impl Manager {
             if cancel.load(Ordering::Relaxed) {
                 bail!("cancelled");
             }
-            let remote = client.status(&remote_id).await?;
+            let remote = client
+                .status(&remote_id)
+                .await
+                .context("checking on the download")?;
             match &remote.state {
                 RemoteState::Ready => break remote,
                 RemoteState::Failed(message) => {
@@ -789,7 +792,10 @@ impl Manager {
         live.lock().unwrap().note = None;
         for ((i, file), r) in missing.iter().zip(matched) {
             let remote_file = &remote.files[r.expect("checked above")];
-            let url = client.link(&remote_id, remote_file).await?;
+            let url = client
+                .link(&remote_id, remote_file)
+                .await
+                .context("asking for the download link")?;
             let dest = job.dest(file);
             fetch(&self.http, &url, &dest, file.len, cancel, |have, speed| {
                 let mut l = live.lock().unwrap();

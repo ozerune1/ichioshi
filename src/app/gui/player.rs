@@ -51,6 +51,8 @@ pub enum Msg {
     Surface,
     Panel(Panel),
     Setting(Setting, bool),
+    /// Other languages: for what plays from now on, and this episode.
+    Languages(crate::prefs::LangPrefs),
     /// A new frame is up: subtitles for its moment.
     Frame,
     /// The file's subtitles (and fonts), read in the background.
@@ -101,6 +103,8 @@ pub struct Player {
     pub panel: Option<Panel>,
     /// Each subtitle track's number in the file and codec, by index.
     sub_tracks: Vec<(u64, String)>,
+    /// The file's tracks as read (to choose again by other languages).
+    info: crate::mkv::MkvInfo,
     /// Text subtitles, drawn by libass over the picture.
     text_subs: Option<Arc<crate::mkv::TextSubtitles>>,
     ass: Option<crate::subs::Renderer>,
@@ -156,6 +160,7 @@ impl Player {
             audio,
             subs,
             sub_tracks,
+            info,
         } = described;
         let mut video =
             Video::from_gst_pipeline(pipeline, sink, None).map_err(|e| anyhow!("{e}"))?;
@@ -201,6 +206,7 @@ impl Player {
             view_px: (1440, 900),
             scale: 1.0,
             sub_delay_ms: 0,
+            info,
         })
     }
 
@@ -266,6 +272,19 @@ impl Player {
     }
 
     /// The file's subtitles are read: show the chosen ones.
+    /// Switch to the audio and subtitles `prefs` choose.
+    pub fn use_languages(&mut self, prefs: &crate::prefs::LangPrefs) {
+        let (audio, subs) = gst_video::choose(&self.info, prefs);
+        if let Some(i) = audio
+            && self.audio != Some(i)
+        {
+            gst_video::set_audio(&self.video.pipeline(), i);
+            self.audio = Some(i);
+        }
+        self.subs = subs;
+        self.apply_subs();
+    }
+
     pub fn subs_loaded(&mut self, subs: Arc<crate::mkv::TextSubtitles>) {
         if crate::subs::available() {
             self.ass = crate::subs::Renderer::new(&subs).ok();
@@ -398,6 +417,7 @@ impl Player {
                 self.subs = c.index;
                 self.apply_subs();
             }
+            Msg::Languages(prefs) => self.use_languages(&prefs),
             Msg::Frame => self.draw_subs(None),
             Msg::SubsLoaded(path, Some(subs)) if path == self.path => self.subs_loaded(subs),
             Msg::SubsLoaded(..) => {}

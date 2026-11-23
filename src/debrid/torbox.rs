@@ -26,6 +26,10 @@ fn data(c: &Client, status: StatusCode, body: Value) -> Result<Value> {
         return Err(anyhow::Error::new(Gone));
     }
     match body["detail"].as_str().filter(|d| !d.is_empty()) {
+        // Its own failures share one message; the code says which.
+        Some(detail) if status.is_server_error() && !code.is_empty() => {
+            Err(c.error(format!("{detail} ({code})")))
+        }
         Some(detail) => Err(c.error(detail)),
         None if !code.is_empty() => Err(c.error(code)),
         None => Err(c.error(format!("HTTP {status}"))),
@@ -224,6 +228,9 @@ mod tests {
         let base = mock(|req| match req.target.split('?').next().unwrap() {
             "/user/me" => reply(403, json!({"success": false, "error": "BAD_TOKEN", "detail": "The provided token is invalid.", "data": null})),
             "/torrents/mylist" => reply(200, json!({"success": true, "error": null, "detail": "", "data": null})),
+            // What TorBox said asked for the film's link (22 Nov 2026).
+            "/torrents/requestdl" => reply(500, json!({"success": false, "error": "DATABASE_ERROR",
+                "detail": "There was an error processing your request. Please try again later.", "data": null})),
             _ => reply(400, json!({"success": false, "error": "ACTIVE_LIMIT", "detail": "You have reached your active download limit.", "data": null})),
         })
         .await;
@@ -245,6 +252,18 @@ mod tests {
         assert_eq!(
             c.add(b"t", "x").await.unwrap_err().to_string(),
             "TorBox: You have reached your active download limit."
+        );
+        let file = RemoteFile {
+            id: "0".into(),
+            path: "Film.mkv".into(),
+            size: 1,
+            selected: true,
+            link: None,
+        };
+        assert_eq!(
+            c.link("9", &file).await.unwrap_err().to_string(),
+            "TorBox: There was an error processing your request. Please try again later. \
+             (DATABASE_ERROR)"
         );
     }
 }

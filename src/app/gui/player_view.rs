@@ -161,6 +161,7 @@ impl Player {
         prev: Option<u32>,
         fullscreen: bool,
         settings: &crate::player::Settings,
+        (prefs, own): (&crate::prefs::LangPrefs, bool),
     ) -> Element<'a, Message> {
         let picture = VideoPlayer::new(&self.video)
             .width(Fill)
@@ -231,7 +232,7 @@ impl Player {
             if let Some(panel) = self.panel {
                 let content = match panel {
                     Panel::Tracks => self.tracks_panel(),
-                    Panel::Settings => settings_panel(settings),
+                    Panel::Settings => settings_panel(settings, prefs, own),
                 };
                 layers.push(
                     container(content)
@@ -713,7 +714,11 @@ impl Player {
     }
 }
 
-fn settings_panel<'a>(s: &crate::player::Settings) -> Element<'a, Message> {
+fn settings_panel<'a>(
+    s: &crate::player::Settings,
+    prefs: &crate::prefs::LangPrefs,
+    own: bool,
+) -> Element<'a, Message> {
     let switch = |label: &'static str, on: bool, which: Setting| {
         toggler(on)
             .label(label)
@@ -761,11 +766,21 @@ fn settings_panel<'a>(s: &crate::player::Settings) -> Element<'a, Message> {
                 s.autoplay,
                 Setting::Autoplay
             ),
+            super::style::gap(6.0),
+            text("LANGUAGES").size(12).font(BOLD).color(FAINT),
+            text(if own {
+                "This series' own. Others play everyone's (in Settings)."
+            } else {
+                "For every episode, as for remuxes. The tracks button still picks any other track."
+            })
+            .size(12)
+            .color(WHITE.scale_alpha(0.6)),
+            super::series::lang_editor(prefs, |p| m(Msg::Languages(p))),
         ]
         .spacing(14),
     )
     .padding(20)
-    .width(380)
+    .width(420)
     .style(|_| menu())
     .into()
 }
