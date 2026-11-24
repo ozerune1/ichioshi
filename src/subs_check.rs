@@ -1280,9 +1280,35 @@ fn pgs_plays_through() {
     sink.set_drop(false);
     crate::gst_video::set_subtitles(&pipeline, Some(text));
     pipeline.set_state(gst::State::Playing).unwrap();
+    // `PGS_SEEKS=n`: seek to n places through the file (as you would),
+    // playing a second after each.
+    let seeks: u64 = std::env::var("PGS_SEEKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let mut frames = 0;
-    while sink.pull_sample().is_ok() {
-        frames += 1;
+    if seeks > 0 {
+        let _ = sink.pull_sample();
+        let duration = pipeline.query_duration::<gst::ClockTime>().unwrap();
+        for i in 0..seeks {
+            // Spread out, not evenly (1/φ steps).
+            let at = duration.nseconds() as f64 * ((i as f64 * 0.618_034) % 1.0);
+            pipeline
+                .seek_simple(
+                    gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                    gst::ClockTime::from_nseconds(at as u64),
+                )
+                .unwrap();
+            for _ in 0..24 {
+                if sink.pull_sample().is_ok() {
+                    frames += 1;
+                }
+            }
+        }
+    } else {
+        while sink.pull_sample().is_ok() {
+            frames += 1;
+        }
     }
     let _ = pipeline.set_state(gst::State::Null);
     println!("{frames} frames played");
