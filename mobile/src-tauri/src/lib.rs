@@ -110,27 +110,7 @@ fn party_poll(app: tauri::AppHandle, bridge: Bridge) {
                 // The party's episode: the player opens; how far it got goes
                 // to the core when it closes.
                 if said["play"].is_object() {
-                    let (app, bridge, request) =
-                        (app.clone(), bridge.clone(), said["play"].clone());
-                    tauri::async_runtime::spawn(async move {
-                        let player = app.state::<Player>();
-                        let r = player
-                            .0
-                            .run_mobile_plugin_async::<serde_json::Value>("play", request.clone())
-                            .await
-                            .unwrap_or_default();
-                        let played = serde_json::json!({
-                            "do": "played",
-                            "id": request["id"],
-                            "episode": request["episode"],
-                            "position": r["position"].as_f64().unwrap_or(0.0),
-                            "duration": r["duration"].as_f64().unwrap_or(0.0),
-                            "then": r["then"],
-                        });
-                        if let Ok(c) = serde_json::from_value::<Command>(played) {
-                            let _ = bridge.command(c).await;
-                        }
-                    });
+                    play_now(app.clone(), bridge.clone(), said["play"].clone());
                 }
                 let control = &said["control"];
                 if !control.is_null() {
@@ -144,6 +124,42 @@ fn party_poll(app: tauri::AppHandle, bridge: Bridge) {
             }
         })
         .expect("failed to start the party's poll");
+}
+
+/// Play in the phone's player; how far it got (and what next) goes
+/// straight to the core when it closes. Not through the web UI, which
+/// sleeps while the player's open, or while it's in picture in picture
+/// over other apps, where the next episode then plays on.
+#[cfg(target_os = "android")]
+fn play_now(app: tauri::AppHandle, bridge: Bridge, request: serde_json::Value) {
+    tauri::async_runtime::spawn(async move {
+        let player = app.state::<Player>();
+        let r = match player
+            .0
+            .run_mobile_plugin_async::<serde_json::Value>("play", request.clone())
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = app.emit("note", e.to_string());
+                return;
+            }
+        };
+        if let Some(error) = r["error"].as_str() {
+            let _ = app.emit("note", error);
+        }
+        let played = serde_json::json!({
+            "do": "played",
+            "id": request["id"],
+            "episode": request["episode"],
+            "position": r["position"].as_f64().unwrap_or(0.0),
+            "duration": r["duration"].as_f64().unwrap_or(0.0),
+            "then": r["then"],
+        });
+        if let Ok(c) = serde_json::from_value::<Command>(played) {
+            let _ = bridge.command(c).await;
+        }
+    });
 }
 
 /// The phone's player (PlayerPlugin, in the Android project).
@@ -222,9 +238,21 @@ pub fn run() {
             let state_dir = state_dir(app)?;
             let events = app.handle().clone();
             let opener = app.handle().clone();
+            // (The core, once it's started: what to play goes to the player.)
+            let core: std::sync::Arc<std::sync::OnceLock<Bridge>> = Default::default();
+            let for_play = core.clone();
             let bridge = Bridge::start(
                 state_dir,
                 move |name, payload| {
+                    // Android: what to play goes straight to the player.
+                    #[cfg(target_os = "android")]
+                    if name == "play"
+                        && let Some(bridge) = for_play.get()
+                    {
+                        play_now(events.clone(), bridge.clone(), payload);
+                        return;
+                    }
+                    let _ = &for_play;
                     let _ = events.emit(name, payload);
                 },
                 move |url| {
@@ -232,6 +260,7 @@ pub fn run() {
                     let _ = opener.opener().open_url(url, None::<&str>);
                 },
             );
+            let _ = core.set(bridge.clone());
             #[cfg(target_os = "android")]
             party_poll(app.handle().clone(), bridge.clone());
             app.manage(bridge);

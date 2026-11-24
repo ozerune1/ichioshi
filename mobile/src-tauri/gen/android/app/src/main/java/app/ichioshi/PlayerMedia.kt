@@ -301,3 +301,14 @@ fun spoken(s: Double): String {
   add(t % 60, "second")
   return if (parts.isEmpty()) "0 seconds" else parts.joinToString(" ")
 }
+
+/** The speeds to pick from (1 is normal), as on the desktop. */
+val SPEEDS = doubleArrayOf(0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
+
+/** "1×", "1.25×", "0.5×". */
+fun speedLabel(s: Double): String =
+  String.format(Locale.ROOT, "%.2f", s).trimEnd('0').trimEnd('.') + "×"
+
+/** The next speed up (or down) from [s], or [s] at the ends. */
+fun speedStep(s: Double, up: Boolean): Double =
+  if (up) SPEEDS.firstOrNull { it > s + 1e-6 } ?: s else SPEEDS.lastOrNull { it < s - 1e-6 } ?: s

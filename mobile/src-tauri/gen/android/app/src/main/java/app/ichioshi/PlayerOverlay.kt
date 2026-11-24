@@ -24,6 +24,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -47,6 +48,8 @@ interface OverlayActions {
   fun touching(down: Boolean)
   /** Where subtitles go (mpv's sub-pos), so nothing covers them. */
   fun subPos(pos: Int)
+  /** Into a small window of its own (picture in picture). */
+  fun pip()
 }
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
@@ -193,6 +196,17 @@ class PlayerOverlay(
   private val tracksTool = tool(0, 22f, "Audio and subtitles", tracksIcon) { actions.tracks() }
   private val fitIcon = kit.icon(R.drawable.ic_expand, 22f, Colors.WHITE)
   private val fitTool = tool(0, 22f, "Fill the screen", fitIcon) { actions.fitFill() }
+  private val pipTool = tool(R.drawable.ic_pip, 22f, "Picture in picture") { actions.pip() }
+  /** The speed, when it isn't 1×: a tap opens the panel, where it's changed. */
+  private val speedBadge = kit.text(13f, Colors.WHITE, kit.bold, tnum = true).apply {
+    background = kit.rounded(Colors.GLASS, 14f, 1f, Colors.GLASS_RING)
+    gravity = Gravity.CENTER
+    setPadding(kit.px(10), 0, kit.px(10), 0)
+    visibility = View.GONE
+    setOnClickListener { actions.tracks() }
+  }
+  /** Everything over the picture: picture in picture shows the picture alone. */
+  private val chrome = FrameLayout(context)
   private val chipDetail = kit.text(13f, Colors.ACCENT_SOFT, kit.medium).apply { text = " · The host controls playback" }
   private val chip: View? = if (member) LinearLayout(context).apply {
     orientation = LinearLayout.HORIZONTAL
@@ -379,7 +393,10 @@ class PlayerOverlay(
     nextTool?.let {
       cluster.addView(it.view, LinearLayout.LayoutParams(kit.px(48), kit.px(48)).apply { rightMargin = kit.px(16) })
     }
+    hold(speedBadge)
+    cluster.addView(speedBadge, LinearLayout.LayoutParams(WRAP, kit.px(32)).apply { rightMargin = kit.px(8) })
     cluster.addView(tracksTool.view, LinearLayout.LayoutParams(kit.px(48), kit.px(48)))
+    cluster.addView(pipTool.view, LinearLayout.LayoutParams(kit.px(48), kit.px(48)).apply { leftMargin = kit.px(8) })
     cluster.addView(fitTool.view, LinearLayout.LayoutParams(kit.px(48), kit.px(48)).apply { leftMargin = kit.px(8) })
     topBar.addView(cluster, LinearLayout.LayoutParams(WRAP, kit.px(48)))
     controls.addView(topBar, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.TOP))
@@ -450,10 +467,18 @@ class PlayerOverlay(
     cardLayer.addView(card, FrameLayout.LayoutParams(kit.px(420), WRAP, Gravity.CENTER))
     cardLayer.visibility = View.INVISIBLE
     root.addView(cardLayer, FrameLayout.LayoutParams(MATCH, MATCH))
+    // All of it in one layer over the picture (the same size: places don't change).
+    val over = (0 until root.childCount).map { root.getChildAt(it) }.filter { it !== surface }
+    for (v in over) {
+      val lp = v.layoutParams
+      root.removeView(v)
+      chrome.addView(v, lp)
+    }
+    root.addView(chrome, FrameLayout.LayoutParams(MATCH, MATCH))
 
     // Hidden until there's something to show (the top bar shows while loading).
     for (v in listOfNotNull(scrimTop, scrimBottom, transport, band, bubble, moments, statusDisc, statusCaption,
-      tracksTool.view, fitTool.view, prevTool?.view, nextTool?.view)) {
+      tracksTool.view, fitTool.view, pipTool.view, prevTool?.view, nextTool?.view)) {
       v.visibility = View.INVISIBLE
       v.alpha = 0f
       targets[v] = -1f
@@ -617,6 +642,7 @@ class PlayerOverlay(
     fade(topBar, !playing || panelOpen || (up && !scrubbing), outMs = if (scrubbing) 120L else 240L,
       dy = if (scrubbing) 0f else -kit.dp(8))
     fade(tracksTool.view, playing)
+    fade(pipTool.view, playing && !panelOpen)
     prevTool?.let { fadeTool(it.view, prevRoom, playing && !panelOpen) }
     nextTool?.let { fadeTool(it.view, nextRoom, playing && !panelOpen) }
     fadeTool(fitTool.view, fitAvailable, playing && !panelOpen)
@@ -930,8 +956,15 @@ class PlayerOverlay(
     val room = w - padL - padR - kit.px(48 + 12 + 12)
     val least = kit.px(160)
     fun cluster(long: Boolean, prev: Boolean, next: Boolean): Int {
-      var c = kit.px(48)
+      var c = kit.px(48 + 8 + 48)
       if (fitAvailable) c += kit.px(8 + 48)
+      if (speedBadge.visibility == View.VISIBLE) {
+        speedBadge.measure(
+          View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+          View.MeasureSpec.makeMeasureSpec(kit.px(32), View.MeasureSpec.EXACTLY),
+        )
+        c += speedBadge.measuredWidth + kit.px(8)
+      }
       val n = next && nextTool != null
       if (n) c += kit.px(48 + 16)
       if (prev && prevTool != null) c += kit.px(48) + kit.px(if (n) 8 else 16)
@@ -1021,6 +1054,20 @@ class PlayerOverlay(
   }
 
   /** The Fit/Fill tool for the saved choice. */
+  /** Picture in picture: the picture alone (the system's window has its own buttons). */
+  fun setPip(on: Boolean) {
+    chrome.visibility = if (on) View.GONE else View.VISIBLE
+  }
+
+  /** The speed it plays at: says so in the top bar unless it's 1×. */
+  fun setSpeed(speed: Double) {
+    val normal = abs(speed - 1.0) < 1e-6
+    speedBadge.text = speedLabel(speed)
+    speedBadge.contentDescription = "Speed ${speedLabel(speed).dropLast(1)} times. Opens audio, subtitles and speed"
+    speedBadge.visibility = if (normal) View.GONE else View.VISIBLE
+    fitTopBar()
+  }
+
   fun setFillIcon(on: Boolean) {
     fitIcon.setImageResource(if (on) R.drawable.ic_shrink else R.drawable.ic_expand)
     fitTool.view.contentDescription = if (on) "Fit the picture to the screen" else "Fill the screen"

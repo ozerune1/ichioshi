@@ -37,7 +37,10 @@ export async function refresh() {
 export function start() {
   refresh();
   listen("changed", () => refresh());
-  // A video to play: the app's player; then how far it got, and what next.
+  // What the player had to say (why it couldn't play).
+  listen<string>("note", (e) => say(e.payload));
+  // A video to play (where the app plays it here: on Android it goes
+  // straight to the phone's player, not through this page).
   listen<any>("play", async (e) => {
     const p = e.payload;
     try {

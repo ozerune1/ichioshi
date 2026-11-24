@@ -1,9 +1,15 @@
 package app.ichioshi
 
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.res.Configuration
+import android.graphics.drawable.Icon
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
@@ -11,6 +17,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.util.Rational
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.SurfaceHolder
@@ -19,10 +26,12 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityManager
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
 import app.tauri.plugin.JSObject
 import dev.jdtech.mpv.MPVLib
 import java.io.File
@@ -39,7 +48,8 @@ import kotlin.math.max
  * The app's player: libmpv (mpv's engine: every codec, ASS subtitles as
  * they're meant to look, chapters), full screen, with its controls: play
  * and pause, seeking, audio and subtitles, skipping openings and endings,
- * the next episode. It says how far it got when it closes.
+ * the next episode, the speed. Home (or a swipe up) while it plays puts it
+ * in picture in picture. It says how far it got when it closes.
  */
 class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.Callback,
   OverlayActions, TapLayer.Host, Timeline.Listener, TrackControl {
@@ -48,7 +58,16 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     @Volatile
     var current: PlayerActivity? = null
 
+    /** The speed you play at, this time the app's open (each episode starts at it). */
+    var lastSpeed = 1.0
+
     private const val TAG = "Ichioshi"
+    /** Picture in picture's buttons. */
+    private const val PIP_ACTION = "app.ichioshi.PIP"
+    private const val PIP_BACK = 1
+    private const val PIP_PLAY = 2
+    private const val PIP_PAUSE = 3
+    private const val PIP_FORWARD = 4
   }
 
   private lateinit var mpv: MPVLib
@@ -78,6 +97,31 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
    * host's party waits instead of being moved back again and again.
    */
   @Volatile private var stalled = false
+
+  /** The play this is (PlayerPlugin waits for how far it got). */
+  private var token = 0L
+  /** How far it got has been said. */
+  private var delivered = false
+  /** The speed it plays at (1 is normal). */
+  @Volatile private var speed = 1.0
+  /** In picture in picture, or going into it. */
+  private var inPip = false
+  private var enteringPip = false
+  /** It's been in picture in picture: back in full, closing goes back to the app. */
+  private var wasInPip = false
+  /** Picture in picture's window was closed. */
+  private var dismissed = false
+  /** At the end in picture in picture: the next episode plays here if it comes. */
+  private var waitingNext = false
+  private val giveUpNext = Runnable {
+    if (waitingNext) {
+      waitingNext = false
+      finish()
+    }
+  }
+  private val pipReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) = pipAction(intent.getIntExtra("what", 0))
+  }
 
   /** Following a watch party's host: only the host controls playback. */
   private var member = false
@@ -198,6 +242,9 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     }
 
     member = intent.getStringExtra("party") == "member"
+    token = intent.getLongExtra("token", 0)
+    // The party's speed, else yours.
+    speed = if (intent.hasExtra("speed")) intent.getDoubleExtra("speed", 1.0) else lastSpeed
     skipOpenings = intent.getBooleanExtra("skipOpenings", false) && !member
     skipEndings = intent.getBooleanExtra("skipEndings", false) && !member
     hasNext = intent.getBooleanExtra("hasNext", false)
@@ -229,7 +276,17 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     ui.moments.onDone = { countdownDone() }
     ui.setFillIcon(fill)
     ui.setPaused(intent.getBooleanExtra("paused", false))
+    ui.setSpeed(speed)
+    ui.panel.setSpeed(speed, tell = false)
+    if (member) ui.panel.lockSpeed()
     setContentView(ui.root)
+    // The next episode, playing on in picture in picture (see takeNext).
+    if (isInPictureInPictureMode) {
+      inPip = true
+      wasInPip = true
+      ui.setPip(true)
+    }
+    ContextCompat.registerReceiver(this, pipReceiver, IntentFilter(PIP_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED)
     ui.surface.holder.addCallback(this)
     ViewCompat.setOnApplyWindowInsetsListener(ui.root) { _, insets ->
       val cut = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
@@ -298,6 +355,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     if (intent.getStringExtra("slang").isNullOrEmpty()) mpv.setOptionString("sid", "no")
     if (start > 0) mpv.setOptionString("start", fmt(start))
     if (intent.getBooleanExtra("paused", false)) mpv.setOptionString("pause", "yes")
+    if (speed != 1.0) mpv.setOptionString("speed", fmt(speed))
     // Fill or Fit, and the subtitle size: as last time.
     mpv.setOptionString("panscan", if (fill) "1.0" else "0.0")
     mpv.setOptionString("sub-ass-force-margins", if (fill) "yes" else "no")
@@ -491,6 +549,8 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
   override fun tracks() {
     if (ui.panelOpen) closePanel() else openPanel()
   }
+
+  override fun pip() = enterPip()
 
   override fun fitFill() {
     setFill(!fill)
@@ -744,6 +804,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     ui.fitAvailable = aspectDiff() > 0.05
     ui.sync()
     checkHint()
+    updatePip()
   }
 
   /** Once: "Pinch to fill the screen", when the picture's shape isn't the screen's. */
@@ -822,6 +883,15 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     val s = String.format(Locale.ROOT, "%.1f", seconds)
     mpvDo { it.setPropertyString("sub-delay", s) }
     log("sub-delay $s")
+  }
+
+  override fun speed(value: Double) {
+    if (member) return
+    speed = value
+    lastSpeed = value
+    mpvDo { it.setPropertyDouble("speed", value) }
+    ui.setSpeed(value)
+    log("speed $value")
   }
 
   override fun subScale(percent: Int) {
@@ -1031,9 +1101,10 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
       message("Resuming at ${clock(start)}", action = "Start over", onAction = { userSeek(0.0) }, base = 5000)
     }
     ui.controlsShown = false
-    setControls(true)
+    setControls(!inPip)
     ui.sync()
     pictureChanged()
+    updatePip()
   }
 
   private fun updateBusy() {
@@ -1116,6 +1187,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
   private fun showCard(title: String, detail: String, beforePlay: Boolean) {
     cardUp = true
     stalled = true
+    updatePip()
     cardError = if (beforePlay) "$title. $detail" else null
     ready = false
     main.removeCallbacks(loadingCaption)
@@ -1251,6 +1323,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
       when (property) {
         "pause" -> {
           ui.setPaused(value)
+          updatePip()
           // Paused (by you or the host): the controls stay up.
           if (ready) setControls(true)
           syncCountdown()
@@ -1455,7 +1528,134 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
 
   override fun onPause() {
     super.onPause()
-    if (!isFinishing) mpvDo { it.setPropertyBoolean("pause", true) }
+    // Into picture in picture, it plays on.
+    if (!isFinishing && !isInPictureInPictureMode && !enteringPip) mpvDo { it.setPropertyBoolean("pause", true) }
+  }
+
+  // ── Picture in picture ──────────────────────────────────────────────
+
+  /** It can go into picture in picture: it's playing an episode (paused, by its button). */
+  private fun pipReady() = ready && !closed && !cardUp
+
+  /** Picture in picture as it would be now: the picture's shape, its buttons, and whether Home goes into it. */
+  private fun pipParams(): PictureInPictureParams {
+    val b = PictureInPictureParams.Builder()
+    val w = ui.videoW
+    val h = ui.videoH
+    if (w > 0 && h > 0) {
+      // Android takes 1:2.39 to 2.39:1.
+      val r = w.toDouble() / h
+      b.setAspectRatio(when {
+        r > 2.38 -> Rational(238, 100)
+        r < 1 / 2.38 -> Rational(100, 238)
+        else -> Rational(w, h)
+      })
+    }
+    b.setActions(pipActions())
+    if (Build.VERSION.SDK_INT >= 31) {
+      b.setAutoEnterEnabled(pipReady() && !paused)
+      b.setSeamlessResizeEnabled(true)
+    }
+    return b.build()
+  }
+
+  /** Back 10 s, play or pause, on 10 s (none for a party's member: the host controls it). */
+  private fun pipActions(): List<RemoteAction> {
+    if (member) return emptyList()
+    fun action(what: Int, icon: Int, title: String) = RemoteAction(
+      Icon.createWithResource(this, icon), title, title,
+      PendingIntent.getBroadcast(
+        this, what, Intent(PIP_ACTION).setPackage(packageName).putExtra("what", what),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+      ),
+    )
+    return listOf(
+      action(PIP_BACK, R.drawable.ic_rotate_ccw, "Back 10 seconds"),
+      if (paused) action(PIP_PLAY, R.drawable.ic_play, "Play") else action(PIP_PAUSE, R.drawable.ic_pause, "Pause"),
+      action(PIP_FORWARD, R.drawable.ic_rotate_cw, "Forward 10 seconds"),
+    )
+  }
+
+  /** Tell Android what picture in picture would be now. */
+  private fun updatePip() {
+    if (!::ui.isInitialized || closed) return
+    try {
+      setPictureInPictureParams(pipParams())
+    } catch (e: Exception) {
+      log("picture in picture: ${e.message}")
+    }
+  }
+
+  private fun enterPip() {
+    if (!pipReady() || inPip) return
+    if (ui.panelOpen) closePanel()
+    enteringPip = true
+    val went = try {
+      enterPictureInPictureMode(pipParams())
+    } catch (e: Exception) {
+      log("picture in picture: ${e.message}")
+      false
+    }
+    if (!went) enteringPip = false
+  }
+
+  private fun pipAction(what: Int) {
+    if (closed || !mpvReady) return
+    when (what) {
+      PIP_BACK -> mpvDo { it.command(arrayOf("seek", "-10", "relative")) }
+      PIP_FORWARD -> mpvDo { it.command(arrayOf("seek", "10", "relative")) }
+      PIP_PLAY -> mpvDo { it.setPropertyBoolean("pause", false) }
+      PIP_PAUSE -> mpvDo { it.setPropertyBoolean("pause", true) }
+    }
+  }
+
+  override fun onUserLeaveHint() {
+    super.onUserLeaveHint()
+    // (Android 12 and later go in by themselves: setAutoEnterEnabled.)
+    if (Build.VERSION.SDK_INT < 31 && pipReady() && !paused) enterPip()
+  }
+
+  override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+    super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+    enteringPip = false
+    inPip = isInPictureInPictureMode
+    log("picture in picture ${if (isInPictureInPictureMode) "on" else "off"}")
+    if (isInPictureInPictureMode) {
+      wasInPip = true
+      if (ui.panelOpen) closePanel()
+      setControls(false)
+      ui.setPip(true)
+      return
+    }
+    ui.setPip(false)
+    if (lifecycle.currentState == Lifecycle.State.CREATED) {
+      // Its window was closed (swiped away, or its X): the player closes, saying how far it got.
+      dismissed = true
+      if (waitingNext) {
+        waitingNext = false
+        finish()
+      } else {
+        close(null)
+      }
+    } else {
+      // Back in full.
+      hideBars()
+      setControls(true)
+    }
+  }
+
+  /**
+   * In picture in picture at the end of an episode: the next one plays here
+   * (true), in this window, instead of in a new player.
+   */
+  fun takeNext(next: Intent): Boolean {
+    if (!waitingNext || isFinishing) return false
+    waitingNext = false
+    main.removeCallbacks(giveUpNext)
+    log("next episode, in picture in picture")
+    intent = next
+    recreate()
+    return true
   }
 
   // ── The watch party ─────────────────────────────────────────────────
@@ -1463,6 +1663,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
   /** What's playing, where, and whether you asked the host for something. */
   fun state(): JSObject = JSObject().apply {
     put("open", !closed)
+    put("speed", speed)
     put("id", intent.getLongExtra("id", 0))
     put("episode", intent.getIntExtra("episode", 0))
     put("position", position)
@@ -1472,13 +1673,22 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     asked = null
   }
 
-  /** Seek, pause or play, or close: as the party's host's player is. */
-  fun control(seekTo: Double?, pause: Boolean?, quit: Boolean) {
+  /** Seek, pause or play, the speed, or close: as the party's host's player is. */
+  fun control(seekTo: Double?, pause: Boolean?, newSpeed: Double?, quit: Boolean) {
     main.post {
       if (closed || !mpvReady) return@post
       if (quit) {
         close(null)
         return@post
+      }
+      newSpeed?.takeIf { abs(it - speed) > 1e-6 }?.let { s ->
+        speed = s
+        ui.setSpeed(s)
+        ui.panel.setSpeed(s, tell = false)
+        mpvDo { it.setPropertyDouble("speed", s) }
+        if (member && ready && now - loadedAt >= 6000) {
+          message("The host plays at ${speedLabel(s)}", R.drawable.ic_users, base = 2500)
+        }
       }
       // The card, or reconnecting: nothing to seek or pause.
       if (cardUp || reconnecting) return@post
@@ -1517,14 +1727,24 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     if (closed) return
     closed = true
     log("close then=$then ended=$ended position=$position duration=$duration error=$error")
-    val result = Intent().apply {
-      putExtra("position", position)
-      putExtra("duration", duration)
-      putExtra("ended", ended)
-      putExtra("then", then)
-      putExtra("error", error)
+    deliver(then, error)
+    // At the end in picture in picture: the next episode may come here
+    // (takeNext); else the window closes in a while.
+    if (inPip && then == "auto") {
+      waitingNext = true
+      main.postDelayed(giveUpNext, 10_000)
+      return
     }
-    setResult(RESULT_OK, result)
+    // Back in full from picture in picture (on its own now), then done:
+    // back to the app.
+    if (wasInPip && !inPip && !dismissed) {
+      try {
+        startActivity(Intent(this, MainActivity::class.java)
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+      } catch (e: Exception) {
+        log("back to the app: ${e.message}")
+      }
+    }
     finish()
     if (Build.VERSION.SDK_INT < 34) {
       @Suppress("DEPRECATION")
@@ -1532,8 +1752,27 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     }
   }
 
+  /** Say how far it got, and what next (once). */
+  private fun deliver(then: String?, error: String?) {
+    if (delivered) return
+    delivered = true
+    PlayerPlugin.finished(token, JSObject().apply {
+      put("position", position)
+      put("duration", duration)
+      put("ended", ended)
+      put("then", then)
+      put("error", error)
+    })
+  }
+
   override fun onDestroy() {
     if (current === this) current = null
+    // Gone without closing (the system ended it): how far it got still counts.
+    deliver(null, null)
+    try {
+      unregisterReceiver(pipReceiver)
+    } catch (_: Exception) {
+    }
     access?.removeTouchExplorationStateChangeListener(talkbackListener)
     if (mpvReady) {
       mpvReady = false

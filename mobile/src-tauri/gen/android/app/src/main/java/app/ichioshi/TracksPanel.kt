@@ -28,12 +28,14 @@ interface TrackControl {
   fun chooseSubtitles(id: Int?)
   fun subDelay(seconds: Double)
   fun subScale(percent: Int)
+  /** Play at this speed (1 is normal). */
+  fun speed(value: Double)
 }
 
 /**
  * The Audio & subtitles panel, inside the player (not a dialog): the audio
- * and subtitle tracks side by side, and subtitle delay and size below. A tap
- * outside it ([onClose]) closes it.
+ * and subtitle tracks side by side, and subtitle delay and size, and the
+ * speed, below. A tap outside it ([onClose]) closes it.
  */
 @SuppressLint("ViewConstructor")
 class TracksPanel(context: Context, private val kit: Kit, private val control: TrackControl) : FrameLayout(context) {
@@ -128,7 +130,11 @@ class TracksPanel(context: Context, private val kit: Kit, private val control: T
   private val footer = LinearLayout(context)
   private lateinit var delayValue: TextView
   private lateinit var scaleValue: TextView
+  private lateinit var speedValue: TextView
+  private lateinit var speedRow: View
+  /** The subtitles' steppers (off without subtitles), and the speed's. */
   private val steppers = mutableListOf<View>()
+  private val speedSteppers = mutableListOf<View>()
   private val audioRows = mutableListOf<TrackRow>()
   private val subRows = mutableListOf<TrackRow>()
   /** The tracks the rows show (their ids, names and details): rows are made again only when these change. */
@@ -147,6 +153,12 @@ class TracksPanel(context: Context, private val kit: Kit, private val control: T
   /** Subtitle size (percent). */
   var scale = 100
     private set
+
+  /** The speed (1 is normal). */
+  var speed = 1.0
+    private set
+  /** A watch party's member: the host sets the speed. */
+  private var speedLocked = false
 
   /** It's open (or opening). */
   var isOpen = false
@@ -177,7 +189,7 @@ class TracksPanel(context: Context, private val kit: Kit, private val control: T
     // Takes the touches that miss a row (they'd reach the catcher and close it), but never focus.
     panel.isClickable = true
     panel.isFocusable = false
-    panel.accessibilityPaneTitle = "Audio and subtitles"
+    panel.accessibilityPaneTitle = "Audio, subtitles and speed"
     audioList.orientation = LinearLayout.VERTICAL
     subList.orientation = LinearLayout.VERTICAL
 
@@ -191,6 +203,10 @@ class TracksPanel(context: Context, private val kit: Kit, private val control: T
       { stepDelay(-0.1) }, { stepDelay(0.1) }, { setDelay(0.0) }) { delayValue = it })
     footer.addView(stepRow("Subtitle size", "Smaller subtitles", "Larger subtitles",
       { stepScale(-10) }, { stepScale(10) }, { setScale(100) }) { scaleValue = it })
+    speedRow = stepRow("Speed", "Slower", "Faster",
+      { setSpeed(speedStep(speed, false)) }, { setSpeed(speedStep(speed, true)) }, { setSpeed(1.0) },
+      speedSteppers) { speedValue = it }
+    footer.addView(speedRow)
 
     panel.addView(body, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
     panel.addView(footer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -213,6 +229,7 @@ class TracksPanel(context: Context, private val kit: Kit, private val control: T
     onLess: () -> Unit,
     onMore: () -> Unit,
     onReset: () -> Unit,
+    group: MutableList<View> = steppers,
     value: (TextView) -> Unit,
   ): View {
     val row = LinearLayout(context).apply {
@@ -225,7 +242,7 @@ class TracksPanel(context: Context, private val kit: Kit, private val control: T
       r.disc.addView(kit.icon(icon, 18f, Colors.TEXT))
       r.view.contentDescription = desc
       r.view.setOnClickListener { onClick() }
-      steppers += r.view
+      group += r.view
     }.view
     row.addView(button(R.drawable.ic_minus, less, onLess), LinearLayout.LayoutParams(kit.px(48), kit.px(48)))
     val v = kit.text(14f, Colors.TEXT, kit.semibold, tnum = true).apply {
@@ -265,6 +282,26 @@ class TracksPanel(context: Context, private val kit: Kit, private val control: T
     showValues()
   }
 
+  /** The speed: [v] (one of [SPEEDS], or the host's). */
+  fun setSpeed(v: Double, tell: Boolean = true) {
+    if (v == speed && tell) return
+    speed = v
+    if (tell) control.speed(v)
+    showValues()
+  }
+
+  /** Following a watch party's host, who sets the speed. */
+  fun lockSpeed() {
+    speedLocked = true
+    speedRow.alpha = 0.45f
+    for (s in speedSteppers) {
+      s.isEnabled = false
+      s.isClickable = false
+    }
+    speedValue.isLongClickable = false
+    showValues()
+  }
+
   private fun showValues() {
     val tenths = (delay * 10).roundToInt()
     val abs = String.format(Locale.ROOT, "%.1f", abs(tenths) / 10.0)
@@ -280,6 +317,9 @@ class TracksPanel(context: Context, private val kit: Kit, private val control: T
     }
     scaleValue.text = "$scale%"
     scaleValue.contentDescription = "Subtitle size $scale percent"
+    speedValue.text = speedLabel(speed)
+    speedValue.contentDescription = "Speed ${speedLabel(speed).dropLast(1)} times" +
+      if (speedLocked) ". The host sets the speed" else ""
   }
 
   private fun setSubsOff(off: Boolean) {

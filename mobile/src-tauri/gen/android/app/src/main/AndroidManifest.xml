@@ -29,6 +29,10 @@
         <activity
             android:name=".PlayerActivity"
             android:exported="false"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
+            android:taskAffinity="app.ichioshi.player"
+            android:autoRemoveFromRecents="true"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|keyboardHidden|keyboard|navigation|touchscreen|screenSize|smallestScreenSize|screenLayout|uiMode|density|fontScale|fontWeightAdjustment|locale|layoutDirection|colorMode"
             android:theme="@style/Theme.ichioshi_mobile" />

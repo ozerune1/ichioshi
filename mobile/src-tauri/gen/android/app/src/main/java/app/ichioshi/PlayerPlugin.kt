@@ -2,9 +2,9 @@ package app.ichioshi
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.FileProvider
-import androidx.activity.result.ActivityResult
-import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -32,6 +32,8 @@ class PlayArgs {
   var party: String = ""
   /** Start paused (the party's player is). */
   var paused: Boolean = false
+  /** The party's speed (none: the speed you play at). */
+  var speed: Double? = null
 }
 
 /** What the watch party wants the player to do. */
@@ -39,6 +41,7 @@ class PlayArgs {
 class ControlArgs {
   var seek: Double? = null
   var paused: Boolean? = null
+  var speed: Double? = null
   var close: Boolean = false
 }
 
@@ -54,12 +57,34 @@ class InstallArgs {
  */
 @TauriPlugin
 class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
+  companion object {
+    /** The players' plays, waiting for them to say how far they got. */
+    private val waiting = java.util.concurrent.ConcurrentHashMap<Long, Invoke>()
+    private val plays = java.util.concurrent.atomic.AtomicLong()
+
+    /**
+     * Play [token] is done: how far it got, and what next. Straight back to
+     * the app's core (not through the activity's result, which waits until
+     * the app's own window is back: a player in picture in picture would
+     * keep it waiting).
+     */
+    fun finished(token: Long, result: JSObject) {
+      waiting.remove(token)?.resolve(result)
+    }
+  }
+
+  /** Play an episode: what the player says when it's done. */
   @Command
   fun play(invoke: Invoke) {
     val args = invoke.parseArgs(PlayArgs::class.java)
-    // One player at a time: one already open closes (saying how far it got).
-    PlayerActivity.current?.replaced()
+    val token = plays.incrementAndGet()
+    waiting[token] = invoke
+    // In a task of its own (its affinity): picture in picture takes the
+    // task whole, and back in full it's still there to be focused (Android
+    // moving it back into the app's task left it without focus).
     val intent = Intent(activity, PlayerActivity::class.java).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      putExtra("token", token)
       putExtra("url", args.url)
       putExtra("title", args.title)
       putExtra("name", args.name)
@@ -74,21 +99,21 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
       putExtra("episode", args.episode)
       putExtra("party", args.party)
       putExtra("paused", args.paused)
+      args.speed?.let { putExtra("speed", it) }
     }
-    startActivityForResult(invoke, intent, "played")
-  }
-
-  /** How far it got, and what next ("next", "prev" or nothing). */
-  @ActivityCallback
-  fun played(invoke: Invoke, result: ActivityResult) {
-    val data = result.data
-    val out = JSObject()
-    out.put("position", data?.getDoubleExtra("position", 0.0) ?: 0.0)
-    out.put("duration", data?.getDoubleExtra("duration", 0.0) ?: 0.0)
-    out.put("ended", data?.getBooleanExtra("ended", false) ?: false)
-    out.put("then", data?.getStringExtra("then"))
-    out.put("error", data?.getStringExtra("error"))
-    invoke.resolve(out)
+    Handler(Looper.getMainLooper()).post {
+      // The player in picture in picture, at the end and waiting for the
+      // next episode: it plays it there.
+      if (PlayerActivity.current?.takeNext(intent) == true) return@post
+      // One player at a time: one already open closes (saying how far it got).
+      PlayerActivity.current?.replaced()
+      try {
+        activity.startActivity(intent)
+      } catch (e: Exception) {
+        waiting.remove(token)
+        invoke.reject("The player couldn't start: ${e.message}")
+      }
+    }
   }
 
   /**
@@ -119,11 +144,11 @@ class PlayerPlugin(private val activity: Activity) : Plugin(activity) {
     invoke.resolve(p?.state() ?: JSObject().apply { put("open", false) })
   }
 
-  /** Do what the watch party says: seek, pause or play, close. */
+  /** Do what the watch party says: seek, pause or play, the speed, close. */
   @Command
   fun partyControl(invoke: Invoke) {
     val args = invoke.parseArgs(ControlArgs::class.java)
-    PlayerActivity.current?.control(args.seek, args.paused, args.close)
+    PlayerActivity.current?.control(args.seek, args.paused, args.speed, args.close)
     invoke.resolve()
   }
 
