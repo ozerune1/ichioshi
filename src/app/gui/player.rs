@@ -232,9 +232,11 @@ impl Player {
             },
         );
         let (w, h) = self.video.size();
+        let size = (w.max(0) as u32, h.max(0) as u32);
+        let matrix = gst_video::video_matrix(&self.video.pipeline(), size);
         if let Some(ass) = &mut self.ass {
             let track = text.and_then(|(n, _)| self.text_subs.as_ref()?.tracks.get(n));
-            ass.set_track(track, (w.max(0) as u32, h.max(0) as u32));
+            ass.set_track(track, size, matrix);
         }
         self.overlay = None;
         self.drawn_for = None;

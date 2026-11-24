@@ -185,6 +185,25 @@ pub fn choose(
     )
 }
 
+/// The video's YCbCr matrix, as its decoder gives it (GStreamer fills in
+/// its own guess when the file doesn't say), else guessed from `size`.
+pub fn video_matrix(pipeline: &gst::Pipeline, size: (u32, u32)) -> crate::subs::VideoMatrix {
+    use crate::subs::VideoMatrix;
+    use gstreamer_video::VideoColorMatrix;
+    let matrix = pipeline
+        .property::<Option<gst::Element>>("video-sink")
+        .and_then(|sink| sink.static_pad("sink"))
+        .and_then(|pad| pad.current_caps())
+        .and_then(|caps| gstreamer_video::VideoInfo::from_caps(&caps).ok())
+        .map(|info| info.colorimetry().matrix());
+    match matrix {
+        Some(VideoColorMatrix::Bt709) => VideoMatrix::Bt709,
+        Some(VideoColorMatrix::Bt601) => VideoMatrix::Bt601,
+        None | Some(VideoColorMatrix::Unknown) => VideoMatrix::guess(size),
+        Some(_) => VideoMatrix::Other,
+    }
+}
+
 /// Whether libass can draw a subtitle codec (text: SRT, ASS, WebVTT).
 pub fn is_text_subtitle(codec_id: &str) -> bool {
     codec_id.starts_with("S_TEXT/") || matches!(codec_id, "S_ASS" | "S_SSA")

@@ -45,6 +45,8 @@ mod seadex;
 mod servers;
 mod storage;
 mod subs;
+#[cfg(test)]
+mod subs_check;
 mod tiers;
 mod title;
 mod tracking;
@@ -195,7 +197,7 @@ fn self_test(out: &std::path::Path, video: Option<&std::path::Path>) -> bool {
                     data: b"Subtitles work".to_vec(),
                 }],
             };
-            r.set_track(Some(&track), (1280, 720));
+            r.set_track(Some(&track), (1280, 720), subs::VideoMatrix::Bt709);
             match r.draw(1000, (1280, 720), 0.0) {
                 subs::Drawn::Image(rgba) => Some(rgba.chunks(4).filter(|p| p[3] > 0).count()),
                 _ => None,

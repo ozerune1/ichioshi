@@ -145,6 +145,68 @@ pub fn plain_to_ass(text: &str) -> String {
         .replace("(\\", "{\\")
 }
 
+/// The video's YCbCr matrix: subtitles made for VSFilter get their colours
+/// adjusted to it, as mpv does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoMatrix {
+    Bt601,
+    Bt709,
+    Other,
+}
+
+impl VideoMatrix {
+    /// mpv's guess when the video doesn't say: HD is BT.709.
+    pub fn guess((w, h): (u32, u32)) -> Self {
+        if w >= 1280 || h > 576 {
+            Self::Bt709
+        } else {
+            Self::Bt601
+        }
+    }
+}
+
+/// Whether VSFilter would show a script's colours shifted on this video:
+/// it turns them into YCbCr by BT.601 (TV range), and BT.709 video turns
+/// them back differently. Scripts written for that say "YCbCr Matrix:
+/// TV.601", or nothing (older ones). mpv copies this (its
+/// `sub-ass-vsfilter-color-compat=basic`), so typesetting matched to the
+/// picture's colours matches there.
+fn vsfilter_shifts(header: &[u8], matrix: VideoMatrix) -> bool {
+    if matrix != VideoMatrix::Bt709 {
+        return false;
+    }
+    let header = String::from_utf8_lossy(header);
+    let declared = header.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim()
+            .eq_ignore_ascii_case("YCbCr Matrix")
+            .then(|| v.trim().to_owned())
+    });
+    match declared.as_deref() {
+        None | Some("") => true,
+        Some(m) => m.eq_ignore_ascii_case("TV.601"),
+    }
+}
+
+/// A libass colour (RGBA, A inverted) as VSFilter shows it on BT.709
+/// video: to 8-bit YCbCr by BT.601, back to RGB by BT.709 (both TV range).
+fn vsfilter_color(color: u32) -> u32 {
+    let c = |shift: u32| f64::from(color >> shift & 0xff) / 255.0;
+    let (r, g, b) = (c(24), c(16), c(8));
+    let y = 0.299 * r + 0.587 * g + 0.114 * b;
+    let q = |v: f64, scale: f64, zero: f64| ((zero + scale * v).round() - zero) / scale;
+    let (y, cb, cr) = (
+        q(y, 219.0, 16.0),
+        q((b - y) / 1.772, 224.0, 128.0),
+        q((r - y) / 1.402, 224.0, 128.0),
+    );
+    let out = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    out(y + 1.5748 * cr) << 24
+        | out(y - 0.187_324 * cb - 0.468_124 * cr) << 16
+        | out(y + 1.8556 * cb) << 8
+        | (color & 0xff)
+}
+
 pub enum Drawn {
     /// As last time.
     Unchanged,
@@ -162,6 +224,8 @@ pub struct Renderer {
     size: (i32, i32),
     raise: f64,
     showing: bool,
+    /// Colours shifted as VSFilter shows them ([`vsfilter_shifts`]).
+    shift_colors: bool,
 }
 
 // SAFETY: used from one thread at a time (the UI's); libass objects aren't
@@ -208,12 +272,14 @@ impl Renderer {
                 size: (0, 0),
                 raise: 0.0,
                 showing: false,
+                shift_colors: false,
             })
         }
     }
 
-    /// Show `track` (or nothing); `video` is the picture's own size.
-    pub fn set_track(&mut self, track: Option<&SubTrack>, video: (u32, u32)) {
+    /// Show `track` (or nothing); `video` is the picture's own size and
+    /// `matrix` its YCbCr matrix.
+    pub fn set_track(&mut self, track: Option<&SubTrack>, video: (u32, u32), matrix: VideoMatrix) {
         // SAFETY: as above; the old track isn't used again.
         unsafe {
             if !self.track.is_null() {
@@ -221,6 +287,7 @@ impl Renderer {
                 self.track = std::ptr::null_mut();
             }
             self.size = (0, 0);
+            self.shift_colors = false;
             let Some(t) = track else { return };
             let track = (self.api.new_track)(self.lib);
             if track.is_null() {
@@ -230,6 +297,7 @@ impl Renderer {
                 t.codec_id.as_str(),
                 "S_TEXT/ASS" | "S_TEXT/SSA" | "S_ASS" | "S_SSA"
             );
+            self.shift_colors = ass && vsfilter_shifts(&t.codec_private, matrix);
             let header = if ass {
                 t.codec_private.clone()
             } else {
@@ -294,7 +362,12 @@ impl Renderer {
             }
             let mut rgba = vec![0u8; size.0 as usize * size.1 as usize * 4];
             while let Some(i) = img.as_ref() {
-                blend(&mut rgba, (w, h), i);
+                let color = if self.shift_colors {
+                    vsfilter_color(i.color)
+                } else {
+                    i.color
+                };
+                blend(&mut rgba, (w, h), i, color);
                 img = i.next;
             }
             self.showing = true;
@@ -303,10 +376,10 @@ impl Renderer {
     }
 }
 
-/// One libass bitmap over the image (straight alpha, "over").
-unsafe fn blend(rgba: &mut [u8], (fw, fh): (i32, i32), i: &AssImage) {
-    let (r, g, b) = (i.color >> 24, i.color >> 16 & 0xff, i.color >> 8 & 0xff);
-    let opacity = 255 - (i.color & 0xff);
+/// One libass bitmap, in `color`, over the image (straight alpha, "over").
+unsafe fn blend(rgba: &mut [u8], (fw, fh): (i32, i32), i: &AssImage, color: u32) {
+    let (r, g, b) = (color >> 24, color >> 16 & 0xff, color >> 8 & 0xff);
+    let opacity = 255 - (color & 0xff);
     if opacity == 0 || i.bitmap.is_null() {
         return;
     }
@@ -396,7 +469,7 @@ mod tests {
             track.events.first().map_or(-1, |e| e.start_ms)
         );
         let mut r = Renderer::new(&subs).unwrap();
-        r.set_track(Some(track), (1920, 1080));
+        r.set_track(Some(track), (1920, 1080), VideoMatrix::Bt709);
         let Drawn::Image(px) = r.draw((at * 1000.0) as i64, (1920, 1080), 0.0) else {
             panic!("nothing at {at}")
         };
@@ -428,11 +501,37 @@ mod tests {
                 kind: 0,
             };
             // SAFETY: the bitmap is w × h at stride.
-            unsafe { blend(&mut rgba, (2, 2), &img) };
+            unsafe { blend(&mut rgba, (2, 2), &img, color) };
         }
         for p in rgba.chunks(4) {
             assert!(p[0] >= 240 && (24..=30).contains(&p[3]), "{p:?}");
         }
+    }
+
+    /// A TV.601 script's colours on BT.709 video come out as mpv shows them
+    /// (measured: &H00C04080& as 132, 78, 197); greys don't move; scripts
+    /// saying TV.709 or None, and BT.601 video, are left alone.
+    #[test]
+    fn colors_shift_as_vsfilter_shows_them() {
+        assert_eq!(vsfilter_color(0x8040_c000), 0x844e_c500);
+        assert_eq!(vsfilter_color(0x8040_c07f) & 0xff, 0x7f, "alpha kept");
+        for grey in [0, 0x80, 0xff] {
+            let c = grey << 24 | grey << 16 | grey << 8;
+            assert_eq!(vsfilter_color(c), c);
+        }
+        let h = |m: &str| format!("[Script Info]\nScriptType: v4.00+\n{m}\n").into_bytes();
+        let hd = VideoMatrix::Bt709;
+        assert!(vsfilter_shifts(&h("YCbCr Matrix: TV.601"), hd));
+        assert!(vsfilter_shifts(&h(""), hd), "VSFilter-era: says nothing");
+        assert!(!vsfilter_shifts(&h("YCbCr Matrix: TV.709"), hd));
+        assert!(!vsfilter_shifts(&h("YCbCr Matrix: None"), hd));
+        assert!(!vsfilter_shifts(&h("YCbCr Matrix: PC.601"), hd));
+        assert!(!vsfilter_shifts(
+            &h("YCbCr Matrix: TV.601"),
+            VideoMatrix::Bt601
+        ));
+        assert_eq!(VideoMatrix::guess((1920, 1080)), hd);
+        assert_eq!(VideoMatrix::guess((720, 480)), VideoMatrix::Bt601);
     }
 
     #[test]
@@ -463,7 +562,7 @@ mod tests {
             }],
         };
         let mut r = Renderer::new(&TextSubtitles::default()).unwrap();
-        r.set_track(Some(&track), (1920, 1080));
+        r.set_track(Some(&track), (1920, 1080), VideoMatrix::Bt709);
         let lit = |d: Drawn| match d {
             Drawn::Image(px) => px.chunks(4).filter(|p| p[3] > 128).count(),
             _ => 0,
