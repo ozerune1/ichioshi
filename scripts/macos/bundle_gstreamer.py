@@ -26,7 +26,9 @@ PLUGINS = [
 ]
 LOADED = ["lib/libass.9.dylib", "lib/libsoup-3.0.0.dylib"]
 FRAMEWORK = "/Library/Frameworks/GStreamer.framework"
-RPATH = "@executable_path/../Frameworks/GStreamer"
+# The framework's libraries are named @rpath/libX.dylib, so @rpath is its
+# lib folder.
+RPATH = "@executable_path/../Frameworks/GStreamer/lib"
 
 
 def run(*args):
@@ -39,15 +41,20 @@ def is_macho(path):
     return magic in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca")
 
 
+def own_names(path):
+    """A library's own install name (otool -L lists it among what it loads)."""
+    return {l.strip() for l in run("otool", "-D", path).splitlines()[1:] if l.strip() and not l.endswith(":")}
+
+
 def deps(path):
     """The libraries a Mach-O file loads (each architecture's, once)."""
-    seen = []
+    own, seen = own_names(path), []
     for line in run("otool", "-L", path).splitlines():
         line = line.strip()
         if not line or line.endswith(":"):
             continue
         name = line.split(" (compatibility")[0].strip()
-        if name not in seen:
+        if name not in seen and name not in own:
             seen.append(name)
     return seen
 
@@ -122,16 +129,16 @@ def main():
     for path in [program] + [os.path.join(out, r) for r in sorted(copied)]:
         for name in deps(path):
             for root in (gst, os.path.realpath(gst), FRAMEWORK + "/Versions/1.0", FRAMEWORK + "/Versions/Current"):
-                if name.startswith(root + "/"):
-                    run("install_name_tool", "-change", name, "@rpath/" + name[len(root) + 1:], path)
+                if name.startswith(root + "/lib/"):
+                    run("install_name_tool", "-change", name, "@rpath/" + name[len(root) + 5:], path)
         for r in rpaths(path):
             if r.startswith(FRAMEWORK) or r.startswith(gst):
                 run("install_name_tool", "-delete_rpath", r, path)
         if path == program and RPATH not in rpaths(path):
             run("install_name_tool", "-add_rpath", RPATH, path)
         # The scanner finds the libraries from libexec/gstreamer-1.0.
-        if path.endswith("gst-plugin-scanner") and "@executable_path/../.." not in rpaths(path):
-            run("install_name_tool", "-add_rpath", "@executable_path/../..", path)
+        if path.endswith("gst-plugin-scanner") and "@executable_path/../../lib" not in rpaths(path):
+            run("install_name_tool", "-add_rpath", "@executable_path/../../lib", path)
 
     # Nothing may still need /Library/Frameworks (or Homebrew's /opt).
     bad = []
