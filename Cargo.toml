@@ -1,6 +1,6 @@
 [workspace]
-# The phone app (Tauri): the core, with a web UI.
-members = [".", "mobile/src-tauri"]
+# The phone app (Tauri): the core, with a web UI. The Windows installer.
+members = [".", "mobile/src-tauri", "installer"]
 
 [package]
 name = "ichioshi"
@@ -59,6 +59,11 @@ iced_video_player = { version = "0.6", optional = true }
 gstreamer = { version = "0.23", optional = true }
 gstreamer-app = { version = "0.23", optional = true }
 gstreamer-video = { version = "0.23", optional = true }
+
+# Windows: the installer's entry in Settings › Apps, kept up to date when
+# the app updates itself.
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
 
 # Android: started by the system (NativeActivity), through iced's patched
 # runner; videos and links open in other apps (JNI).

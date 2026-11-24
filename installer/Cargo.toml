@@ -1,0 +1,35 @@
+[package]
+name = "ichioshi-setup"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Ichioshi's installer and uninstaller for Windows"
+
+# setup.exe carries the app (scripts/windows/build.sh puts it in); the
+# uninstaller is copied into the app's folder by it.
+[[bin]]
+name = "setup"
+path = "src/bin/setup.rs"
+
+[[bin]]
+name = "uninstall"
+path = "src/bin/uninstall.rs"
+
+[dependencies]
+anyhow = "1"
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "image-without-codecs", "crisp", "thread-pool"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+tar = { version = "0.4", default-features = false }
+zstd = { version = "0.13", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+rfd = "0.18"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows-registry = "0.6"
+
+# Only for drawing it in tests (and building) on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { version = "0.14", default-features = false, features = ["x11"] }
+
+[dev-dependencies]
+iced_test = "0.14"

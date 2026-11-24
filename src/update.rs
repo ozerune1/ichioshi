@@ -491,6 +491,7 @@ pub fn finish_install(folder: &Path, start: bool) -> Result<()> {
         }
     }
     copy_tree(&here, folder)?;
+    note_installed_version(folder);
     if start {
         std::process::Command::new(&exe)
             .current_dir(folder)
@@ -499,6 +500,38 @@ pub fn finish_install(folder: &Path, start: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// Installed by the installer (installer/), the app's entry in Settings ›
+/// Apps says which version it is: this one, now it's in place in `folder`.
+#[cfg(windows)]
+fn note_installed_version(folder: &Path) {
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Ichioshi";
+    let Ok(key) = windows_registry::CURRENT_USER
+        .options()
+        .read()
+        .write()
+        .open(KEY)
+    else {
+        return;
+    };
+    let same = |a: &Path, b: &Path| {
+        let norm = |p: &Path| {
+            p.to_string_lossy()
+                .trim_end_matches(['\\', '/'])
+                .to_lowercase()
+        };
+        norm(a) == norm(b)
+    };
+    if key
+        .get_string("InstallLocation")
+        .is_ok_and(|dir| same(Path::new(&dir), folder))
+    {
+        let _ = key.set_string("DisplayVersion", Version::current().to_string());
+    }
+}
+
+#[cfg(not(windows))]
+fn note_installed_version(_: &Path) {}
 
 /// Copy everything in `from` into `to`, over what's there (each file tried
 /// a few times: something may still be letting go of it).
