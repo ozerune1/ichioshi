@@ -61,6 +61,8 @@ pub enum Msg {
     Next,
     Prev,
     Fullscreen,
+    /// Into (or out of) a small window of its own, kept on top.
+    Pip,
     Ended,
     Moved,
     Back,

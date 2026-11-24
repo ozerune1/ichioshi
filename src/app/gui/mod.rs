@@ -86,27 +86,66 @@ fn system_fonts() -> &'static [&'static [u8]] {
     }
 }
 
+/// The app's windows: the main one, and the player's picture-in-picture
+/// window while it's open. Closing the main one quits.
 pub fn run(rt: tokio::runtime::Handle, state_dir: PathBuf) -> iced::Result {
-    let app = iced::application(
+    let app = iced::daemon(
         move || {
-            let gui = Gui::new(rt.clone(), state_dir.clone());
-            let scale = iced::window::latest()
-                .and_then(iced::window::scale_factor)
-                .map(Message::Scale);
-            (gui, Task::batch([Task::done(Message::Tick), scale]))
+            let mut gui = Gui::new(rt.clone(), state_dir.clone());
+            let (id, open) = iced::window::open(window_settings());
+            gui.main_window = Some(id);
+            let scale = iced::window::scale_factor(id).map(Message::Scale);
+            (
+                gui,
+                Task::batch([open.discard(), Task::done(Message::Tick), scale]),
+            )
         },
         Gui::update,
-        Gui::view,
+        Gui::view_window,
     )
-    .title("Ichioshi")
+    .title(Gui::title)
     .subscription(Gui::subscription)
-    .theme(|_: &Gui| Theme::Dark)
+    .theme(|_: &Gui, _| Theme::Dark)
     .default_font(INTER);
     let app = style::FONTS
         .iter()
         .chain(system_fonts().iter())
         .fold(app, |app, f| app.font(*f));
-    app.window(window_settings()).run()
+    app.run()
+}
+
+/// The player's picture-in-picture window.
+struct Pip {
+    id: iced::window::Id,
+    /// Its size (logical) and display scale.
+    size: iced::Size,
+    scale: f32,
+}
+
+/// The picture-in-picture window: the picture's shape, small, in the
+/// screen's corner, over other windows. (On Linux its app ID is
+/// "ichioshi-pip": Wayland desktops float and pin a window by their own
+/// rules, which can match it.)
+fn pip_settings(size: iced::Size) -> iced::window::Settings {
+    iced::window::Settings {
+        size,
+        min_size: Some(iced::Size::new(200.0, 112.0)),
+        position: iced::window::Position::SpecificWith(|window, screen| {
+            iced::Point::new(
+                (screen.width - window.width - 24.0).max(0.0),
+                (screen.height - window.height - 72.0).max(0.0),
+            )
+        }),
+        level: iced::window::Level::AlwaysOnTop,
+        icon: iced::window::icon::from_file_data(ICON_PNG, None).ok(),
+        exit_on_close_request: false,
+        #[cfg(target_os = "linux")]
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: "ichioshi-pip".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 pub(crate) use style::FONTS;
@@ -151,9 +190,13 @@ pub(super) enum Message {
         result: Result<Box<crate::servers::jellyfin::Playable>, String>,
     },
     Key(Key, keyboard::Modifiers),
-    /// The window's size (logical) and display scale.
-    Resized(iced::Size),
+    /// A window's size (logical), and the main window's display scale.
+    Resized(iced::window::Id, iced::Size),
     Scale(f32),
+    /// The picture-in-picture window's display scale.
+    PipScale(f32),
+    /// A window has the keyboard.
+    Focused(iced::window::Id),
     DismissNote,
     /// The window is closing: stop downloads cleanly first.
     Close(iced::window::Id),
@@ -172,8 +215,10 @@ impl std::fmt::Debug for Message {
                 Message::Paste(_) => "Paste",
                 Message::Wake => "Wake",
                 Message::Tick => "Tick",
-                Message::Resized(_) => "Resized",
+                Message::Resized(..) => "Resized",
                 Message::Scale(_) => "Scale",
+                Message::PipScale(_) => "PipScale",
+                Message::Focused(_) => "Focused",
                 Message::DismissNote => "DismissNote",
                 _ => "Close",
             }),
@@ -241,6 +286,11 @@ pub(super) struct Gui {
     party_start: Option<(Option<f64>, bool, Option<f64>)>,
     /// The speed you play at (this session's: each episode starts at it).
     speed: f64,
+    /// The main window, and the player's picture-in-picture one.
+    main_window: Option<iced::window::Id>,
+    pip: Option<Pip>,
+    /// The window with the keyboard.
+    focused: Option<iced::window::Id>,
 }
 
 impl Gui {
@@ -277,6 +327,9 @@ impl Gui {
             note_since: None,
             party_start: None,
             speed: 1.0,
+            main_window: None,
+            pip: None,
+            focused: None,
         }
     }
 
@@ -334,9 +387,14 @@ impl Gui {
                 }
             },
             Message::Key(key, modifiers) => self.key(key, modifiers),
-            Message::Resized(size) => {
-                self.window = size;
-                style::set_width(size.width);
+            Message::Resized(id, size) => {
+                match &mut self.pip {
+                    Some(pip) if pip.id == id => pip.size = size,
+                    _ => {
+                        self.window = size;
+                        style::set_width(size.width);
+                    }
+                }
                 self.size_player();
                 Task::none()
             }
@@ -345,17 +403,126 @@ impl Gui {
                 self.size_player();
                 Task::none()
             }
+            Message::PipScale(scale) => {
+                if let Some(pip) = &mut self.pip {
+                    pip.scale = scale;
+                }
+                self.size_player();
+                Task::none()
+            }
+            Message::Focused(id) => {
+                self.focused = Some(id);
+                Task::none()
+            }
             Message::DismissNote => {
                 self.app.status = None;
                 Task::none()
             }
-            Message::Close(id) => {
+            // The picture-in-picture window: the picture goes back to the
+            // app's window. The app's: Ichioshi closes.
+            Message::Close(id) if self.pip.as_ref().is_some_and(|p| p.id == id) => self.leave_pip(),
+            Message::Close(_) => {
                 self.close();
-                return iced::window::close(id);
+                return iced::exit();
             }
         };
         self.duties();
+        // The player closed: so does its picture-in-picture window.
+        let task = if self.player.is_none() && self.pip.is_some() {
+            Task::batch([task, self.leave_pip()])
+        } else {
+            task
+        };
         Task::batch([task, self.images.fetch(&self.app.http)])
+    }
+
+    /// The player in a small window of its own, over other windows.
+    fn enter_pip(&mut self) -> Task<Message> {
+        let Some(p) = &mut self.player else {
+            return Task::none();
+        };
+        // The picture's shape, 480 points wide (or less tall, if tall).
+        let (vw, vh) = p.video.size();
+        let aspect = if vw > 0 && vh > 0 {
+            vw as f32 / vh as f32
+        } else {
+            16.0 / 9.0
+        };
+        let size = if aspect >= 1.0 {
+            iced::Size::new(480.0, (480.0 / aspect).round())
+        } else {
+            iced::Size::new((360.0 * aspect).round(), 360.0)
+        };
+        p.in_pip = true;
+        p.panel = None;
+        let (id, open) = iced::window::open(pip_settings(size));
+        self.pip = Some(Pip {
+            id,
+            size,
+            scale: self.scale,
+        });
+        self.size_player();
+        let windowed = if std::mem::take(&mut self.fullscreen) {
+            self.set_fullscreen(false)
+        } else {
+            Task::none()
+        };
+        Task::batch([
+            windowed,
+            open.discard(),
+            iced::window::scale_factor(id).map(Message::PipScale),
+        ])
+    }
+
+    /// Back to the app's window (the picture-in-picture one closes).
+    fn leave_pip(&mut self) -> Task<Message> {
+        let Some(pip) = self.pip.take() else {
+            return Task::none();
+        };
+        if let Some(p) = &mut self.player {
+            p.in_pip = false;
+        }
+        self.size_player();
+        let close = iced::window::close(pip.id);
+        match self.main_window {
+            Some(main) => Task::batch([close, iced::window::gain_focus(main)]),
+            None => close,
+        }
+    }
+
+    /// A window's title.
+    fn title(&self, id: iced::window::Id) -> String {
+        match (&self.pip, &self.player) {
+            (Some(pip), Some(p)) if pip.id == id => {
+                format!("{} · Episode {} · Ichioshi", p.series_title, p.episode)
+            }
+            _ => "Ichioshi".into(),
+        }
+    }
+
+    /// What a window shows: the player in its picture-in-picture window,
+    /// and the app in the main one (its pages, while the picture's in the
+    /// other).
+    fn view_window(&self, id: iced::window::Id) -> Element<'_, Message> {
+        if let (Some(pip), Some(p)) = (&self.pip, &self.player)
+            && pip.id == id
+        {
+            return p.pip_view();
+        }
+        self.view()
+    }
+
+    /// The main window full screen (or not).
+    fn set_fullscreen(&self, on: bool) -> Task<Message> {
+        let mode = if on {
+            iced::window::Mode::Fullscreen
+        } else {
+            iced::window::Mode::Windowed
+        };
+        match self.main_window {
+            Some(id) => iced::window::set_mode(id, mode),
+            None => iced::window::latest().and_then(move |id| iced::window::set_mode(id, mode)),
+        }
     }
 
     /// After every message: take in background results, and keep the
@@ -480,14 +647,20 @@ impl Gui {
     // ── The player ────────────────────────────────────────────────────
 
     /// Tell the player its size in pixels (subtitles are drawn at it).
+    /// The player's size: the main window's, or its picture-in-picture
+    /// window's (subtitles are drawn for the picture's size).
     fn size_player(&mut self) {
+        let (size, scale) = match &self.pip {
+            Some(pip) => (pip.size, pip.scale),
+            None => (self.window, self.scale),
+        };
         let px = (
-            (self.window.width * self.scale).round() as u32,
-            (self.window.height * self.scale).round() as u32,
+            (size.width * scale).round() as u32,
+            (size.height * scale).round() as u32,
         );
         if let Some(p) = &mut self.player {
             p.view_px = px;
-            p.scale = self.scale;
+            p.scale = scale;
             p.draw_subs(None);
         }
     }
@@ -801,15 +974,20 @@ impl Gui {
                     self.app.settings.player.volume = p.volume;
                 }
                 self.player = None;
+                let pip = self.leave_pip();
                 if std::mem::take(&mut self.fullscreen) {
-                    return set_fullscreen(false);
+                    return Task::batch([pip, self.set_fullscreen(false)]);
                 }
-                Task::none()
+                pip
             }
+            // (From the picture-in-picture window: back to the app's.)
+            Msg::Fullscreen if self.pip.is_some() => self.leave_pip(),
             Msg::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
-                set_fullscreen(self.fullscreen)
+                self.set_fullscreen(self.fullscreen)
             }
+            Msg::Pip if self.pip.is_some() => self.leave_pip(),
+            Msg::Pip => self.enter_pip(),
             Msg::Languages(prefs) => {
                 // The series' own, if it has them; else everyone's (the
                 // library's default tracks follow, as remuxes do).
@@ -953,7 +1131,11 @@ impl Gui {
         if key == Key::Named(Named::BrowserBack) && self.player.is_none() {
             return self.go_back();
         }
-        if self.player.is_none() || self.app.discussion.is_some() {
+        // While the player's in its picture-in-picture window, the keys are
+        // its there, and the app's in the main window.
+        let pip_window = self.pip.as_ref().map(|p| p.id);
+        let in_main = pip_window.is_some() && self.focused != pip_window;
+        if self.player.is_none() || self.app.discussion.is_some() || in_main {
             if key == Key::Named(Named::Escape) {
                 self.app.close_dialogs();
             }
@@ -972,6 +1154,7 @@ impl Gui {
             Key::Named(Named::ArrowDown) => Msg::Volume(volume - 5.0),
             Key::Character("m") => Msg::Mute,
             Key::Character("f") => Msg::Fullscreen,
+            Key::Character("i") => Msg::Pip,
             Key::Character("s") => Msg::SkipPart,
             Key::Character("n") => Msg::Next,
             Key::Character("p") => Msg::Prev,
@@ -992,7 +1175,11 @@ impl Gui {
         Subscription::batch([
             Subscription::run_with(Wakeups(self.wake.clone()), wakeups),
             iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick),
-            iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
+            iced::window::resize_events().map(|(id, size)| Message::Resized(id, size)),
+            iced::event::listen_with(|event, _, id| match event {
+                iced::Event::Window(iced::window::Event::Focused) => Some(Message::Focused(id)),
+                _ => None,
+            }),
             iced::window::close_requests().map(Message::Close),
             keyboard::listen().filter_map(key_message),
         ])
@@ -1001,7 +1188,10 @@ impl Gui {
     // ── Drawing ───────────────────────────────────────────────────────
 
     fn view(&self) -> Element<'_, Message> {
-        if let Some(p) = &self.player {
+        // (The player in its picture-in-picture window: the app's pages here.)
+        if let Some(p) = &self.player
+            && self.pip.is_none()
+        {
             let own = self
                 .app
                 .library
@@ -1118,13 +1308,4 @@ fn key_message(event: keyboard::Event) -> Option<Message> {
         keyboard::Event::KeyPressed { key, modifiers, .. } => Some(Message::Key(key, modifiers)),
         _ => None,
     }
-}
-
-fn set_fullscreen(on: bool) -> Task<Message> {
-    let mode = if on {
-        iced::window::Mode::Fullscreen
-    } else {
-        iced::window::Mode::Windowed
-    };
-    iced::window::latest().and_then(move |id| iced::window::set_mode(id, mode))
 }

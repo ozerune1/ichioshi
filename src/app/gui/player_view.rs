@@ -10,8 +10,8 @@
 use std::sync::LazyLock;
 
 use iced::widget::{
-    Column, button, column, container, mouse_area, row, scrollable, slider, space, stack, svg,
-    text, toggler,
+    Column, button, column, container, mouse_area, progress_bar, row, scrollable, slider, space,
+    stack, svg, text, toggler,
 };
 use iced::{
     Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Shadow, Vector,
@@ -48,6 +48,7 @@ icons! {
     CHECK = "check";
     MINUS = "minus";
     PLUS = "plus";
+    PIP = "picture-in-picture-2";
 }
 
 const WHITE: Color = Color::WHITE;
@@ -254,6 +255,109 @@ impl Player {
         iced::widget::stack(layers).width(Fill).height(Fill).into()
     }
 
+    /// The picture-in-picture window: the picture and subtitles; a click
+    /// pauses, a double click goes back to the app's window. Pointing at it
+    /// shows a few controls.
+    pub fn pip_view<'a>(&'a self) -> Element<'a, Message> {
+        let picture = VideoPlayer::new(&self.video)
+            .width(Fill)
+            .height(Fill)
+            .content_fit(ContentFit::Contain)
+            .on_end_of_stream(m(Msg::Ended))
+            .on_new_frame(m(Msg::Frame));
+        let base =
+            mouse_area(
+                container(picture)
+                    .width(Fill)
+                    .height(Fill)
+                    .style(|_| container::Style {
+                        background: Some(fill_color(Color::BLACK)),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(m(Msg::TogglePause))
+            .on_double_click(m(Msg::Pip))
+            .on_move(|_| m(Msg::Moved));
+        let mut layers: Vec<Element<'a, Message>> = vec![base.into()];
+        if let Some(subs) = &self.overlay {
+            layers.push(
+                iced::widget::image(subs.clone())
+                    .width(Fill)
+                    .height(Fill)
+                    .content_fit(ContentFit::Contain)
+                    .into(),
+            );
+        }
+        let show = self.paused()
+            || self.ended
+            || self.active.elapsed() < std::time::Duration::from_millis(2000);
+        if show {
+            let playing = !(self.paused() || self.ended);
+            let play = button(
+                container(icon(
+                    if playing { &PAUSE } else { &PLAY },
+                    18.0,
+                    Color::BLACK,
+                ))
+                .center(40),
+            )
+            .padding(0)
+            .on_press(m(Msg::TogglePause))
+            .style(|_, _| button::Style {
+                background: Some(fill_color(WHITE)),
+                border: rounded(999.0),
+                ..button::Style::default()
+            });
+            layers.push(
+                container(space())
+                    .width(Fill)
+                    .height(Fill)
+                    .style(|_| container::Style {
+                        background: Some(fill_color(Color::BLACK.scale_alpha(0.35))),
+                        ..Default::default()
+                    })
+                    .into(),
+            );
+            layers.push(
+                container(
+                    row![
+                        tool(&BACK10, 17.0, Some(Msg::SeekBy(-10.0)), false),
+                        play,
+                        tool(&FWD10, 17.0, Some(Msg::SeekBy(10.0)), false),
+                    ]
+                    .spacing(14)
+                    .align_y(Alignment::Center),
+                )
+                .center(Fill)
+                .into(),
+            );
+            layers.push(
+                container(tool(&FULLSCREEN, 15.0, Some(Msg::Pip), false))
+                    .width(Fill)
+                    .align_x(Alignment::End)
+                    .padding(6)
+                    .into(),
+            );
+            let (pos, dur) = (self.position(), self.duration().max(0.001));
+            layers.push(
+                container(
+                    progress_bar(0.0..=1.0, (pos / dur) as f32)
+                        .girth(3)
+                        .style(|_| progress_bar::Style {
+                            background: fill_color(Color::WHITE.scale_alpha(0.25)),
+                            bar: fill_color(ACCENT),
+                            border: rounded(0.0),
+                        }),
+                )
+                .width(Fill)
+                .height(Fill)
+                .align_y(Alignment::End)
+                .into(),
+            );
+        }
+        iced::widget::stack(layers).width(Fill).height(Fill).into()
+    }
+
     fn top_bar<'a>(&'a self) -> Element<'a, Message> {
         let back = button(container(icon(&ARROW_LEFT, 20.0, WHITE)).center(40))
             .padding(0)
@@ -415,6 +519,7 @@ impl Player {
                 Some(Msg::Panel(Panel::Settings)),
                 self.panel == Some(Panel::Settings)
             ),
+            tool(&PIP, 18.0, Some(Msg::Pip), false),
             tool(
                 if fullscreen { &WINDOWED } else { &FULLSCREEN },
                 18.0,

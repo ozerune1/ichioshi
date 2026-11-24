@@ -62,6 +62,8 @@ pub struct Player {
     /// The speed it plays at (1 is normal); GStreamer takes it once the
     /// video's playing.
     pub speed: f64,
+    /// In its picture-in-picture window (no controls to clear).
+    pub in_pip: bool,
 }
 
 impl Player {
@@ -134,6 +136,7 @@ impl Player {
             scale: 1.0,
             sub_delay_ms: 0,
             speed: 1.0,
+            in_pip: false,
             info,
         })
     }
@@ -286,7 +289,7 @@ impl Player {
         // Dialogue moves up out of the controls' way while they show (as
         // Netflix does, and mpv's sub-pos): by as much of the picture as
         // they cover.
-        let raise = if self.controls_shown() && size.1 > 0 {
+        let raise = if self.controls_shown() && !self.in_pip && size.1 > 0 {
             let covered =
                 CONTROLS_HEIGHT * self.scale as f64 - (self.view_px.1 as f64 - size.1 as f64) / 2.0;
             (covered.max(0.0) / size.1 as f64 * 100.0).ceil() + 1.0
@@ -387,8 +390,13 @@ impl Player {
                 }
             }
             Msg::Ended => self.ended = true,
-            Msg::Moved | Msg::Next | Msg::Prev | Msg::Fullscreen | Msg::Back | Msg::Setting(..) => {
-            }
+            Msg::Moved
+            | Msg::Next
+            | Msg::Prev
+            | Msg::Fullscreen
+            | Msg::Pip
+            | Msg::Back
+            | Msg::Setting(..) => {}
         }
     }
 

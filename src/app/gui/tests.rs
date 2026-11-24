@@ -517,6 +517,71 @@ fn plays_at_other_speeds() {
     assert_eq!(h.player.as_ref().unwrap().speed, 1.0);
 }
 
+/// Picture in picture: the player goes to a small window of its own (its
+/// subtitles sized for it), the main window shows the app again and its
+/// keys are the app's; back with the button, and gone with the player.
+#[test]
+#[ignore = "renders screenshots; needs GStreamer and ffmpeg"]
+fn plays_in_picture_in_picture() {
+    if !crate::gst_video::available() {
+        eprintln!("skipping: no GStreamer");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let Some(sample) = crate::gst_video::tests::typeset_sample(&base.path().join("sample")) else {
+        return;
+    };
+    let state = one_series(base.path(), &[("Show - 01.mkv", &sample)]);
+    let mut h = harness(base.path(), &state);
+    let out = screens_dir(base.path(), "iced-pip");
+    send(&mut h, [act(Action::OpenSeries(9))]);
+    wait_for(&mut h, "▶  Play episode 1");
+    click(&mut h, "▶  Play episode 1");
+    load_subs(&mut h);
+    wait(&mut h, "playing", |g| {
+        g.player.as_ref().unwrap().position() > 0.3
+    });
+    let pip = || Message::Player(player::Msg::Pip);
+    send(&mut h, [pip()]);
+    let size = h.pip.as_ref().expect("its window").size;
+    assert_eq!(size, iced::Size::new(480.0, 270.0), "the picture's shape");
+    let p = h.player.as_ref().unwrap();
+    assert!(p.in_pip && p.view_px == (480, 270), "{:?}", p.view_px);
+    // The main window: the app (the series' page), not the player.
+    snapshot(&h, &out.join("1-main"));
+    assert!(shows(&h, "▶  Play episode 1"));
+    // Its keys are the app's: space doesn't pause the picture.
+    let space = || Message::Key(Key::Named(Named::Space), keyboard::Modifiers::empty());
+    send(&mut h, [space()]);
+    assert!(!h.player.as_ref().unwrap().paused());
+    // The small window: the picture, with its subtitles.
+    send(&mut h, [Message::Player(player::Msg::Frame)]);
+    assert!(h.player.as_ref().unwrap().overlay.is_some(), "subtitles");
+    let mut ui = Simulator::with_size(settings(), size, h.player.as_ref().unwrap().pip_view());
+    for _ in 0..4 {
+        let _ = ui.snapshot(&Theme::Dark).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        ui.snapshot(&Theme::Dark)
+            .unwrap()
+            .matches_image(out.join("2-pip"))
+            .unwrap()
+    );
+    drop(ui);
+    // Its keys, with it in front, are the player's.
+    h.focused = h.pip.as_ref().map(|p| p.id);
+    send(&mut h, [space()]);
+    assert!(h.player.as_ref().unwrap().paused());
+    // Back to the app's window: the player's there again.
+    send(&mut h, [pip()]);
+    assert!(h.pip.is_none() && !h.player.as_ref().unwrap().in_pip);
+    assert!(!shows(&h, "▶  Play episode 1"));
+    // And again, then the player closes: so does its window.
+    send(&mut h, [pip(), Message::Player(player::Msg::Back)]);
+    assert!(h.player.is_none() && h.pip.is_none());
+}
+
 /// The player: plays an episode from the library with its subtitles,
 /// skips the opening, saves how far it got, and goes on to the next
 /// episode at the end.

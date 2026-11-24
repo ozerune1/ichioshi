@@ -120,6 +120,26 @@ fn a_member_follows_the_hosts_player() {
         !paused(m) && position(h) > 71.0 && (position(h) - position(m)).abs() < 1.2
     });
 
+    // The host plays faster: so does the member, and they stay together;
+    // the member can't change it.
+    send(&mut host, [Message::Player(player::Msg::Speed(1.5))]);
+    both(&mut host, &mut member, "the member at 1.5×", |_, m| {
+        m.player.as_ref().is_some_and(|p| p.speed == 1.5)
+    });
+    send(&mut member, [Message::Player(player::Msg::Speed(1.0))]);
+    assert_eq!(member.player.as_ref().unwrap().speed, 1.5);
+    assert!(note(&member).contains("The host sets the speed"));
+    let t = Instant::now();
+    both(&mut host, &mut member, "a while at 1.5×", |_, _| {
+        t.elapsed() > Duration::from_secs(4)
+    });
+    assert!(
+        (position(&host) - position(&member)).abs() < 1.2,
+        "{} and {}",
+        position(&host),
+        position(&member)
+    );
+
     // The host closes the player: so does the member's.
     send(&mut host, [Message::Player(player::Msg::Back)]);
     both(
