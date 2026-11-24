@@ -59,6 +59,9 @@ pub struct Player {
     /// Pixels per point.
     pub scale: f32,
     pub sub_delay_ms: i64,
+    /// The speed it plays at (1 is normal); GStreamer takes it once the
+    /// video's playing.
+    pub speed: f64,
 }
 
 impl Player {
@@ -130,8 +133,23 @@ impl Player {
             view_px: (1440, 900),
             scale: 1.0,
             sub_delay_ms: 0,
+            speed: 1.0,
             info,
         })
+    }
+
+    /// Play at `speed` (1 is normal), from where it is.
+    pub fn set_speed(&mut self, speed: f64) {
+        self.speed = speed.clamp(0.25, 4.0);
+        self.apply_speed();
+    }
+
+    /// GStreamer at the speed asked for (it can't change until the video's
+    /// under way: it's tried again with each new frame).
+    fn apply_speed(&mut self) {
+        if (self.video.speed() - self.speed).abs() > 1e-6 {
+            let _ = self.video.set_speed(self.speed);
+        }
     }
 
     pub fn position(&self) -> f64 {
@@ -344,7 +362,11 @@ impl Player {
                 self.apply_subs();
             }
             Msg::Languages(prefs) => self.use_languages(&prefs),
-            Msg::Frame => self.draw_subs(None),
+            Msg::Frame => {
+                self.apply_speed();
+                self.draw_subs(None);
+            }
+            Msg::Speed(speed) => self.set_speed(speed),
             Msg::SubsLoaded(path, Some(subs)) if path == self.path => self.subs_loaded(subs),
             Msg::SubsLoaded(..) => {}
             Msg::SubDelay(d) => {

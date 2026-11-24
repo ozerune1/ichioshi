@@ -459,6 +459,64 @@ fn skips_85_seconds_without_chapters() {
     assert!(!shows(&h, "Skip 85s"), "less than 85 seconds left");
 }
 
+/// Speed: the ] key steps it up to 2×, and the video (subtitles with it)
+/// goes twice as fast; the next episode starts at it too.
+#[test]
+#[ignore = "renders screenshots; needs GStreamer and ffmpeg"]
+fn plays_at_other_speeds() {
+    if !crate::gst_video::available() {
+        eprintln!("skipping: no GStreamer");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let Some(sample) = crate::gst_video::tests::typeset_sample(&base.path().join("sample")) else {
+        return;
+    };
+    let state = one_series(
+        base.path(),
+        &[("Show - 01.mkv", &sample), ("Show - 02.mkv", &sample)],
+    );
+    let mut h = harness(base.path(), &state);
+    let out = screens_dir(base.path(), "iced-speed");
+    send(&mut h, [act(Action::OpenSeries(9))]);
+    wait_for(&mut h, "▶  Play episode 1");
+    click(&mut h, "▶  Play episode 1");
+    wait(&mut h, "playing", |g| {
+        g.player.as_ref().unwrap().position() > 0.2
+    });
+    let faster = || Message::Key(Key::Character("]".into()), keyboard::Modifiers::empty());
+    send(&mut h, [faster(), faster(), faster(), faster(), faster()]);
+    assert_eq!(h.player.as_ref().unwrap().speed, 2.0, "2× is the top");
+    // GStreamer takes it with the next frame.
+    wait(&mut h, "at 2×", |g| {
+        let p = g.player.as_ref().unwrap();
+        p.video.speed() == 2.0
+    });
+    let (from, t) = (h.player.as_ref().unwrap().position(), Instant::now());
+    std::thread::sleep(Duration::from_millis(1000));
+    let moved = h.player.as_ref().unwrap().position() - from;
+    let took = t.elapsed().as_secs_f64();
+    assert!(
+        (moved / took - 2.0).abs() < 0.35,
+        "{moved:.2} s of video in {took:.2} s"
+    );
+    let panel = Message::Player(player::Msg::Panel(player::Panel::Settings));
+    send(&mut h, [panel, Message::Player(player::Msg::Frame)]);
+    assert!(shows(&h, "2×"), "the speeds, 2× lit");
+    snapshot(&h, &out.join("1-speeds"));
+    // The next episode plays at it too.
+    send(&mut h, [Message::Player(player::Msg::Next)]);
+    wait(&mut h, "episode 2 at 2×", |g| {
+        g.player
+            .as_ref()
+            .is_some_and(|p| p.episode == 2 && p.video.speed() == 2.0)
+    });
+    // Backspace: normal speed.
+    let reset = Message::Key(Key::Named(Named::Backspace), keyboard::Modifiers::empty());
+    send(&mut h, [reset]);
+    assert_eq!(h.player.as_ref().unwrap().speed, 1.0);
+}
+
 /// The player: plays an episode from the library with its subtitles,
 /// skips the opening, saves how far it got, and goes on to the next
 /// episode at the end.

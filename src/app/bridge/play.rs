@@ -33,13 +33,13 @@ pub(super) fn play(app: &mut App, core: &mut Core, id: u64, episode: u32) {
 type Deliver = Arc<dyn Fn(Value) + Send + Sync>;
 
 /// Play it: from where you left it, or (`party`) where the party's player
-/// is, playing or paused.
+/// is, playing or paused, and at its speed (none: your own).
 fn open(
     app: &mut App,
     core: &mut Core,
     id: u64,
     episode: u32,
-    party: Option<(Option<f64>, bool)>,
+    party: Option<(Option<f64>, bool, Option<f64>)>,
     deliver: Deliver,
 ) {
     let Some(series) = app.library.find(id) else {
@@ -47,14 +47,15 @@ fn open(
     };
     let title = series.title().to_owned();
     let start = match party {
-        Some((Some(at), _)) => at,
+        Some((Some(at), _, _)) => at,
         _ => series
             .watched
             .get(&episode)
             .and_then(crate::library::Watch::resume_at)
             .unwrap_or(0.0),
     };
-    let paused = party.is_some_and(|(_, playing)| !playing);
+    let paused = party.is_some_and(|(_, playing, _)| !playing);
+    let speed = party.and_then(|(_, _, speed)| speed);
     // Following the host's player, only the host controls it.
     let role = if party.is_some()
         && !matches!(app.party.role, Some(crate::app::party_ui::Role::Host(_)))
@@ -98,6 +99,7 @@ fn open(
                 "hasPrev": prev.is_some(),
                 "party": role,
                 "paused": paused,
+                "speed": speed,
         }));
     };
     // On the servers: its offline copy, else Jellyfin's stream.
@@ -235,6 +237,7 @@ pub(super) fn party_poll(app: &mut App, core: &mut Core, player: Option<Value>) 
             episode: p["episode"].as_u64().unwrap_or(0) as u32,
             position: p["position"].as_f64().unwrap_or(0.0),
             playing: p["paused"] != true && p["ended"] != true,
+            speed: p["speed"].as_f64().unwrap_or(1.0),
         });
     // Pausing, following the host: asks the host.
     if let Some(asked) = player.as_ref().and_then(|p| p["asked"].as_str()) {
@@ -251,6 +254,7 @@ pub(super) fn party_poll(app: &mut App, core: &mut Core, player: Option<Value>) 
             episode,
             at,
             playing,
+            speed,
         }) => {
             // Straight to the phone's player (the web UI sleeps while one's
             // open); unless it's only known later, then through the UI.
@@ -264,7 +268,14 @@ pub(super) fn party_poll(app: &mut App, core: &mut Core, player: Option<Value>) 
                     s.1 = Some(p);
                 }
             });
-            open(app, core, series, episode, Some((at, playing)), deliver);
+            open(
+                app,
+                core,
+                series,
+                episode,
+                Some((at, playing, speed)),
+                deliver,
+            );
             let mut s = slot.lock().unwrap();
             s.0 = true;
             if let Some(p) = s.1.take() {
@@ -273,6 +284,7 @@ pub(super) fn party_poll(app: &mut App, core: &mut Core, player: Option<Value>) 
             Value::Null
         }
         Some(PlayerCmd::Seek(to)) => json!({"seek": to}),
+        Some(PlayerCmd::Speed(speed)) => json!({"speed": speed}),
         Some(PlayerCmd::Pause) => json!({"paused": true}),
         Some(PlayerCmd::Play) => json!({"paused": false}),
         Some(PlayerCmd::Close) => json!({"close": true}),

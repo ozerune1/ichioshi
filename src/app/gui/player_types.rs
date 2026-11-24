@@ -50,6 +50,8 @@ pub enum Msg {
     SubDelay(i64),
     Seek(f64),
     SeekDone,
+    /// Play at this speed (1 is normal).
+    Speed(f64),
     SeekBy(f64),
     Volume(f64),
     Mute,
@@ -62,6 +64,25 @@ pub enum Msg {
     Ended,
     Moved,
     Back,
+}
+
+/// The speeds to pick from (1 is normal).
+pub const SPEEDS: [f64; 7] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+/// The next speed up (or down) from `speed`, or the same at the ends.
+pub fn speed_step(speed: f64, up: bool) -> f64 {
+    let found = if up {
+        SPEEDS.iter().find(|s| **s > speed + 1e-6)
+    } else {
+        SPEEDS.iter().rev().find(|s| **s < speed - 1e-6)
+    };
+    found.copied().unwrap_or(speed)
+}
+
+/// "1×", "1.25×", "0.5×".
+pub fn speed_label(speed: f64) -> String {
+    let s = format!("{speed:.2}");
+    format!("{}×", s.trim_end_matches('0').trim_end_matches('.'))
 }
 
 /// How much of the window's bottom the controls take, in points.
@@ -79,5 +100,25 @@ pub fn clock(secs: f64) -> String {
         format!("{h}:{m:02}:{s:02}")
     } else {
         format!("{m}:{s:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speeds_step_and_read() {
+        assert_eq!(speed_step(1.0, true), 1.25);
+        assert_eq!(speed_step(1.0, false), 0.75);
+        assert_eq!(speed_step(2.0, true), 2.0);
+        assert_eq!(speed_step(0.5, false), 0.5);
+        // Between the steps (a host's 1.1): the nearest one each way.
+        assert_eq!(speed_step(1.1, true), 1.25);
+        assert_eq!(speed_step(1.1, false), 1.0);
+        assert_eq!(speed_label(1.0), "1×");
+        assert_eq!(speed_label(1.25), "1.25×");
+        assert_eq!(speed_label(0.5), "0.5×");
+        assert_eq!(speed_label(2.0), "2×");
     }
 }

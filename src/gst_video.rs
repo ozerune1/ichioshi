@@ -58,6 +58,11 @@ pub fn pipeline(uri: &str, frames: Frames) -> Result<(gst::Pipeline, gst_app::Ap
         .build()
         .context("GStreamer's playbin isn't available")?;
     playbin.set_property_from_str("flags", FLAGS_TEXT);
+    // Voices keep their pitch at other speeds (scaletempo; without it, they
+    // play higher or lower).
+    if let Ok(tempo) = gst::ElementFactory::make("scaletempo").build() {
+        playbin.set_property("audio-filter", &tempo);
+    }
     // Tests make no sound.
     #[cfg(test)]
     playbin.set_property(

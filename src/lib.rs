@@ -192,6 +192,8 @@ fn self_test(out: &std::path::Path, video: Option<&std::path::Path>) -> bool {
         "autoaudiosink",
         // Draws image subtitles (PGS, VobSub).
         "dvdspu",
+        // Keeps voices' pitch at other speeds.
+        "scaletempo",
     ] {
         let found = gstreamer::ElementFactory::find(element).is_some();
         ok &= found;

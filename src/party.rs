@@ -156,19 +156,26 @@ pub struct Member {
 }
 
 /// Where the host's player is: `position` seconds in at `at` (on the
-/// host's clock, `now_ms`), playing or paused.
+/// host's clock, `now_ms`), playing (at `speed`) or paused.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Playback {
     pub position: f64,
     pub playing: bool,
     pub at: u64,
+    /// 1 is normal speed (a host from before speeds says nothing: 1).
+    #[serde(default = "normal_speed")]
+    pub speed: f64,
+}
+
+fn normal_speed() -> f64 {
+    1.0
 }
 
 impl Playback {
     /// Where it is at `t` (the same clock as `at`).
     pub fn position_at(&self, t: u64) -> f64 {
         if self.playing {
-            self.position + t.saturating_sub(self.at) as f64 / 1000.0
+            self.position + t.saturating_sub(self.at) as f64 / 1000.0 * self.speed
         } else {
             self.position
         }
@@ -727,6 +734,7 @@ mod tests {
             position: 10.0,
             playing: true,
             at: 1000,
+            speed: 1.0,
         };
         assert_eq!(p.position_at(3500), 12.5);
         assert_eq!(p.position_at(500), 10.0);
@@ -735,6 +743,12 @@ mod tests {
             ..p
         };
         assert_eq!(paused.position_at(3500), 10.0);
+        let fast = Playback { speed: 1.5, ..p };
+        assert_eq!(fast.position_at(3000), 13.0);
+        // A host from before speeds: normal speed.
+        let old: Playback =
+            serde_json::from_str(r#"{"position": 10.0, "playing": true, "at": 1000}"#).unwrap();
+        assert_eq!(old, p);
     }
 
     #[test]
@@ -778,6 +792,7 @@ mod tests {
             position: 61.0,
             playing: true,
             at: now_ms(),
+            speed: 1.25,
         };
         hosting.send_all(ToMember::Playback(Some(playback)));
         until(&got, |e| {

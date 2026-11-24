@@ -236,9 +236,11 @@ pub(super) struct Gui {
     copy: Option<String>,
     /// The note in the corner (the app's status), and since when.
     note_since: Option<(String, Instant)>,
-    /// Where the next episode opened starts, and whether it plays (the
-    /// party's player, not where you left it).
-    party_start: Option<(Option<f64>, bool)>,
+    /// Where the next episode opened starts, whether it plays, and at
+    /// what speed (the party's player, not where you left it).
+    party_start: Option<(Option<f64>, bool, Option<f64>)>,
+    /// The speed you play at (this session's: each episode starts at it).
+    speed: f64,
 }
 
 impl Gui {
@@ -274,6 +276,7 @@ impl Gui {
             copy: None,
             note_since: None,
             party_start: None,
+            speed: 1.0,
         }
     }
 
@@ -452,6 +455,7 @@ impl Gui {
                 episode: p.episode,
                 position: p.position(),
                 playing: !p.paused() && !p.ended,
+                speed: p.speed,
             });
         if let Some(cmd) = self.app.party_player(watching) {
             tasks.push(self.party_command(cmd));
@@ -698,9 +702,10 @@ impl Gui {
         };
         let party = self.party_start.take();
         let start = match party {
-            Some((Some(at), _)) => Some(at),
+            Some((Some(at), _, _)) => Some(at),
             _ => series.watched.get(&episode).and_then(Watch::resume_at),
         };
+        let speed = party.and_then(|(_, _, s)| s).unwrap_or(self.speed);
         let title = match &self.app.page {
             Page::Anime(ap) if ap.anime.anilist_id == id => ap.anime.title.clone(),
             _ => series.title().to_owned(),
@@ -728,7 +733,8 @@ impl Gui {
             volume,
         );
         match opened {
-            Ok(p) => {
+            Ok(mut p) => {
+                p.set_speed(speed);
                 self.player = Some(p);
                 self.size_player();
                 if let Some(at) = start {
@@ -772,6 +778,10 @@ impl Gui {
                 | Msg::Next
                 | Msg::Prev => {
                     self.app.set_info("The host controls playback");
+                    return Task::none();
+                }
+                Msg::Speed(_) => {
+                    self.app.set_info("The host sets the speed");
                     return Task::none();
                 }
                 Msg::Ended => {
@@ -857,6 +867,15 @@ impl Gui {
                 }
                 Task::none()
             }
+            Msg::Speed(speed) => {
+                self.speed = speed;
+                if let Some(p) = &mut self.player {
+                    p.update(Msg::Speed(speed));
+                }
+                self.app
+                    .set_info(format!("Speed {}", player::speed_label(speed)));
+                Task::none()
+            }
             Msg::SubDelay(d) => {
                 if let Some(p) = &mut self.player {
                     p.update(Msg::SubDelay(d));
@@ -891,8 +910,9 @@ impl Gui {
                 episode,
                 at,
                 playing,
+                speed,
             } => {
-                self.party_start = Some((at, playing));
+                self.party_start = Some((at, playing, speed));
                 let task = self.play_now(series, episode);
                 self.party_start = None;
                 if let Some(p) = &mut self.player
@@ -905,6 +925,13 @@ impl Gui {
             PlayerCmd::Seek(to) => {
                 if let Some(p) = &mut self.player {
                     p.seek_to(to, true);
+                }
+                Task::none()
+            }
+            // The host's speed, for now (yours is kept for later).
+            PlayerCmd::Speed(speed) => {
+                if let Some(p) = &mut self.player {
+                    p.set_speed(speed);
                 }
                 Task::none()
             }
@@ -934,6 +961,7 @@ impl Gui {
         }
         use player::Msg;
         let volume = self.player.as_ref().map_or(100.0, |p| p.volume);
+        let speed = self.player.as_ref().map_or(self.speed, |p| p.speed);
         let msg = match key.as_ref() {
             Key::Named(Named::Space) | Key::Character("k") => Msg::TogglePause,
             Key::Named(Named::ArrowRight) => Msg::SeekBy(5.0),
@@ -949,6 +977,10 @@ impl Gui {
             Key::Character("p") => Msg::Prev,
             Key::Character("z") => Msg::SubDelay(-100),
             Key::Character("x") => Msg::SubDelay(100),
+            // Slower and faster (mpv's keys, and YouTube's).
+            Key::Character("[" | "<") => Msg::Speed(player::speed_step(speed, false)),
+            Key::Character("]" | ">") => Msg::Speed(player::speed_step(speed, true)),
+            Key::Named(Named::Backspace) => Msg::Speed(1.0),
             Key::Named(Named::Escape) if self.fullscreen => Msg::Fullscreen,
             Key::Named(Named::Escape) => Msg::Back,
             _ => return Task::none(),
@@ -981,6 +1013,7 @@ impl Gui {
                 self.fullscreen,
                 &self.app.settings.player,
                 (own.unwrap_or(&self.app.settings.prefs), own.is_some()),
+                self.app.party_locked(),
             );
             return self.with_note(match &self.app.discussion {
                 Some(d) => self.discussion(view, d),

@@ -19,7 +19,7 @@ use iced::{
 use iced_video_player::VideoPlayer;
 
 use super::Message;
-use super::player::{Msg, Panel, Player, SKIP, Setting, TrackChoice, clock};
+use super::player::{Msg, Panel, Player, SKIP, SPEEDS, Setting, TrackChoice, clock, speed_label};
 use super::style::{ACCENT, BOLD, MEDIUM, SEMI, fill_color, rounded};
 use crate::player::{Part, TrackKind};
 
@@ -162,6 +162,7 @@ impl Player {
         fullscreen: bool,
         settings: &crate::player::Settings,
         (prefs, own): (&crate::prefs::LangPrefs, bool),
+        locked: bool,
     ) -> Element<'a, Message> {
         let picture = VideoPlayer::new(&self.video)
             .width(Fill)
@@ -232,7 +233,7 @@ impl Player {
             if let Some(panel) = self.panel {
                 let content = match panel {
                     Panel::Tracks => self.tracks_panel(),
-                    Panel::Settings => settings_panel(settings, prefs, own),
+                    Panel::Settings => settings_panel(settings, prefs, own, self.speed, locked),
                 };
                 layers.push(
                     container(content)
@@ -377,7 +378,31 @@ impl Player {
         .spacing(10)
         .align_y(Alignment::Center);
 
+        // Not at normal speed: says so (and opens the panel to change it).
+        let speed = ((self.speed - 1.0).abs() > 1e-6).then(|| {
+            button(
+                text(speed_label(self.speed))
+                    .size(12)
+                    .font(BOLD)
+                    .color(WHITE),
+            )
+            .padding([4, 9])
+            .on_press(m(Msg::Panel(Panel::Settings)))
+            .style(|_, status| button::Style {
+                background: Some(fill_color(Color::WHITE.scale_alpha(
+                    if status == button::Status::Hovered {
+                        0.25
+                    } else {
+                        0.15
+                    },
+                ))),
+                text_color: WHITE,
+                border: rounded(999.0),
+                ..button::Style::default()
+            })
+        });
         let tools = row![
+            speed,
             tool(
                 &CAPTIONS,
                 19.0,
@@ -718,6 +743,8 @@ fn settings_panel<'a>(
     s: &crate::player::Settings,
     prefs: &crate::prefs::LangPrefs,
     own: bool,
+    speed: f64,
+    locked: bool,
 ) -> Element<'a, Message> {
     let switch = |label: &'static str, on: bool, which: Setting| {
         toggler(on)
@@ -767,6 +794,9 @@ fn settings_panel<'a>(
                 Setting::Autoplay
             ),
             super::style::gap(6.0),
+            text("SPEED").size(12).font(BOLD).color(FAINT),
+            speed_choices(speed, locked),
+            super::style::gap(6.0),
             text("LANGUAGES").size(12).font(BOLD).color(FAINT),
             text(if own {
                 "This series' own. Others play everyone's (in Settings)."
@@ -783,6 +813,47 @@ fn settings_panel<'a>(
     .width(420)
     .style(|_| menu())
     .into()
+}
+
+/// The speeds, the one playing lit; a party's member can't change it.
+fn speed_choices<'a>(speed: f64, locked: bool) -> Element<'a, Message> {
+    let chips = SPEEDS.iter().map(|&s| {
+        let on = (s - speed).abs() < 1e-6;
+        button(
+            text(speed_label(s))
+                .size(13)
+                .font(if on { BOLD } else { MEDIUM })
+                .color(if locked && !on { DIM } else { WHITE }),
+        )
+        .padding([6, 10])
+        .on_press_maybe((!locked).then_some(m(Msg::Speed(s))))
+        .style(move |_, status| button::Style {
+            background: Some(fill_color(if on {
+                ACCENT
+            } else if status == button::Status::Hovered {
+                Color::WHITE.scale_alpha(0.18)
+            } else {
+                Color::WHITE.scale_alpha(0.08)
+            })),
+            text_color: WHITE,
+            border: rounded(8.0),
+            ..button::Style::default()
+        })
+        .into()
+    });
+    let row = iced::widget::Row::with_children(chips).spacing(6);
+    if locked {
+        column![
+            row,
+            text("The host sets the speed")
+                .size(12)
+                .color(WHITE.scale_alpha(0.6))
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        row.into()
+    }
 }
 
 fn up_next<'a>(n: u32) -> Element<'a, Message> {

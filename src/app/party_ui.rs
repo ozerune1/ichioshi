@@ -144,19 +144,25 @@ pub(crate) struct Watching {
     pub(crate) episode: u32,
     pub(crate) position: f64,
     pub(crate) playing: bool,
+    /// 1 is normal speed.
+    pub(crate) speed: f64,
 }
 
 /// What the party wants this app's player to do.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PlayerCmd {
-    /// Play an episode (`at`: from there; none: from where you left it).
+    /// Play an episode (`at`: from there; none: from where you left it),
+    /// at `speed` (none: the speed you play at).
     Open {
         series: u64,
         episode: u32,
         at: Option<f64>,
         playing: bool,
+        speed: Option<f64>,
     },
     Seek(f64),
+    /// Play at this speed (the host's).
+    Speed(f64),
     Pause,
     Play,
     Close,
@@ -765,6 +771,7 @@ impl App {
                         episode: e.episode,
                         at: None,
                         playing: true,
+                        speed: None,
                     });
                 }
                 let Some(hosting) = &h.hosting else {
@@ -800,9 +807,11 @@ impl App {
                             position: w.position,
                             playing: w.playing,
                             at: party::now_ms(),
+                            speed: w.speed,
                         };
                         let moved = h.sent.is_none_or(|s| {
                             s.playing != now.playing
+                                || s.speed != now.speed
                                 || (s.position_at(now.at) - now.position).abs() > DRIFT
                         });
                         if moved || h.sent_at.elapsed() >= HEARTBEAT {
@@ -847,6 +856,7 @@ impl App {
                     episode: e.episode,
                     at: Some(expected),
                     playing: pb.playing,
+                    speed: Some(pb.speed),
                 };
                 match watching {
                     None if m.shown => {
@@ -881,6 +891,10 @@ impl App {
                             } else {
                                 PlayerCmd::Pause
                             });
+                        }
+                        if (w.speed - pb.speed).abs() > 0.001 {
+                            m.told = Some(Instant::now());
+                            return Some(PlayerCmd::Speed(pb.speed));
                         }
                         if (w.position - expected).abs() > DRIFT {
                             m.told = Some(Instant::now());

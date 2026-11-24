@@ -15,14 +15,15 @@ from peimports import imports  # noqa: E402
 
 # GStreamer plugins: playbin and its parts, Matroska and MP4, HTTP (Jellyfin),
 # decoders (libav, Opus, FLAC, Vorbis), parsers, audio out, Direct3D 11,
-# bitmap subtitles (subparse, and dvdspu, which draws PGS and VobSub).
+# bitmap subtitles (subparse, and dvdspu, which draws PGS and VobSub), and
+# scaletempo (audiofx: voices keep their pitch at other speeds).
 PLUGINS = [
     "coreelements", "playback", "typefindfunctions", "app", "videoconvertscale",
     "audioconvert", "audioresample", "volume", "autodetect", "matroska", "isomp4",
     "soup", "libav", "opus", "vorbis", "flac", "audioparsers", "videoparsersbad",
     "wasapi", "wasapi2", "directsound", "d3d11", "subparse",
     "overlaycomposition", "rawparse", "id3demux", "ogg", "deinterlace",
-    "videofilter", "audiomixer", "compositor", "dvdspu",
+    "videofilter", "audiomixer", "compositor", "dvdspu", "audiofx",
 ]
 # Loaded by name at run time, not imported: libass (by the app), libsoup
 # (by the soup plugin).

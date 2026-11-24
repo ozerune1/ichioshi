@@ -25,7 +25,7 @@ PLUGINS = [
     "soup", "libav", "opus", "vorbis", "flac", "audioparsers", "videoparsersbad",
     "osxaudio", "applemedia", "subparse", "overlaycomposition", "rawparse",
     "id3demux", "ogg", "deinterlace", "videofilter", "audiomixer", "compositor",
-    "dvdspu",
+    "dvdspu", "audiofx",
 ]
 LOADED = ["lib/libass.9.dylib", "lib/libsoup-3.0.0.dylib"]
 FRAMEWORK = "/Library/Frameworks/GStreamer.framework"
