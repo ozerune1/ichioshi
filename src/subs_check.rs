@@ -207,7 +207,15 @@ fn black(work: &Path, w: u32, h: u32, cs: &str) -> Result<PathBuf> {
             "-preset",
             "ultrafast",
         ])
-        .args(["-pix_fmt", "yuv420p"]);
+        // 4:2:0 needs even sizes.
+        .args([
+            "-pix_fmt",
+            if w % 2 == 1 || h % 2 == 1 {
+                "yuv444p"
+            } else {
+                "yuv420p"
+            },
+        ]);
     if !cs.is_empty() {
         let (prim, trc, mat) = match cs {
             "bt709" => (1, 1, 1),
