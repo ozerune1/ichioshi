@@ -259,7 +259,8 @@ fn state_dir_moved(data: &std::path::Path) -> std::path::PathBuf {
 /// The desktop app (Linux, Windows). `--self-test` checks a build,
 /// `--version` says which this is, and `--update` updates it without the
 /// window; `--install-update <folder>` is how an update (Windows) puts
-/// itself in place once the app has closed.
+/// itself in place once the app has closed, and `--install-package <file>`
+/// how one installed by a Linux package does.
 #[cfg(all(feature = "gui", not(target_os = "android")))]
 pub fn desktop_main() {
     let args: Vec<String> = std::env::args().collect();
@@ -296,6 +297,26 @@ pub fn desktop_main() {
             std::process::exit(1);
         }
         return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--install-package") {
+        let Some(file) = args.get(i + 1).map(std::path::Path::new) else {
+            std::process::exit(2);
+        };
+        // Where the program is, before the package manager replaces it.
+        let exe = std::env::current_exe();
+        let installed = update::install_package(file);
+        if let Err(e) = &installed {
+            // The app says why when it starts again.
+            let why = format!("{e:#}");
+            eprintln!("{why}");
+            let _ = std::fs::write(state_dir.join("update").join(update::FAILED), why);
+        }
+        if !flag("--no-start")
+            && let Ok(exe) = exe
+        {
+            let _ = std::process::Command::new(exe).spawn();
+        }
+        std::process::exit(if installed.is_ok() { 0 } else { 1 });
     }
     if flag("--update") {
         if let Err(e) = update::update_now(&state_dir) {

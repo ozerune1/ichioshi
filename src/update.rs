@@ -4,6 +4,10 @@
 //!
 //! - Linux: the program in the release's tarball is renamed over this one
 //!   (the running copy carries on), and starts once this one has closed.
+//!   Installed from a package (.deb, .rpm, Arch), the release's package of
+//!   that kind is installed by the system's package manager instead, once
+//!   the app has closed (`--install-package`, asking for the password
+//!   through pkexec).
 //! - Windows: a running program can't be replaced, so the new copy, unpacked
 //!   in the state folder, waits for this one to close (`--install-update`),
 //!   copies itself over the app's folder and starts it.
@@ -73,6 +77,52 @@ impl std::fmt::Display for Version {
     }
 }
 
+/// How this copy of Ichioshi was installed: what an update downloads, and
+/// how it's put in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Install {
+    /// Unpacked by hand (Linux tarball), the app's folder (Windows), the
+    /// phone's app.
+    Plain,
+    /// By a Linux package, which says so in `share/ichioshi/package` beside
+    /// the program's `bin` (`/usr/share/ichioshi/package`).
+    Deb,
+    Rpm,
+    Pacman,
+}
+
+impl Install {
+    pub fn is_package(self) -> bool {
+        self != Self::Plain
+    }
+}
+
+/// How the program at `exe` was installed.
+pub fn installed_by(exe: &Path) -> Install {
+    let marker = exe
+        .parent()
+        .and_then(Path::parent)
+        .map(|prefix| prefix.join("share").join("ichioshi").join("package"));
+    let said = marker.and_then(|m| std::fs::read_to_string(m).ok());
+    match said.as_deref().map(str::trim) {
+        Some("deb") => Install::Deb,
+        Some("rpm") => Install::Rpm,
+        Some("pacman") => Install::Pacman,
+        _ => Install::Plain,
+    }
+}
+
+/// How this copy was installed.
+pub fn this_install() -> Install {
+    static THIS: std::sync::LazyLock<Install> = std::sync::LazyLock::new(|| {
+        if !cfg!(target_os = "linux") {
+            return Install::Plain;
+        }
+        std::env::current_exe().map_or(Install::Plain, |exe| installed_by(&exe))
+    });
+    *THIS
+}
+
 /// The release's file for this system, by name (none: no download for it).
 pub fn asset_name() -> Option<&'static str> {
     if cfg!(all(target_os = "android", target_arch = "aarch64")) {
@@ -80,7 +130,12 @@ pub fn asset_name() -> Option<&'static str> {
     } else if cfg!(all(target_os = "android", target_arch = "x86_64")) {
         Some("Ichioshi-android-x86_64.apk")
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("Ichioshi-linux-x86_64.tar.gz")
+        Some(match this_install() {
+            Install::Plain => "Ichioshi-linux-x86_64.tar.gz",
+            Install::Deb => "Ichioshi-linux-x86_64.deb",
+            Install::Rpm => "Ichioshi-linux-x86_64.rpm",
+            Install::Pacman => "Ichioshi-linux-x86_64.pkg.tar.zst",
+        })
     } else if cfg!(all(windows, target_arch = "x86_64")) {
         Some("Ichioshi-windows-x86_64.zip")
     } else {
@@ -381,8 +436,15 @@ pub const FAILED: &str = "failed.txt";
 pub static AFTER_EXIT: Mutex<Option<std::process::Command>> = Mutex::new(None);
 
 /// Put the update unpacked in `unpacked` in place of `exe` (this program),
-/// and say what starts it once the app has closed.
+/// and say what starts it once the app has closed. (Installed by a
+/// package, `unpacked` is the package, which is installed once the app has
+/// closed: `--install-package`.)
 pub fn install(unpacked: &Path, exe: &Path) -> Result<std::process::Command> {
+    if installed_by(exe).is_package() {
+        let mut c = std::process::Command::new(exe);
+        c.arg("--install-package").arg(unpacked);
+        return Ok(c);
+    }
     let new = program_in(unpacked);
     if !new.is_file() {
         bail!(
@@ -466,6 +528,73 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The command that installs the package `file` (a .deb, .rpm or Arch
+/// package, by `kind`) with the system's package manager, through pkexec
+/// (which asks for the password) unless this is root already.
+pub fn package_command(kind: Install, file: &Path, root: bool) -> Result<std::process::Command> {
+    let on_path = |name: &str| {
+        std::env::var_os("PATH")
+            .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+    };
+    let (program, args): (&str, &[&str]) = match kind {
+        Install::Deb if on_path("apt-get") => ("apt-get", &["install", "-y"]),
+        Install::Deb => ("dpkg", &["-i"]),
+        Install::Rpm if on_path("dnf") => ("dnf", &["install", "-y"]),
+        Install::Rpm if on_path("zypper") => (
+            "zypper",
+            &["--non-interactive", "install", "--allow-unsigned-rpm"],
+        ),
+        Install::Rpm => ("rpm", &["-U"]),
+        Install::Pacman => ("pacman", &["-U", "--noconfirm"]),
+        Install::Plain => bail!("Ichioshi wasn't installed by a package"),
+    };
+    let mut c = if root {
+        std::process::Command::new(program)
+    } else {
+        if !on_path("pkexec") {
+            bail!(
+                "installing needs pkexec (polkit), which isn't here: install {} with your package manager",
+                file.display()
+            );
+        }
+        let mut c = std::process::Command::new("pkexec");
+        c.arg(program);
+        c
+    };
+    c.args(args).arg(file);
+    if kind == Install::Deb {
+        c.env("DEBIAN_FRONTEND", "noninteractive");
+    }
+    Ok(c)
+}
+
+/// Whether this runs as root.
+#[cfg(unix)]
+fn is_root() -> bool {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_root() -> bool {
+    false
+}
+
+/// `--install-package <file>`, run once the app has closed: install the
+/// update's package with the package manager.
+pub fn install_package(file: &Path) -> Result<()> {
+    let file = std::path::absolute(file)?;
+    let status = package_command(this_install(), &file, is_root())?
+        .status()
+        .context("couldn't start the package manager")?;
+    match status.code() {
+        Some(0) => Ok(()),
+        // pkexec: the password dialog was dismissed, or not allowed.
+        Some(126 | 127) if !is_root() => bail!("it wasn't allowed (the password was cancelled)"),
+        _ => bail!("the package manager failed ({status})"),
+    }
+}
+
 /// Remove what's left of updates to this version or older.
 pub fn tidy(updates: &Path) {
     let Ok(entries) = std::fs::read_dir(updates) else {
@@ -507,6 +636,11 @@ pub fn update_now(state_dir: &Path) -> Result<()> {
         &AtomicBool::new(false),
         |_, _| {},
     ))?;
+    if this_install().is_package() {
+        install_package(&file)?;
+        println!("Installed {}.", release.name);
+        return Ok(());
+    }
     let unpacked = dir.join("unpacked");
     unpack(&file, &unpacked)?;
     let exe = std::env::current_exe()?;
@@ -593,6 +727,48 @@ mod tests {
         let r = parse_release(&serde_json::json!({"tag_name": "0.3"}), None).unwrap();
         assert_eq!(r.name, "Ichioshi 0.3.0");
         assert_eq!(r.page, releases_page());
+    }
+
+    /// A package says it installed the program; its updates are packages
+    /// too, installed by the package manager once the app has closed.
+    #[test]
+    fn packages_are_updated_by_the_package_manager() {
+        let dir = temp("package");
+        let exe = dir.join("usr").join("bin").join("ichioshi");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        assert_eq!(installed_by(&exe), Install::Plain);
+        let marker = dir.join("usr").join("share").join("ichioshi");
+        std::fs::create_dir_all(&marker).unwrap();
+        for (said, kind) in [
+            ("deb\n", Install::Deb),
+            ("rpm", Install::Rpm),
+            ("pacman", Install::Pacman),
+            ("snap", Install::Plain),
+        ] {
+            std::fs::write(marker.join("package"), said).unwrap();
+            assert_eq!(installed_by(&exe), kind, "{said}");
+        }
+        std::fs::write(marker.join("package"), "pacman").unwrap();
+        let file = dir.join("Ichioshi-linux-x86_64.pkg.tar.zst");
+        let after = install(&file, &exe).unwrap();
+        assert_eq!(after.get_program(), exe.as_os_str());
+        let args: Vec<_> = after.get_args().collect();
+        assert_eq!(
+            args,
+            [std::ffi::OsStr::new("--install-package"), file.as_os_str()]
+        );
+
+        let c = package_command(Install::Pacman, &file, true).unwrap();
+        assert_eq!(c.get_program(), "pacman");
+        let args: Vec<_> = c.get_args().collect();
+        assert_eq!(args[..2], ["-U", "--noconfirm"]);
+        assert_eq!(args[2], file.as_os_str());
+        assert!(package_command(Install::Plain, &file, true).is_err());
+        // Not root: the password is asked for (pkexec), if it's there.
+        if let Ok(c) = package_command(Install::Pacman, &file, false) {
+            assert_eq!(c.get_program(), "pkexec");
+            assert_eq!(c.get_args().next().unwrap(), "pacman");
+        }
     }
 
     fn tarball(path: &Path, files: &[(&str, &[u8], u32)]) {

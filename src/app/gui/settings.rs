@@ -924,7 +924,12 @@ impl Gui {
             U::Ready { release, .. } => c.push(whats_new(release)).push(
                 row![
                     primary("Restart to update", Some(up(A::Install))),
-                    weak("Downloaded and checked; Ichioshi closes and opens again."),
+                    weak(if crate::update::this_install().is_package() {
+                        "Downloaded and checked; Ichioshi closes, your system asks for \
+                         your password to install it, and Ichioshi opens again."
+                    } else {
+                        "Downloaded and checked; Ichioshi closes and opens again."
+                    }),
                 ]
                 .spacing(12)
                 .align_y(Alignment::Center),

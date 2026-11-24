@@ -24,8 +24,8 @@ pub(crate) enum Status {
         have: Arc<AtomicU64>,
         cancel: Arc<AtomicBool>,
     },
-    /// Downloaded and checked: the APK (phone), or what's unpacked from the
-    /// archive (desktop).
+    /// Downloaded and checked: the APK (phone) or Linux package, or what's
+    /// unpacked from the archive (desktop).
     Ready {
         release: Release,
         path: PathBuf,
@@ -190,7 +190,8 @@ impl App {
                     ctx.request_repaint();
                 };
                 let file = update::download(&http, &asset, &dir, &cancel, progress).await?;
-                if cfg!(target_os = "android") {
+                // The phone's APK, or a Linux package: as it is.
+                if cfg!(target_os = "android") || update::this_install().is_package() {
                     return Ok(file);
                 }
                 // The desktop's archive, unpacked to put in place.
