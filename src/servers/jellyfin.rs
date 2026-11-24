@@ -689,18 +689,41 @@ impl crate::mkv::ReadAt for Ranges<'_> {
     async fn read_at(&self, at: u64, len: u64) -> Result<Vec<u8>> {
         let range = format!("bytes={at}-{}", at + len.max(1) - 1);
         let j = self.jellyfin;
-        let resp = j
-            .send(
-                j.client
-                    .get(&self.url)
-                    .header(reqwest::header::RANGE, range),
-            )
-            .await?;
-        // Never the whole file, whatever happens.
-        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-            bail!("Jellyfin doesn't send parts of files");
+        // A busy server now and then drops one of these or answers 5xx, and
+        // then the lines would come out in Jellyfin's fonts: so up to three
+        // tries.
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let sent = j
+                .client
+                .get(&self.url)
+                .header("Authorization", j.authorization())
+                .header(reqwest::header::RANGE, &range)
+                .send()
+                .await;
+            let failed = match sent {
+                Ok(resp) if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT => {
+                    match resp.bytes().await {
+                        Ok(bytes) => return Ok(bytes.to_vec()),
+                        Err(e) => super::failed(e, "Jellyfin"),
+                    }
+                }
+                Ok(resp) if resp.status().is_server_error() => {
+                    anyhow::anyhow!("Jellyfin answered HTTP {}", resp.status())
+                }
+                // Never the whole file, whatever happens.
+                Ok(resp) => bail!(
+                    "Jellyfin answered HTTP {} for part of a file",
+                    resp.status()
+                ),
+                Err(e) => super::failed(e, "Jellyfin"),
+            };
+            if tries == 3 {
+                return Err(failed);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250 * tries)).await;
         }
-        Ok(resp.bytes().await?.to_vec())
     }
 }
 
@@ -883,6 +906,35 @@ mod tests {
             String::from_utf8_lossy(&t.events[1].data),
             "1,1,Sign,Board,10,10,20,,Shop"
         );
+    }
+
+    /// Part of a file: asked again after a 5xx, never taken whole.
+    #[test]
+    fn reads_parts_of_files_through_a_busy_server() {
+        use crate::mkv::ReadAt;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let calls = Arc::new(Mutex::new(0));
+        let n = calls.clone();
+        let base = rt.block_on(mock(move |req| {
+            *n.lock().unwrap() += 1;
+            assert!(req.headers["authorization"].contains("Token=\"tok\""));
+            match req.headers.get("range").map(String::as_str) {
+                Some("bytes=2-5") if *n.lock().unwrap() == 1 => {
+                    crate::mock_http::Resp::html(503, "busy")
+                }
+                Some("bytes=2-5") => crate::mock_http::Resp::binary(206, b"cdef".to_vec()),
+                _ => crate::mock_http::Resp::binary(200, b"abcdefgh".to_vec()),
+            }
+        }));
+        let j = Jellyfin::new(&account(&base), &reqwest::Client::new());
+        let file = Ranges {
+            jellyfin: &j,
+            url: format!("{base}/Videos/e1/stream"),
+        };
+        assert_eq!(rt.block_on(file.read_at(2, 4)).unwrap(), b"cdef");
+        assert_eq!(*calls.lock().unwrap(), 2);
+        assert!(rt.block_on(file.read_at(0, 1)).is_err());
+        assert_eq!(*calls.lock().unwrap(), 3);
     }
 
     const ASS: &str = "\u{feff}[Script Info]\r\nScriptType: v4.00+\r\n\r\n[V4+ Styles]\r\n\
