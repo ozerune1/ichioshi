@@ -1238,6 +1238,7 @@ fn pgs_matches_mpv() {
     }
     let _ = pipeline.set_state(gst::State::Null);
     let _ = mpv.kill();
+    let _ = mpv.wait();
     for (d, t, a, b) in &worst {
         let mut img = image::GrayImage::new(w * 2 + 8, h);
         for (i, (&pa, &pb)) in a.iter().zip(b).enumerate() {
