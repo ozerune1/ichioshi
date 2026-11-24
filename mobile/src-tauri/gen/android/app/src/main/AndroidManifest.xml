@@ -30,7 +30,7 @@
             android:name=".PlayerActivity"
             android:exported="false"
             android:screenOrientation="sensorLandscape"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:configChanges="orientation|keyboardHidden|keyboard|navigation|touchscreen|screenSize|smallestScreenSize|screenLayout|uiMode|density|fontScale|fontWeightAdjustment|locale|layoutDirection|colorMode"
             android:theme="@style/Theme.ichioshi_mobile" />
 
         <provider
