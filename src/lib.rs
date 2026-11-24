@@ -108,8 +108,14 @@ fn use_bundled_gstreamer(state_dir: &std::path::Path) {
         if gio.is_dir() {
             std::env::set_var("GIO_MODULE_DIR", gio);
         }
-        let fonts = dir.join("etc").join("fonts");
-        if fonts.is_dir() {
+        // (macOS: in the bundle's Resources, beside Frameworks.)
+        let fonts = [
+            dir.join("etc").join("fonts"),
+            dir.join("../../Resources/fonts"),
+        ]
+        .into_iter()
+        .find(|f| f.is_dir());
+        if let Some(fonts) = fonts {
             std::env::set_var("FONTCONFIG_PATH", fonts);
         }
     }

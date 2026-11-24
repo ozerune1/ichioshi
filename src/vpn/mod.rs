@@ -999,7 +999,12 @@ pub(crate) mod tests {
         let (gateway, count) = natpmp::tests::gateway(36_000, 0).await;
         let probe = Arc::new(FakeProbe::default());
         // Loopback stands in for the tunnel, so the local gateway is reachable through it.
-        let mut lo = iface("lo", 1, [127, 0, 0, 1], false);
+        let loopback = if cfg!(target_os = "macos") {
+            "lo0"
+        } else {
+            "lo"
+        };
+        let mut lo = iface(loopback, 1, [127, 0, 0, 1], false);
         lo.loopback = false;
         lo.tunnel = true;
         *probe.interfaces.lock().unwrap() = vec![lo];
@@ -1015,7 +1020,7 @@ pub(crate) mod tests {
         assert_eq!(
             s.network().unwrap(),
             Network {
-                interface: Some("lo".into()),
+                interface: Some(loopback.into()),
                 index: 1,
                 port: Some(36_000),
                 offline: false

@@ -941,7 +941,7 @@ mod tests {
     }
 
     /// Linux: the new program is renamed over the old, and it's what starts.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn installs_over_the_program() {
         let dir = temp("install");

@@ -120,10 +120,12 @@ def main():
             found = in_framework(name, gst, rel)
             if found and found != rel:
                 todo.append(found)
-    # Fonts' settings, for libass's fontconfig.
+    # Fonts' settings, for libass's fontconfig: in Resources, as everything
+    # in Frameworks has to be code (signed).
     fonts = os.path.join(gst, "etc", "fonts")
     if os.path.isdir(fonts):
-        shutil.copytree(fonts, os.path.join(out, "etc", "fonts"), symlinks=False, dirs_exist_ok=True)
+        shutil.copytree(fonts, os.path.join(app, "Contents", "Resources", "fonts"),
+                        symlinks=False, dirs_exist_ok=True)
 
     # The program (and anything else) loads GStreamer through the bundle.
     for path in [program] + [os.path.join(out, r) for r in sorted(copied)]:
