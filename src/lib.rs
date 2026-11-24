@@ -63,21 +63,30 @@ use tracing_subscriber::EnvFilter;
 #[cfg(all(feature = "gui", target_os = "android"))]
 mod android;
 
-/// Where GStreamer's plugins are when the app is bundled with them
-/// (Windows): `lib/gstreamer-1.0` and its plugin scanner next to the
-/// executable; its plugin cache goes in the app's own folder.
+/// Where GStreamer's plugins are when the app is bundled with them:
+/// `lib/gstreamer-1.0` and its plugin scanner next to the executable
+/// (Windows), or in the app bundle's Contents/Frameworks/GStreamer (macOS:
+/// the parts of GStreamer.framework's Versions/1.0 it uses); its plugin
+/// cache goes in the app's own folder.
 #[cfg(all(feature = "gui", not(target_os = "android")))]
 fn use_bundled_gstreamer(state_dir: &std::path::Path) {
-    let Some(dir) = std::env::current_exe()
+    let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
     else {
         return;
     };
-    let plugins = dir.join("lib").join("gstreamer-1.0");
-    if !plugins.is_dir() {
+    let framework = exe_dir
+        .parent()
+        .map(|contents| contents.join("Frameworks").join("GStreamer"));
+    let Some(dir) = [Some(exe_dir), framework]
+        .into_iter()
+        .flatten()
+        .find(|d| d.join("lib").join("gstreamer-1.0").is_dir())
+    else {
         return;
-    }
+    };
+    let plugins = dir.join("lib").join("gstreamer-1.0");
     // SAFETY: still single-threaded: nothing else reads the environment yet.
     unsafe {
         std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins);
@@ -85,7 +94,11 @@ fn use_bundled_gstreamer(state_dir: &std::path::Path) {
         let scanner = dir
             .join("libexec")
             .join("gstreamer-1.0")
-            .join("gst-plugin-scanner.exe");
+            .join(if cfg!(windows) {
+                "gst-plugin-scanner.exe"
+            } else {
+                "gst-plugin-scanner"
+            });
         if scanner.is_file() {
             std::env::set_var("GST_PLUGIN_SCANNER_1_0", scanner);
         }
@@ -102,11 +115,18 @@ fn use_bundled_gstreamer(state_dir: &std::path::Path) {
     }
 }
 
-/// Play a video to its end through playbin, showing and sounding nothing.
+/// Play a video (a file, or an http:// or https:// address, as streams
+/// from a server play) to its end through playbin, showing and sounding
+/// nothing.
 #[cfg(all(feature = "gui", not(target_os = "android")))]
 fn play_through(video: &std::path::Path) -> Result<(), String> {
     use gstreamer::prelude::*;
-    let uri = gst_video::file_uri(video).map_err(|e| e.to_string())?;
+    let named = video.to_string_lossy();
+    let uri = if named.starts_with("http://") || named.starts_with("https://") {
+        named.into_owned()
+    } else {
+        gst_video::file_uri(video).map_err(|e| e.to_string())?
+    };
     let sink = |name| {
         gstreamer::ElementFactory::make("fakesink")
             .property("sync", false)
@@ -141,7 +161,8 @@ fn play_through(video: &std::path::Path) -> Result<(), String> {
 
 /// `--self-test <file> [video]`: whether what playing needs is there (GStreamer,
 /// its plugins, libass), written to the file; for checking a build where
-/// no window can open (Windows builds, under Wine).
+/// no window can open (Windows builds, under Wine). The video may be an
+/// http:// address, as streams from a server are.
 #[cfg(all(feature = "gui", not(target_os = "android")))]
 fn self_test(out: &std::path::Path, video: Option<&std::path::Path>) -> bool {
     let mut lines = Vec::new();
@@ -169,6 +190,8 @@ fn self_test(out: &std::path::Path, video: Option<&std::path::Path>) -> bool {
         "audioconvert",
         "audioresample",
         "autoaudiosink",
+        // Draws image subtitles (PGS, VobSub).
+        "dvdspu",
     ] {
         let found = gstreamer::ElementFactory::find(element).is_some();
         ok &= found;
@@ -286,7 +309,12 @@ pub fn desktop_main() {
             std::process::exit(2);
         };
         let start = !flag("--no-start");
-        if let Err(e) = update::finish_install(folder, start) {
+        let pid = args
+            .iter()
+            .position(|a| a == "--wait-pid")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|p| p.parse().ok());
+        if let Err(e) = update::finish_install(folder, start, pid) {
             // The app says why when it next starts.
             let why = format!("{e:#}");
             eprintln!("{why}");

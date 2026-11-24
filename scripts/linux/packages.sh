@@ -53,7 +53,7 @@ Version: $version
 Architecture: amd64
 Maintainer: Ichioshi <https://github.com/ozerune1/ichioshi/issues>
 Installed-Size: $(du -sk "$work/deb/usr" | cut -f1)
-Depends: libc6 (>= 2.35), gstreamer1.0-plugins-base (>= 1.20), gstreamer1.0-plugins-good, gstreamer1.0-libav, libass9, libsoup-3.0-0, glib-networking, libxkbcommon0
+Depends: libc6 (>= 2.35), gstreamer1.0-plugins-base (>= 1.20), gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, libass9, libsoup-3.0-0, glib-networking, libxkbcommon0
 Recommends: gstreamer1.0-pulseaudio | gstreamer1.0-pipewire, libvulkan1, mesa-vulkan-drivers, libegl1
 Section: video
 Priority: optional
@@ -78,7 +78,7 @@ Summary: $summary
 License: LicenseRef-Unspecified
 URL: https://github.com/ozerune1/ichioshi
 BuildArch: x86_64
-Requires: gstreamer1-plugins-base >= 1.20, gstreamer1-plugins-good, (gstreamer1-libav or gstreamer1-plugin-libav), libass, libsoup3, glib-networking, libxkbcommon
+Requires: gstreamer1-plugins-base >= 1.20, gstreamer1-plugins-good, gstreamer1-plugins-bad-free, (gstreamer1-libav or gstreamer1-plugin-libav), libass, libsoup3, glib-networking, libxkbcommon
 Recommends: gstreamer1-plugin-openh264, vulkan-loader, mesa-vulkan-drivers
 
 %description
@@ -108,7 +108,7 @@ pkgdesc="$summary"
 arch=(x86_64)
 url="https://github.com/ozerune1/ichioshi"
 license=(LicenseRef-Unspecified)
-depends=(glibc gstreamer gst-plugins-base gst-plugins-good gst-libav libass libsoup3 glib-networking libxkbcommon)
+depends=(glibc gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav libass libsoup3 glib-networking libxkbcommon)
 optdepends=('vulkan-icd-loader: drawing with the GPU')
 options=(!strip !debug)
 package() {

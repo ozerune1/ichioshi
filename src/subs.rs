@@ -63,9 +63,38 @@ fn api() -> Result<&'static Api> {
     static API: OnceLock<Result<Api, String>> = OnceLock::new();
     API.get_or_init(|| {
         let mut last = String::new();
-        for name in ["libass.so.9", "libass.so", "libass-9.dll", "libass.9.dylib"] {
+        let mut names: Vec<std::ffi::OsString> =
+            ["libass.so.9", "libass.so", "libass-9.dll", "libass.9.dylib"]
+                .into_iter()
+                .map(Into::into)
+                .collect();
+        // macOS: in the app bundle's GStreamer, else GStreamer.framework's
+        // or Homebrew's (a bare name isn't looked for there).
+        if cfg!(target_os = "macos") {
+            let bundled = std::env::current_exe().ok().and_then(|e| {
+                Some(
+                    e.parent()?
+                        .parent()?
+                        .join("Frameworks/GStreamer/lib/libass.9.dylib"),
+                )
+            });
+            names.splice(
+                0..0,
+                bundled.into_iter().map(Into::into).chain(
+                    [
+                        "/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/libass.9.dylib",
+                        "/opt/homebrew/lib/libass.9.dylib",
+                        "/usr/local/lib/libass.9.dylib",
+                    ]
+                    .into_iter()
+                    .map(Into::into),
+                ),
+            );
+        }
+        for name in &names {
+            let name = name.to_string_lossy();
             // SAFETY: loading libass runs its initializers only.
-            match unsafe { Library::new(name) } {
+            match unsafe { Library::new(&*name) } {
                 Ok(lib) => return bind(lib).map_err(|e| format!("{name}: {e}")),
                 Err(e) => last = e.to_string(),
             }

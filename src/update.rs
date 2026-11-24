@@ -136,6 +136,8 @@ pub fn asset_name() -> Option<&'static str> {
             Install::Rpm => "Ichioshi-linux-x86_64.rpm",
             Install::Pacman => "Ichioshi-linux-x86_64.pkg.tar.zst",
         })
+    } else if cfg!(target_os = "macos") {
+        Some("Ichioshi-macos-universal.tar.gz")
     } else if cfg!(all(windows, target_arch = "x86_64")) {
         Some("Ichioshi-windows-x86_64.zip")
     } else {
@@ -403,13 +405,26 @@ pub fn unpack(archive: &Path, into: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The program in an unpacked release.
+/// The program in an unpacked release, or in the app's folder (macOS:
+/// the app bundle, Ichioshi.app).
 pub fn program_in(dir: &Path) -> PathBuf {
-    dir.join(if cfg!(windows) {
-        "Ichioshi.exe"
+    if cfg!(target_os = "macos") {
+        dir.join("Contents").join("MacOS").join("ichioshi")
+    } else if cfg!(windows) {
+        dir.join("Ichioshi.exe")
     } else {
-        "ichioshi"
-    })
+        dir.join("ichioshi")
+    }
+}
+
+/// The app's folder, for the program at `exe`: the folder it's in, or
+/// (macOS) the app bundle it's in.
+pub fn app_folder(exe: &Path) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        exe.ancestors().nth(3).map(Path::to_path_buf)
+    } else {
+        exe.parent().map(Path::to_path_buf)
+    }
 }
 
 /// Whether files can be written in `dir` (where the update goes).
@@ -452,12 +467,15 @@ pub fn install(unpacked: &Path, exe: &Path) -> Result<std::process::Command> {
             new.file_name().unwrap_or_default().to_string_lossy()
         );
     }
-    let dir = exe.parent().context("the program isn't in a folder")?;
-    writable(dir)?;
-    if cfg!(windows) {
+    let dir = app_folder(exe).context("the program isn't in a folder")?;
+    writable(&dir)?;
+    if cfg!(any(windows, target_os = "macos")) {
         // The new copy installs itself once this one has closed.
         let mut c = std::process::Command::new(&new);
-        c.arg("--install-update").arg(dir);
+        c.arg("--install-update")
+            .arg(&dir)
+            .arg("--wait-pid")
+            .arg(std::process::id().to_string());
         Ok(c)
     } else {
         // Renamed over the program: the running app keeps its own copy.
@@ -469,36 +487,68 @@ pub fn install(unpacked: &Path, exe: &Path) -> Result<std::process::Command> {
     }
 }
 
-/// `--install-update <folder>`, run from an unpacked update: wait for the
-/// app in `folder` to close, copy this one over it, and (if `start`) start
-/// it. Nothing is copied if the app doesn't close within a minute.
-pub fn finish_install(folder: &Path, start: bool) -> Result<()> {
-    let here = std::env::current_exe()?
-        .parent()
-        .context("the update isn't in a folder")?
-        .to_owned();
+/// `--install-update <folder> [--wait-pid <pid>]`, run from an unpacked
+/// update: wait for the app in `folder` (process `pid`) to close, put this
+/// one in its place, and (if `start`) start it. Nothing is changed if the
+/// app doesn't close within a minute.
+pub fn finish_install(folder: &Path, start: bool, pid: Option<u32>) -> Result<()> {
+    let here = app_folder(&std::env::current_exe()?).context("the update isn't in a folder")?;
     let exe = program_in(folder);
-    // A running program can't be opened to write.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        match std::fs::OpenOptions::new().write(true).open(&exe) {
-            Ok(_) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-            Err(_) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(250));
+        // Windows: a running program can't be opened to write.
+        let open = match std::fs::OpenOptions::new().write(true).open(&exe) {
+            Err(e) if cfg!(windows) && e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+        if open.is_ok() && !pid.is_some_and(running) {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("Ichioshi didn't close");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    if cfg!(target_os = "macos") {
+        // The bundle as the update has it, nothing left over (its seal
+        // covers every file).
+        for entry in std::fs::read_dir(folder)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)?;
+            } else {
+                std::fs::remove_file(&path)?;
             }
-            Err(e) => return Err(e).context("Ichioshi didn't close"),
         }
     }
     copy_tree(&here, folder)?;
     note_installed_version(folder);
     if start {
-        std::process::Command::new(&exe)
-            .current_dir(folder)
+        let mut c = if cfg!(target_os = "macos") {
+            let mut c = std::process::Command::new("open");
+            c.arg(folder);
+            c
+        } else {
+            std::process::Command::new(&exe)
+        };
+        c.current_dir(folder)
             .spawn()
             .with_context(|| format!("couldn't start {}", exe.display()))?;
     }
     Ok(())
+}
+
+/// Whether process `pid` is still running.
+#[cfg(unix)]
+fn running(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process is there.
+    i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) } == 0)
+}
+
+#[cfg(not(unix))]
+fn running(_: u32) -> bool {
+    // (Windows waits for the program's file to be free instead.)
+    false
 }
 
 /// Installed by the installer (installer/), the app's entry in Settings ›
@@ -678,7 +728,7 @@ pub fn update_now(state_dir: &Path) -> Result<()> {
     unpack(&file, &unpacked)?;
     let exe = std::env::current_exe()?;
     let mut then = install(&unpacked, &exe)?;
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "macos")) {
         // It finishes once this has closed; nothing starts after it.
         then.arg("--no-start").spawn()?;
         println!("Installing {} once this closes.", release.name);
