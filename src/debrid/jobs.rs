@@ -606,9 +606,14 @@ impl Manager {
         self.save(&entries);
     }
 
-    fn set_phase(&self, live: &Mutex<Live>, phase: Phase) {
+    /// Show `phase`, unless this run has been stopped (paused, retried or
+    /// removed): a reply still on its way then mustn't undo "Paused".
+    fn set_phase(&self, live: &Mutex<Live>, cancel: &AtomicBool, phase: Phase) {
         let changed = {
             let mut l = live.lock().unwrap();
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
             let changed = l.phase != phase;
             l.phase = phase;
             changed
@@ -689,7 +694,7 @@ impl Manager {
         let remote_id = match &job.remote_id {
             Some(r) => r.clone(),
             None => {
-                self.set_phase(live, Phase::Adding);
+                self.set_phase(live, cancel, Phase::Adding);
                 let r = client
                     .add(torrent, &job.name)
                     .await
@@ -748,6 +753,7 @@ impl Manager {
                 } => {
                     self.set_phase(
                         live,
+                        cancel,
                         Phase::Remote {
                             status: status.clone(),
                             progress: *progress,
@@ -788,7 +794,7 @@ impl Manager {
             }
         }
 
-        self.set_phase(live, Phase::Downloading);
+        self.set_phase(live, cancel, Phase::Downloading);
         live.lock().unwrap().note = None;
         for ((i, file), r) in missing.iter().zip(matched) {
             let remote_file = &remote.files[r.expect("checked above")];
