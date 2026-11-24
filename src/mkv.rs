@@ -970,7 +970,6 @@ pub fn text_subtitles(path: &Path) -> Result<TextSubtitles> {
     Ok(out)
 }
 
-/// The readable text of one subtitle event, without styling.
 /// Part of a file, as read over HTTP.
 pub trait ReadAt {
     /// `len` bytes from `at` (fewer at the end).
@@ -984,11 +983,9 @@ async fn header_at(src: &(impl ReadAt + Sync), at: u64) -> Result<Header> {
 /// The text subtitle tracks' headers (an ASS track's styles) as a Matroska
 /// file has them, by track position (0-based, as ffprobe and Jellyfin
 /// number streams), read from the start of the file a piece at a time: for
-/// a file read over HTTP, a few small requests.
+/// a file read over HTTP, a few small requests. A file that keeps its track
+/// list after the video says where in a SeekHead, as players find it.
 pub async fn subtitle_headers(src: &(impl ReadAt + Sync)) -> Result<HashMap<u64, Vec<u8>>> {
-    const CODEC_PRIVATE: u32 = 0x63A2;
-    const CONTENT_ENCODING: u32 = 0x6240;
-    const CONTENT_ENCODING_SCOPE: u32 = 0x5032;
     let ebml = header_at(src, 0).await?;
     if ebml.id != EBML {
         bail!("not a Matroska file");
@@ -998,56 +995,114 @@ pub async fn subtitle_headers(src: &(impl ReadAt + Sync)) -> Result<HashMap<u64,
     if segment.id != SEGMENT {
         bail!("no Matroska segment");
     }
+    // SeekHead positions count from here.
+    let start = segment_at + segment.len as u64;
     // The segment's top-level elements, one header at a time, to Tracks.
-    let mut at = segment_at + segment.len as u64;
+    // SeekHeads on the way are noted, and read only if Tracks isn't there.
+    let mut seek_heads = Vec::new();
+    let mut tracks = None;
+    let mut at = start;
     for _ in 0..64 {
+        let h = header_at(src, at).await?;
+        match (h.id, h.size) {
+            (TRACKS, _) => {
+                tracks = Some(at);
+                break;
+            }
+            (CLUSTER, _) | (_, None) => break,
+            (id, Some(size)) => {
+                if id == SEEK_HEAD {
+                    seek_heads.push(at);
+                }
+                at += h.len as u64 + size;
+            }
+        }
+    }
+    // A SeekHead may point at another (often at the end of the file).
+    let mut read = 0;
+    while tracks.is_none()
+        && read < 4
+        && let Some(at) = seek_heads.pop()
+    {
+        read += 1;
         let h = header_at(src, at).await?;
         let size = h
             .size
-            .context("an element of unknown size before the tracks")?;
-        match h.id {
-            TRACKS if size <= 16 << 20 => {
-                let data = src.read_at(at + h.len as u64, size).await?;
-                let mut out = HashMap::new();
-                let entries = children(&data).into_iter().filter(|e| e.id == TRACK_ENTRY);
-                for (i, entry) in entries.enumerate() {
-                    let info = parse_track(entry.data);
-                    if !info.codec_id.starts_with("S_TEXT/")
-                        && !matches!(info.codec_id.as_str(), "S_ASS" | "S_SSA")
-                    {
-                        continue;
-                    }
-                    let parts = children(entry.data);
-                    // A header stored compressed (scope bit 2) is rare: left out.
-                    let compressed = parts
-                        .iter()
-                        .filter(|e| e.id == CONTENT_ENCODINGS)
-                        .flat_map(|e| children(e.data))
-                        .filter(|e| e.id == CONTENT_ENCODING)
-                        .any(|e| {
-                            children(e.data)
-                                .iter()
-                                .find(|s| s.id == CONTENT_ENCODING_SCOPE)
-                                .map_or(1, |s| uint(s.data))
-                                & 2
-                                != 0
-                        });
-                    if let Some(p) = parts.iter().find(|e| e.id == CODEC_PRIVATE)
-                        && !compressed
-                    {
-                        out.insert(i as u64, p.data.to_vec());
-                    }
-                }
-                return Ok(out);
+            .filter(|&s| h.id == SEEK_HEAD && s <= 1 << 20)
+            .context("a damaged SeekHead")?;
+        for (id, pos) in seek_entries(&src.read_at(at + h.len as u64, size).await?) {
+            match id {
+                TRACKS => tracks = Some(start + pos),
+                SEEK_HEAD if start + pos != at => seek_heads.push(start + pos),
+                _ => {}
             }
-            TRACKS => bail!("the track list is too big"),
-            CLUSTER => bail!("no track list before the video"),
-            _ => at += h.len as u64 + size,
         }
     }
-    bail!("no track list near the start")
+    let at = tracks.context("no track list before the video, and none in a SeekHead")?;
+    let h = header_at(src, at).await?;
+    if h.id != TRACKS {
+        bail!("the SeekHead's track list position is wrong");
+    }
+    let size = h
+        .size
+        .filter(|&s| s <= 16 << 20)
+        .context("the track list is too big")?;
+    Ok(text_headers(&src.read_at(at + h.len as u64, size).await?))
 }
 
+/// A SeekHead's entries: element ID and position from the segment's start.
+fn seek_entries(data: &[u8]) -> Vec<(u32, u64)> {
+    children(data)
+        .iter()
+        .filter(|e| e.id == SEEK)
+        .filter_map(|e| {
+            let parts = children(e.data);
+            let id = parts.iter().find(|p| p.id == SEEK_ID)?;
+            let pos = parts.iter().find(|p| p.id == SEEK_POSITION)?;
+            Some((uint(id.data) as u32, uint(pos.data)))
+        })
+        .collect()
+}
+
+/// The text tracks' CodecPrivate in a track list, by track position.
+fn text_headers(tracks: &[u8]) -> HashMap<u64, Vec<u8>> {
+    const CODEC_PRIVATE: u32 = 0x63A2;
+    const CONTENT_ENCODING: u32 = 0x6240;
+    const CONTENT_ENCODING_SCOPE: u32 = 0x5032;
+    let mut out = HashMap::new();
+    let entries = children(tracks).into_iter().filter(|e| e.id == TRACK_ENTRY);
+    for (i, entry) in entries.enumerate() {
+        let info = parse_track(entry.data);
+        if !info.codec_id.starts_with("S_TEXT/")
+            && !matches!(info.codec_id.as_str(), "S_ASS" | "S_SSA")
+        {
+            continue;
+        }
+        let parts = children(entry.data);
+        // A header stored compressed (scope bit 2) is rare: left out.
+        let compressed = parts
+            .iter()
+            .filter(|e| e.id == CONTENT_ENCODINGS)
+            .flat_map(|e| children(e.data))
+            .filter(|e| e.id == CONTENT_ENCODING)
+            .any(|e| {
+                children(e.data)
+                    .iter()
+                    .find(|s| s.id == CONTENT_ENCODING_SCOPE)
+                    .map_or(1, |s| uint(s.data))
+                    & 2
+                    != 0
+            });
+        if let Some(p) = parts.iter().find(|e| e.id == CODEC_PRIVATE)
+            && !compressed
+        {
+            out.insert(i as u64, p.data.to_vec());
+        }
+    }
+    out
+}
+
+/// The readable text of one subtitle event, without styling.
 fn subtitle_text(codec_id: &str, payload: &[u8]) -> Option<String> {
     static MARKUP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{[^}]*\}|<[^>]*>").unwrap());
     let raw = String::from_utf8_lossy(payload);
@@ -1604,6 +1659,32 @@ pub(crate) mod tests {
             "{:?}",
             src.1
         );
+
+        // A track list after the video: the SeekHead at the start points at
+        // one at the end, which says where the track list is.
+        let info = element(INFO, &uint_element(0x2A_D7B1, 1_000_000));
+        let cluster = element(CLUSTER, &uint_element(TIMESTAMP, 0));
+        let tracks = element(TRACKS, &tracks);
+        let seek = |id: u32, pos: u64| {
+            let mut entry = element(SEEK_ID, &id_bytes(id));
+            entry.extend(uint_element(SEEK_POSITION, pos));
+            element(SEEK_HEAD, &element(SEEK, &entry))
+        };
+        let tracks_at = seek(SEEK_HEAD, 0).len() + info.len() + cluster.len();
+        let tail_at = tracks_at + tracks.len();
+        assert!(tail_at < 256, "positions in one byte keep the sizes put");
+        let mut seg = seek(SEEK_HEAD, tail_at as u64);
+        seg.extend(info);
+        seg.extend(cluster);
+        seg.extend(tracks);
+        seg.extend(seek(TRACKS, tracks_at as u64));
+        let mut file = element(EBML, &element(DOC_TYPE, b"matroska"));
+        file.extend(element(SEGMENT, &seg));
+        let got = subtitle_headers(&Bytes(file, Default::default()))
+            .await
+            .unwrap();
+        assert_eq!(got[&1], b"[Script Info]\nStyle: Signs,Arial,68");
+
         let not_mkv = Bytes(vec![0x30, 0x81, 0], Default::default());
         assert!(subtitle_headers(&not_mkv).await.is_err());
     }
