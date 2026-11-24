@@ -834,3 +834,455 @@ fn draws_one_frame() {
     }
     img.save(std::env::var("SUBS_FRAME_OUT").unwrap()).unwrap();
 }
+
+/// By hand: how far the time the player draws subtitles for is from the
+/// frame on screen, playing `SUBS_CLOCK_FILE` (a local episode) for
+/// `SUBS_CLOCK_SECS` (60) from `SUBS_CLOCK_FROM` (0) seconds, as the player
+/// does: GStreamer through iced_video_player, the subtitles drawn on the
+/// first redraw (60 a second) after a new frame, at the pipeline's
+/// position. Its English ASS track says how often that picks other lines
+/// than the frame's own time would.
+#[test]
+#[ignore = "needs SUBS_CLOCK_FILE"]
+fn subtitle_clock() {
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
+    let Some(file) = std::env::var_os("SUBS_CLOCK_FILE") else {
+        return;
+    };
+    let secs: f64 = std::env::var("SUBS_CLOCK_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60.0);
+    let from: f64 = std::env::var("SUBS_CLOCK_FROM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let path = PathBuf::from(file);
+    let subs = crate::mkv::text_subtitles(&path).unwrap();
+    let info = crate::mkv::probe(&path).unwrap();
+    let english = info
+        .tracks
+        .iter()
+        .find(|t| {
+            t.kind == crate::mkv::TrackKind::Subtitles
+                && t.language.starts_with("en")
+                && subs
+                    .tracks
+                    .get(&t.number)
+                    .is_some_and(|s| s.codec_id == "S_TEXT/ASS")
+        })
+        .expect("an English ASS track");
+    let track = &subs.tracks[&english.number];
+    let uri = crate::gst_video::file_uri(&path).unwrap();
+    let (pipeline, sink) =
+        crate::gst_video::pipeline(&uri, crate::gst_video::Frames::Nv12).unwrap();
+    // Every frame's time as it reaches the sink.
+    let pts: std::sync::Arc<Mutex<Vec<i64>>> = Default::default();
+    let seen = pts.clone();
+    sink.static_pad("sink")
+        .unwrap()
+        .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+            if let Some(b) = info.buffer()
+                && let Some(t) = b.pts()
+            {
+                seen.lock().unwrap().push(t.mseconds() as i64);
+            }
+            gst::PadProbeReturn::Ok
+        });
+    let mut video = iced_video_player::Video::from_gst_pipeline(pipeline, sink, None).unwrap();
+    if from > 0.0 {
+        video
+            .seek(std::time::Duration::from_secs_f64(from), true)
+            .unwrap();
+    }
+    video.set_paused(false);
+    let started = Instant::now();
+    let mut last_frame = None;
+    let mut deltas: Vec<i64> = Vec::new();
+    let (mut drawn, mut other_lines, mut framewise, mut framewise_other) = (0, 0, 0, 0);
+    let active = |t: i64| -> Vec<usize> {
+        (0..track.events.len())
+            .filter(|&i| {
+                let e = &track.events[i];
+                e.start_ms <= t && t < e.start_ms + e.duration_ms
+            })
+            .collect()
+    };
+    while started.elapsed().as_secs_f64() < secs {
+        std::thread::sleep(std::time::Duration::from_micros(16_667));
+        let position = video.position().as_millis() as i64;
+        // The frame on screen: the newest one due by now.
+        let frame = pts
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .filter(|&t| t <= position)
+            .max();
+        let Some(frame) = frame else { continue };
+        if last_frame == Some(frame) {
+            continue;
+        }
+        last_frame = Some(frame);
+        drawn += 1;
+        deltas.push(position - frame);
+        let (at_position, at_frame) = (active(position), active(frame));
+        let short = at_frame
+            .iter()
+            .chain(&at_position)
+            .any(|&i| track.events[i].duration_ms <= 50);
+        if short {
+            framewise += 1;
+        }
+        if at_position != at_frame {
+            other_lines += 1;
+            if short {
+                framewise_other += 1;
+            }
+        }
+    }
+    deltas.sort_unstable();
+    let pct = |p: usize| deltas[(deltas.len() - 1) * p / 100];
+    println!(
+        "{drawn} frames drawn; position past the frame: min {} median {} p90 {} max {} ms; \
+         other lines than the frame's own: {other_lines} ({framewise_other} of {framewise} \
+         frames with frame-by-frame lines)",
+        deltas[0],
+        pct(50),
+        pct(90),
+        deltas[deltas.len() - 1]
+    );
+}
+
+/// By hand: how long the player takes to draw each frame's subtitles,
+/// every frame of `SUBS_COST_FILE` (a local episode's English ASS track)
+/// from `SUBS_COST_FROM` for `SUBS_COST_SECS` seconds, at
+/// `SUBS_COST_SIZE` (1920x1080).
+#[test]
+#[ignore = "needs SUBS_COST_FILE"]
+fn drawing_cost() {
+    let Some(file) = std::env::var_os("SUBS_COST_FILE") else {
+        return;
+    };
+    let num = |k: &str, d: f64| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
+    let (from, secs) = (num("SUBS_COST_FROM", 0.0), num("SUBS_COST_SECS", 60.0));
+    let (w, h) = std::env::var("SUBS_COST_SIZE")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or((1920u32, 1080u32));
+    let path = PathBuf::from(file);
+    let subs = crate::mkv::text_subtitles(&path).unwrap();
+    let info = crate::mkv::probe(&path).unwrap();
+    let number = info
+        .tracks
+        .iter()
+        .find(|t| {
+            t.kind == crate::mkv::TrackKind::Subtitles
+                && t.language.starts_with("en")
+                && subs
+                    .tracks
+                    .get(&t.number)
+                    .is_some_and(|s| s.codec_id == "S_TEXT/ASS")
+        })
+        .expect("an English ASS track")
+        .number;
+    let mut r = Renderer::new(&subs).unwrap();
+    r.set_track(
+        subs.tracks.get(&number),
+        (1920, 1080),
+        crate::subs::VideoMatrix::Bt709,
+    );
+    let mut times = Vec::new();
+    let (first, last) = (
+        frame_at((from * 1000.0) as i64, 24000, 1001),
+        frame_at(((from + secs) * 1000.0) as i64, 24000, 1001),
+    );
+    let mut changed = 0;
+    for k in first..last {
+        let t = pts_ms(k, 24000, 1001);
+        let started = Instant::now();
+        if let Drawn::Image(_) = r.draw(t, (w, h), 0.0) {
+            changed += 1;
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    times.sort_by(f64::total_cmp);
+    let pct = |p: usize| {
+        times
+            .get((times.len().max(1) - 1) * p / 100)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    println!(
+        "{} frames, {changed} new pictures; drawing one: median {:.1} p90 {:.1} p99 {:.1} max {:.1} ms",
+        last - first,
+        pct(50),
+        pct(90),
+        pct(99),
+        times.last().copied().unwrap_or(0.0)
+    );
+}
+
+/// By hand: image subtitles (PGS) as the player shows them (GStreamer draws
+/// those) against mpv. `PGS_FILE=<episode> PGS_TRACK=<stream index>`
+/// `SUBS_CHECK_OUT=<dir>`: a black video with the episode's PGS track and
+/// frames at each display set's first, second, middle and last frame, run
+/// through the player's own pipeline and through mpv; the luma compared.
+#[test]
+#[ignore = "needs PGS_FILE"]
+fn pgs_matches_mpv() {
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
+    use gstreamer_video::prelude::*;
+    let (Some(file), Some(out)) = (
+        std::env::var_os("PGS_FILE"),
+        std::env::var_os("SUBS_CHECK_OUT"),
+    ) else {
+        return;
+    };
+    let file = PathBuf::from(file);
+    let out = PathBuf::from(out);
+    std::fs::create_dir_all(out.join("png")).unwrap();
+    let track: u32 = std::env::var("PGS_TRACK").unwrap().parse().unwrap();
+    let probe = |args: &[&str]| {
+        let o = Command::new("ffprobe")
+            .args(["-v", "error"])
+            .args(args)
+            .arg(&file)
+            .output()
+            .unwrap();
+        String::from_utf8(o.stdout).unwrap()
+    };
+    let size = probe(&[
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0",
+    ]);
+    let (w, h) = size.trim().split_once(',').unwrap();
+    let (w, h): (u32, u32) = (w.parse().unwrap(), h.parse().unwrap());
+    let sets: Vec<i64> = probe(&[
+        "-select_streams",
+        &track.to_string(),
+        "-show_entries",
+        "packet=pts_time",
+        "-of",
+        "csv=p=0",
+    ])
+    .lines()
+    .filter_map(|l| l.trim().parse::<f64>().ok())
+    .map(|s| (s * 1000.0).round() as i64)
+    .collect();
+    let (num, den) = (24000, 1001);
+    let mut ks = BTreeSet::new();
+    for (i, &t) in sets.iter().enumerate() {
+        let first = frame_at(t, num, den);
+        let next = sets
+            .get(i + 1)
+            .map_or(first + 48, |&n| frame_at(n, num, den));
+        ks.extend(
+            [first, first + 1, (first + next) / 2, next - 1]
+                .into_iter()
+                .filter(|&k| k >= first && k < next.max(first + 1)),
+        );
+    }
+    let times: Vec<i64> = ks.into_iter().map(|k| pts_ms(k, num, den)).collect();
+    let work = out.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let black = black(&work, w, h, "bt709").unwrap();
+    let dir = work.join(format!(
+        "pgs-{}",
+        file.file_stem().unwrap().to_string_lossy()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cut = dir.join("cut.264");
+    assert!(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-i"])
+            .arg(&black)
+            .args(["-frames:v", &times.len().to_string(), "-c", "copy"])
+            .arg(&cut)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let ts = dir.join("ts.txt");
+    std::fs::write(
+        &ts,
+        times
+            .iter()
+            .fold(String::from("# timestamp format v2\n"), |s, t| {
+                s + &format!("{t}\n")
+            }),
+    )
+    .unwrap();
+    let video = dir.join("black.mkv");
+    let code = Command::new("mkvmerge")
+        .arg("-q")
+        .arg("-o")
+        .arg(&video)
+        .arg("--timestamps")
+        .arg(format!("0:{}", ts.display()))
+        .arg(&cut)
+        .args([
+            "-D",
+            "-A",
+            "-B",
+            "-M",
+            "-T",
+            "--no-chapters",
+            "--no-global-tags",
+            "-s",
+        ])
+        .arg(track.to_string())
+        .arg(&file)
+        .status()
+        .unwrap()
+        .code();
+    assert!(code.is_some_and(|c| c < 2));
+
+    // mpv's frames.
+    let mut mpv = Command::new("mpv")
+        .args([
+            "--no-config",
+            "--really-quiet",
+            "--no-audio",
+            "--osd-level=0",
+            "--sid=1",
+        ])
+        .arg(&video)
+        .args([
+            "--vf=format=rgb24",
+            "--o=-",
+            "--of=rawvideo",
+            "--ovc=rawvideo",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut theirs = BufReader::with_capacity(1 << 22, mpv.stdout.take().unwrap());
+
+    // The player's: its pipeline, as fast as it goes, every frame kept.
+    let uri = crate::gst_video::file_uri(&video).unwrap();
+    let (pipeline, sink) =
+        crate::gst_video::pipeline(&uri, crate::gst_video::Frames::Nv12).unwrap();
+    sink.set_sync(false);
+    sink.set_drop(false);
+    sink.set_max_buffers(4);
+    crate::gst_video::set_subtitles(&pipeline, Some(0));
+    pipeline.set_state(gst::State::Playing).unwrap();
+    let size = (w * h) as usize;
+    let mut frame = vec![0u8; size * 3];
+    let (mut differ, mut empty_ours, mut empty_mpv, mut n) = (0, 0, 0, 0);
+    let mut worst: Vec<(usize, i64, Vec<u8>, Vec<u8>)> = Vec::new();
+    while let Ok(sample) = sink.pull_sample() {
+        let Some(&t) = times.get(n) else { break };
+        n += 1;
+        let caps = sample.caps().unwrap();
+        let info = gstreamer_video::VideoInfo::from_caps(caps).unwrap();
+        let buffer = sample.buffer().unwrap();
+        let vf = gstreamer_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info).unwrap();
+        let (y, stride) = (vf.plane_data(0).unwrap(), vf.plane_stride()[0] as usize);
+        theirs.read_exact(&mut frame).unwrap();
+        let (gw, gh) = (info.width() as usize, info.height() as usize);
+        assert_eq!((gw, gh), (w as usize, h as usize));
+        let (mut d, mut lit_ours, mut lit_mpv) = (0, 0, 0);
+        let mut ours_y = Vec::with_capacity(size);
+        let mut mpv_y = Vec::with_capacity(size);
+        for row in 0..gh {
+            for col in 0..gw {
+                let a = y[row * stride + col] as i32;
+                let p = &frame[(row * gw + col) * 3..][..3];
+                let b = 16
+                    + ((0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) * 219.0
+                        / 255.0)
+                        .round() as i32;
+                if (a - b).abs() > 24 {
+                    d += 1;
+                }
+                if a > 40 {
+                    lit_ours += 1;
+                }
+                if b > 40 {
+                    lit_mpv += 1;
+                }
+                ours_y.push(a as u8);
+                mpv_y.push(b as u8);
+            }
+        }
+        if d > 200 {
+            differ += 1;
+            if lit_ours < 50 {
+                empty_ours += 1;
+            }
+            if lit_mpv < 50 {
+                empty_mpv += 1;
+            }
+            if worst.len() < 4 || worst.iter().any(|w| w.0 < d) {
+                worst.push((d, t, ours_y, mpv_y));
+                worst.sort_by_key(|w| std::cmp::Reverse(w.0));
+                worst.truncate(4);
+            }
+        }
+    }
+    let _ = pipeline.set_state(gst::State::Null);
+    let _ = mpv.kill();
+    for (d, t, a, b) in &worst {
+        let mut img = image::GrayImage::new(w * 2 + 8, h);
+        for (i, (&pa, &pb)) in a.iter().zip(b).enumerate() {
+            let (x, y) = (i as u32 % w, i as u32 / w);
+            img.put_pixel(x, y, image::Luma([pa]));
+            img.put_pixel(w + 8 + x, y, image::Luma([pb]));
+        }
+        let name = format!(
+            "pgs-{}-{t}ms.png",
+            file.file_stem().unwrap().to_string_lossy()
+        );
+        img.save(out.join("png").join(&name)).unwrap();
+        println!("  {t} ms: {d} pixels differ -> {name}");
+    }
+    println!(
+        "{} display sets, {n} of {} frames compared; {differ} differ ({empty_ours} with nothing \
+         from the player, {empty_mpv} with nothing from mpv)",
+        sets.len(),
+        times.len()
+    );
+}
+
+/// By hand: the player's pipeline plays `PGS_FILE` to the end as fast as it
+/// can with image subtitle stream `PGS_TEXT` (playbin's numbering) shown,
+/// every frame drawn: whether GStreamer's PGS drawing gets through.
+#[test]
+#[ignore = "needs PGS_FILE"]
+fn pgs_plays_through() {
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
+    let Some(file) = std::env::var_os("PGS_FILE") else {
+        return;
+    };
+    let text: usize = std::env::var("PGS_TEXT").unwrap().parse().unwrap();
+    let uri = crate::gst_video::file_uri(Path::new(&file)).unwrap();
+    let (pipeline, sink) =
+        crate::gst_video::pipeline(&uri, crate::gst_video::Frames::Nv12).unwrap();
+    sink.set_sync(false);
+    sink.set_drop(false);
+    crate::gst_video::set_subtitles(&pipeline, Some(text));
+    pipeline.set_state(gst::State::Playing).unwrap();
+    let mut frames = 0;
+    while sink.pull_sample().is_ok() {
+        frames += 1;
+    }
+    let _ = pipeline.set_state(gst::State::Null);
+    println!("{frames} frames played");
+}
