@@ -65,7 +65,7 @@ mod android;
 
 /// Where GStreamer's plugins are when the app is bundled with them:
 /// `lib/gstreamer-1.0` and its plugin scanner next to the executable
-/// (Windows), or in the app bundle's Contents/Frameworks/GStreamer (macOS:
+/// (Windows), or in the app bundle's Contents/Resources/GStreamer (macOS:
 /// the parts of GStreamer.framework's Versions/1.0 it uses); its plugin
 /// cache goes in the app's own folder.
 #[cfg(all(feature = "gui", not(target_os = "android")))]
@@ -78,7 +78,7 @@ fn use_bundled_gstreamer(state_dir: &std::path::Path) {
     };
     let framework = exe_dir
         .parent()
-        .map(|contents| contents.join("Frameworks").join("GStreamer"));
+        .map(|contents| contents.join("Resources").join("GStreamer"));
     let Some(dir) = [Some(exe_dir), framework]
         .into_iter()
         .flatten()
@@ -108,14 +108,8 @@ fn use_bundled_gstreamer(state_dir: &std::path::Path) {
         if gio.is_dir() {
             std::env::set_var("GIO_MODULE_DIR", gio);
         }
-        // (macOS: in the bundle's Resources, beside Frameworks.)
-        let fonts = [
-            dir.join("etc").join("fonts"),
-            dir.join("../../Resources/fonts"),
-        ]
-        .into_iter()
-        .find(|f| f.is_dir());
-        if let Some(fonts) = fonts {
+        let fonts = dir.join("etc").join("fonts");
+        if fonts.is_dir() {
             std::env::set_var("FONTCONFIG_PATH", fonts);
         }
     }

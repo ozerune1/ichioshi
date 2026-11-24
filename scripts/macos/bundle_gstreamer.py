@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Put the parts of GStreamer the app plays with in its macOS bundle, at
-Contents/Frameworks/GStreamer, laid out as GStreamer.framework's Versions/1.0
+Contents/Resources/GStreamer, laid out as GStreamer.framework's Versions/1.0
 (so the libraries' @rpath/lib/... names resolve as they do there): the
 plugins, the plugin scanner, GLib's TLS module (HTTPS), libass and libsoup
 (loaded by name at run time), and every library they load. The program is
 pointed at them, nothing is left pointing at /Library/Frameworks, and every
 piece of code is signed ad hoc (an Apple Silicon Mac runs nothing unsigned).
+(Resources, not Frameworks: codesign takes Frameworks to hold only
+frameworks and libraries, and GStreamer's plugin folders and scanner aren't
+laid out that way. Notarizing would want a real GStreamer.framework.)
 
     scripts/macos/bundle_gstreamer.py <Ichioshi.app> <GStreamer.framework/Versions/1.0>"""
 
@@ -28,7 +31,7 @@ LOADED = ["lib/libass.9.dylib", "lib/libsoup-3.0.0.dylib"]
 FRAMEWORK = "/Library/Frameworks/GStreamer.framework"
 # The framework's libraries are named @rpath/libX.dylib, so @rpath is its
 # lib folder.
-RPATH = "@executable_path/../Frameworks/GStreamer/lib"
+RPATH = "@executable_path/../Resources/GStreamer/lib"
 
 
 def run(*args):
@@ -91,7 +94,7 @@ def in_framework(name, gst, loader_rel):
 
 def main():
     app, gst = sys.argv[1], sys.argv[2]
-    out = os.path.join(app, "Contents", "Frameworks", "GStreamer")
+    out = os.path.join(app, "Contents", "Resources", "GStreamer")
     program = os.path.join(app, "Contents", "MacOS", "ichioshi")
 
     todo = [f"lib/gstreamer-1.0/libgst{p}.dylib" for p in PLUGINS]
@@ -120,12 +123,10 @@ def main():
             found = in_framework(name, gst, rel)
             if found and found != rel:
                 todo.append(found)
-    # Fonts' settings, for libass's fontconfig: in Resources, as everything
-    # in Frameworks has to be code (signed).
+    # Fonts' settings, for libass's fontconfig.
     fonts = os.path.join(gst, "etc", "fonts")
     if os.path.isdir(fonts):
-        shutil.copytree(fonts, os.path.join(app, "Contents", "Resources", "fonts"),
-                        symlinks=False, dirs_exist_ok=True)
+        shutil.copytree(fonts, os.path.join(out, "etc", "fonts"), symlinks=False, dirs_exist_ok=True)
 
     # The program (and anything else) loads GStreamer through the bundle.
     for path in [program] + [os.path.join(out, r) for r in sorted(copied)]:

@@ -3,7 +3,7 @@
 # it:
 #   dist/Ichioshi-macos-universal.dmg     the app, to drag to Applications
 #   dist/Ichioshi-macos-universal.tar.gz  the same, for the in-app updater
-# GStreamer goes inside the app (Contents/Frameworks/GStreamer: the parts of
+# GStreamer goes inside the app (Contents/Resources/GStreamer: the parts of
 # GStreamer.framework it plays with), from gstreamer.freedesktop.org's
 # runtime and devel packages, installed in /Library/Frameworks. Runs on a
 # Mac (.github/workflows/macos.yml builds it on GitHub's). It's signed ad

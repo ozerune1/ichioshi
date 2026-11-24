@@ -75,7 +75,7 @@ fn api() -> Result<&'static Api> {
                 Some(
                     e.parent()?
                         .parent()?
-                        .join("Frameworks/GStreamer/lib/libass.9.dylib"),
+                        .join("Resources/GStreamer/lib/libass.9.dylib"),
                 )
             });
             names.splice(
