@@ -26,8 +26,8 @@ object Colors {
   const val WHITE = 0xFFFFFFFF.toInt()
   const val BLACK = 0xFF000000.toInt()
   const val TRANSPARENT = 0
-  /** Secondary text over video, the time left. */
-  const val DIM = 0x9EFFFFFF.toInt()
+  /** Secondary text over video, the time left (80%: 62% washed out on bright frames). */
+  const val DIM = 0xCCFFFFFF.toInt()
   /** Disabled over video. */
   const val FAINT = 0x61FFFFFF
   /** The icon and spinner on the white play disc. */
@@ -40,8 +40,11 @@ object Colors {
   const val ACCENT_10 = 0x1A8B7CFF
   /** The active tool's circle. */
   const val ACCENT_16 = 0x298B7CFF
-  /** The party chip. */
-  const val ACCENT_18 = 0x2E8B7CFF
+  /**
+   * The party chip: the accent at 18% over black, 85% opaque, so its text
+   * stays readable on a bright frame.
+   */
+  const val CHIP = 0xD919162E.toInt()
   /** The party chip's text and icon. */
   const val ACCENT_SOFT = 0xFFC9C2FF.toInt()
   /** Openings and endings, played (the desktop player's color). */
@@ -68,6 +71,8 @@ object Colors {
   const val RED = 0xFFF87171.toInt()
   /** The ±10 discs, the Ask disc, the buffering disc. */
   const val GLASS = 0x73000000
+  /** The pill behind captions on the bare picture (Ask, Buffering, a double tap's time). */
+  const val CAPTION = 0x99000000.toInt()
   /** The ring on glass discs. */
   const val GLASS_RING = 0x40FFFFFF
   /** The ring on the watch party's Ask disc. */
@@ -162,6 +167,13 @@ class Kit(val context: Context) {
       if (tnum) fontFeatureSettings = "tnum"
       if (!fixed) texts += WeakReference(this) to sp
     }
+
+  /** A caption on the bare picture: white on a dark pill, so it reads on any frame. */
+  fun caption(sp: Float) = text(sp, Colors.WHITE, medium).apply {
+    gravity = Gravity.CENTER
+    background = rounded(Colors.CAPTION, 100f)
+    setPadding(px(10), px(4), px(10), px(4))
+  }
 
   /** The text size setting changed (the player stayed open): every text takes it. */
   fun rescaleText() {

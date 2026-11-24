@@ -111,6 +111,9 @@ class TapLayer(context: Context, private val kit: Kit, private val member: Boole
   private val fadeOut = Runnable { fadeFeedback(0f, 300) }
   private val oval = RectF()
   private val areaPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+  /** The dark pill behind the chevrons and the times, so they read on a bright frame. */
+  private val backPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Colors.CAPTION }
+  private val back = RectF()
   private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     typeface = kit.semibold
     textSize = kit.sp(14f)
@@ -122,7 +125,7 @@ class TapLayer(context: Context, private val kit: Kit, private val member: Boole
   private val targetPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     typeface = kit.medium
     textSize = kit.sp(12f)
-    color = Colors.DIM
+    color = Colors.WHITE
     textAlign = Paint.Align.CENTER
     fontFeatureSettings = "tnum"
     setShadowLayer(kit.dp(3), 0f, kit.dp(1), Colors.SHADOW)
@@ -288,6 +291,14 @@ class TapLayer(context: Context, private val kit: Kit, private val member: Boole
     val size = kit.dp(20)
     val gap = kit.dp(2)
     val total = size * 3 + gap * 2
+    val labelTop = cy + size / 2 + kit.dp(8)
+    val labelBase = labelTop - labelPaint.ascent()
+    val targetBase = labelBase + labelPaint.descent() + kit.dp(2) - targetPaint.ascent()
+    // Wide enough for the label at the top of its pulse.
+    val half = maxOf(total, labelPaint.measureText(fbLabel) * 1.08f, targetPaint.measureText(fbTarget)) / 2 + kit.dp(14)
+    back.set(cx - half, cy - size / 2 - kit.dp(12), cx + half, targetBase + targetPaint.descent() + kit.dp(10))
+    backPaint.alpha = ((Colors.CAPTION ushr 24) * fbAlpha).toInt()
+    c.drawRoundRect(back, kit.dp(16), kit.dp(16), backPaint)
     val now = SystemClock.uptimeMillis() % 750
     for (j in 0..2) {
       // The pulse runs the way the seek goes.
@@ -306,15 +317,13 @@ class TapLayer(context: Context, private val kit: Kit, private val member: Boole
       c.restore()
     }
 
-    val labelTop = cy + size / 2 + kit.dp(8)
-    val labelBase = labelTop - labelPaint.ascent()
     labelPaint.alpha = (255 * fbAlpha).toInt()
     c.save()
     c.scale(labelScale, labelScale, cx, labelTop + (labelPaint.descent() - labelPaint.ascent()) / 2)
     c.drawText(fbLabel, cx, labelBase, labelPaint)
     c.restore()
-    targetPaint.alpha = (0x9E * fbAlpha).toInt()
-    c.drawText(fbTarget, cx, labelBase + labelPaint.descent() + kit.dp(2) - targetPaint.ascent(), targetPaint)
+    targetPaint.alpha = (255 * fbAlpha).toInt()
+    c.drawText(fbTarget, cx, targetBase, targetPaint)
     postInvalidateOnAnimation()
   }
 

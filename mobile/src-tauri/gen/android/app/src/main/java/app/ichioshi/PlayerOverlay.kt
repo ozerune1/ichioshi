@@ -197,7 +197,7 @@ class PlayerOverlay(
   private val chip: View? = if (member) LinearLayout(context).apply {
     orientation = LinearLayout.HORIZONTAL
     gravity = Gravity.CENTER_VERTICAL
-    background = kit.rounded(Colors.ACCENT_18, 16f)
+    background = kit.rounded(Colors.CHIP, 16f)
     setPadding(kit.px(12), 0, kit.px(12), 0)
     addView(kit.icon(R.drawable.ic_users, 16f, Colors.ACCENT_SOFT),
       LinearLayout.LayoutParams(kit.px(16), kit.px(16)).apply { rightMargin = kit.px(8) })
@@ -218,8 +218,7 @@ class PlayerOverlay(
   /** The white play disc, or for a member, the Ask disc. */
   val playDisc: Round = if (member) kit.round(72f, 64f, Colors.GLASS, 1.5f, Colors.ASK_RING)
   else kit.round(72f, 64f, Colors.WHITE, ripple = Colors.PRESS_DARK)
-  private val askCaption = if (member) kit.text(12f, Colors.DIM, kit.medium, shadow = true).apply {
-    gravity = Gravity.CENTER
+  private val askCaption = if (member) kit.caption(12f).apply {
     text = "Ask to pause"
     importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
   } else null
@@ -248,9 +247,17 @@ class PlayerOverlay(
   // Loading and buffering.
   private val status = FrameLayout(context)
   private val statusDisc = FrameLayout(context)
-  private val statusCaption = kit.text(12f, Colors.DIM, kit.medium, shadow = true).apply {
-    gravity = Gravity.CENTER
+  /** "Loading", "Reconnecting…" or "Buffering 45%", on a pill under the spinner. */
+  private val statusCaption = LinearLayout(context)
+  /**
+   * The caption's word: a live region, said when it appears or the word
+   * changes. The percent beside it isn't, so TalkBack doesn't say every step.
+   */
+  private val statusWord = kit.text(12f, Colors.WHITE, kit.medium).apply {
     accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+  }
+  private val statusPct = kit.text(12f, Colors.WHITE, kit.medium, tnum = true).apply {
+    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
   }
 
   val moments = MomentLayer(context, kit)
@@ -303,7 +310,10 @@ class PlayerOverlay(
   var videoW = 0
   var videoH = 0
   private var busy = false
-  private var busyCaption: String? = null
+  /** Buffering's percent, once it's taken a while (null: no caption yet). */
+  private var busyPct: Int? = null
+  /** The status caption shows (or is fading in). */
+  private var captionShown = false
   private var loadingCaption: String? = null
   private var askText = "Ask to pause"
   private var askedUntil = 0L
@@ -331,10 +341,10 @@ class PlayerOverlay(
     root.addView(surface, FrameLayout.LayoutParams(MATCH, MATCH))
     root.addView(taps, FrameLayout.LayoutParams(MATCH, MATCH))
 
-    scrimTop.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-      intArrayOf(0xB3000000.toInt(), 0x59000000, 0))
-    scrimBottom.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-      intArrayOf(0, 0x59000000, 0xB3000000.toInt()))
+    scrimTop.background = GradientDrawable().apply { orientation = GradientDrawable.Orientation.TOP_BOTTOM }
+    scrimBottom.background = GradientDrawable().apply { orientation = GradientDrawable.Orientation.BOTTOM_TOP }
+    shade(scrimTop, kit.px(104), kit.px(48))
+    shade(scrimBottom, kit.px(112), kit.px(48))
     controls.addView(scrimTop, FrameLayout.LayoutParams(MATCH, kit.px(104), Gravity.TOP))
     controls.addView(scrimBottom, FrameLayout.LayoutParams(MATCH, kit.px(112), Gravity.BOTTOM))
 
@@ -391,7 +401,7 @@ class PlayerOverlay(
     back10?.let { transport.addView(it.view, FrameLayout.LayoutParams(kit.px(56), kit.px(56))) }
     transport.addView(playDisc.view, FrameLayout.LayoutParams(kit.px(72), kit.px(72)))
     fwd10?.let { transport.addView(it.view, FrameLayout.LayoutParams(kit.px(56), kit.px(56))) }
-    askCaption?.let { transport.addView(it, FrameLayout.LayoutParams(MATCH, WRAP)) }
+    askCaption?.let { transport.addView(it, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)) }
     controls.addView(transport, FrameLayout.LayoutParams(WRAP, WRAP))
 
     // The bottom band: elapsed, the timeline, time left, room for the moment button.
@@ -421,7 +431,13 @@ class PlayerOverlay(
     statusDisc.addView(kit.spinner(36f, Colors.WHITE))
     statusDisc.contentDescription = "Loading"
     status.addView(statusDisc, FrameLayout.LayoutParams(kit.px(64), kit.px(64)))
-    status.addView(statusCaption, FrameLayout.LayoutParams(MATCH, WRAP))
+    statusCaption.orientation = LinearLayout.HORIZONTAL
+    statusCaption.gravity = Gravity.CENTER_VERTICAL
+    statusCaption.background = kit.rounded(Colors.CAPTION, 100f)
+    statusCaption.setPadding(kit.px(10), kit.px(4), kit.px(10), kit.px(4))
+    statusCaption.addView(statusWord, LinearLayout.LayoutParams(WRAP, WRAP))
+    statusCaption.addView(statusPct, LinearLayout.LayoutParams(WRAP, WRAP))
+    status.addView(statusCaption, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
     root.addView(status, FrameLayout.LayoutParams(MATCH, MATCH))
 
     root.addView(moments, FrameLayout.LayoutParams(WRAP, kit.px(48), Gravity.BOTTOM or Gravity.RIGHT))
@@ -577,6 +593,16 @@ class PlayerOverlay(
     }
   }
 
+  /** Show or hide [v] at once: it swaps with another view in the same place. */
+  private fun snap(v: View, on: Boolean) {
+    val target = if (on) 1f else -1f
+    if (targets[v] == target) return
+    targets[v] = target
+    v.animate().cancel()
+    v.alpha = if (on) 1f else 0f
+    v.visibility = if (on) View.VISIBLE else View.INVISIBLE
+  }
+
   /** Bring every view to what the state fields say, animated. */
   fun sync() {
     val playing = mode == Mode.PLAYING
@@ -686,28 +712,41 @@ class PlayerOverlay(
     statusDisc.contentDescription = if (loading) "Loading" else "Buffering"
     playSpinner.visibility = if (inDisc) View.VISIBLE else View.INVISIBLE
     playIcon.visibility = if (inDisc) View.INVISIBLE else View.VISIBLE
-    val text = if (loading) loadingCaption else busyCaption
-    if (text != null && statusCaption.text.toString() != text) statusCaption.text = text
-    fade(statusCaption, text != null && (discOn || (inDisc && !member)), inMs = 100, outMs = 150)
+    val pct = if (loading) null else busyPct
+    val word = if (loading) loadingCaption else pct?.let { "Buffering" }
+    // In the Ask disc too, in the Ask caption's place.
+    val on = word != null && (discOn || inDisc)
+    // Shown first, then the words: a live region is said when it changes while it shows.
+    // Where the Ask caption shows, the two swap at once, as if its words changed.
+    if (member && playing && controlsShown && !panelOpen) snap(statusCaption, on)
+    else fade(statusCaption, on, inMs = 100, outMs = 150)
+    if (on) {
+      val rest = pct?.let { " $it%" } ?: ""
+      if (statusPct.text.toString() != rest) statusPct.text = rest
+      statusPct.visibility = if (rest.isEmpty()) View.GONE else View.VISIBLE
+      // Said again when it comes back (a live region is said when its words
+      // change, and the same words again aren't a change); not for a new percent.
+      if (!captionShown) statusWord.text = ""
+      if (statusWord.text.toString() != word) statusWord.text = word
+    }
+    captionShown = on
     syncAskCaption()
   }
 
   private fun syncAskCaption() {
     val c = askCaption ?: return
-    val inDisc = mode == Mode.PLAYING && busy && controlsShown && !panelOpen
-    val text = when {
-      inDisc && busyCaption != null -> busyCaption!!
-      SystemClock.uptimeMillis() < askedUntil -> "Asked"
-      else -> askText
-    }
+    // "Buffering 45%" replaces it: the status caption, the same pill in the
+    // same place, and a live region (so TalkBack says it to a member too).
+    snap(c, !captionShown)
+    val text = if (SystemClock.uptimeMillis() < askedUntil) "Asked" else askText
     if (c.text.toString() != text) c.text = text
   }
 
-  /** Buffering ([on]), with "Buffering 45%" once it's taken a while. */
-  fun setBusy(on: Boolean, caption: String?) {
-    if (busy == on && busyCaption == caption) return
+  /** Buffering ([on]), with "Buffering 45%" ([percent]) once it's taken a while. */
+  fun setBusy(on: Boolean, percent: Int?) {
+    if (busy == on && busyPct == percent) return
     busy = on
-    busyCaption = caption
+    busyPct = percent
     syncStatus()
   }
 
@@ -791,6 +830,21 @@ class PlayerOverlay(
     layout()
   }
 
+  /**
+   * A scrim [height] px tall, darkest at the screen's edge. It stays dark
+   * for the [text] px nearest the edge, where the top bar or the band is,
+   * then eases out. There it's 66% or more: DIM text reads at 4.5:1 even on
+   * a white frame (it needs 62%, white needs 54%).
+   */
+  private fun shade(scrim: View, height: Int, text: Int) {
+    val f = if (height > 0) (text.toFloat() / height).coerceIn(0f, 0.9f) else 0.5f
+    val rest = 1 - f
+    (scrim.background as GradientDrawable).setColors(
+      intArrayOf(0xB3000000.toInt(), 0xA8000000.toInt(), 0x8F000000.toInt(), 0x54000000, 0x19000000, 0),
+      floatArrayOf(0f, f, f + rest * 0.25f, f + rest * 0.5f, f + rest * 0.75f, 1f),
+    )
+  }
+
   /** Put everything in place for this window's size and insets. */
   fun layout() {
     val w = root.width
@@ -809,23 +863,39 @@ class PlayerOverlay(
       View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
     )
     barH = max(kit.px(48), topBar.measuredHeight)
-    scrimTop.layoutParams = FrameLayout.LayoutParams(MATCH, max(kit.px(104), padT + barH + kit.px(48)), Gravity.TOP)
+    val topH = max(kit.px(104), padT + barH + kit.px(48))
+    scrimTop.layoutParams = FrameLayout.LayoutParams(MATCH, topH, Gravity.TOP)
+    shade(scrimTop, topH, padT + barH)
+    val bottomH = max(kit.px(112), padB + kit.px(48 + 64))
+    scrimBottom.layoutParams = FrameLayout.LayoutParams(MATCH, bottomH, Gravity.BOTTOM)
+    shade(scrimBottom, bottomH, padB + kit.px(48))
     val bandTop = h - padB - kit.px(48)
     val cy = (padT + barH + bandTop) / 2
     val cx = w / 2
     val apart = kit.px(if (compact) 96 else 112)
     // Just round the discs (and the Ask caption), so TalkBack reads them after the top bar.
     val tw = max(2 * apart + kit.px(72), kit.px(240))
-    transport.layoutParams = FrameLayout.LayoutParams(tw, kit.px(112), Gravity.TOP or Gravity.LEFT).apply {
+    val tx = tw / 2
+    val ty = kit.px(36)
+    // Tall enough for the Ask caption's pill at any text size (the transport clips it).
+    val askH = askCaption?.let {
+      it.measure(
+        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+      )
+      it.measuredHeight
+    } ?: 0
+    transport.layoutParams = FrameLayout.LayoutParams(tw, max(kit.px(112), ty + kit.px(40) + askH + kit.px(2)),
+      Gravity.TOP or Gravity.LEFT).apply {
       leftMargin = cx - tw / 2
       topMargin = cy - kit.px(36)
     }
-    val tx = tw / 2
-    val ty = kit.px(36)
     place(playDisc.view, kit.px(72), tx, ty)
     back10?.let { place(it.view, kit.px(56), tx - apart, ty) }
     fwd10?.let { place(it.view, kit.px(56), tx + apart, ty) }
-    askCaption?.layoutParams = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.TOP).apply { topMargin = ty + kit.px(40) }
+    askCaption?.layoutParams = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+      topMargin = ty + kit.px(40)
+    }
     band.layoutParams = FrameLayout.LayoutParams(MATCH, kit.px(48), Gravity.BOTTOM).apply {
       leftMargin = padL
       rightMargin = padR
@@ -834,7 +904,9 @@ class PlayerOverlay(
     // The band's lowest part is in the system's swipe-up area: a touch there waits to see which way it goes.
     timeline.waitBelow = if (gestureB > 0) (h - gestureB - bandTop).toFloat() else Float.MAX_VALUE
     place(statusDisc, kit.px(64), cx, cy)
-    statusCaption.layoutParams = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.TOP).apply { topMargin = cy + kit.px(40) }
+    statusCaption.layoutParams = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+      topMargin = cy + kit.px(40)
+    }
     pill.layoutParams = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
       topMargin = padT + kit.px(12) - kit.px(4)
     }

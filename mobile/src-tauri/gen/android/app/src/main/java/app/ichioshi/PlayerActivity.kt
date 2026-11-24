@@ -27,8 +27,10 @@ import app.tauri.plugin.JSObject
 import dev.jdtech.mpv.MPVLib
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.max
@@ -143,6 +145,12 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
   private var liveWanted = -1.0
   /** The end came during a drag: it waits for the drag's seek. */
   private var endDuringDrag = false
+  /**
+   * Where a drag that seeked as it went was let go (or put back), until its
+   * seeks have landed (-1: none). A chapter its earlier seeks report
+   * meanwhile was only passed through.
+   */
+  private var settleAt = -1.0
 
   private val now get() = SystemClock.uptimeMillis()
 
@@ -160,6 +168,7 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     liveInFlight = false
     flushLive()
   }
+  private val settled = Runnable { settleAt = -1.0 }
   /** After a drag that met the end: mpv still at the end means it's the end. */
   private val endCheck = Runnable {
     mpvDo { m ->
@@ -382,6 +391,24 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     }
   }
 
+  /**
+   * Tell mpv something and wait for it, at most [ms] (false: it took longer,
+   * and still happens, in order). For the surface, which goes when its
+   * callback returns.
+   */
+  private fun mpvWait(ms: Long, block: (MPVLib) -> Unit): Boolean {
+    if (!mpvReady) return true
+    val done = CountDownLatch(1)
+    mpvDo {
+      try {
+        block(it)
+      } finally {
+        done.countDown()
+      }
+    }
+    return done.await(ms, TimeUnit.MILLISECONDS)
+  }
+
   private fun hideBars() {
     WindowInsetsControllerCompat(window, window.decorView).apply {
       hide(WindowInsetsCompat.Type.systemBars())
@@ -535,6 +562,8 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
   override fun userSeek(t: Double) {
     seek(t, "absolute+exact")
     lastUserSeekAt = now
+    // Right after a drag: this seek's chapter is the one that counts.
+    if (settleAt >= 0) settleAt = t
   }
 
   override fun position() = position
@@ -556,6 +585,8 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
 
   override fun scrubStart(t: Double) {
     main.removeCallbacks(hideControls)
+    main.removeCallbacks(settled)
+    settleAt = -1.0
     ui.scrubbing = true
     // The controls may be fading out (the band still takes touches then): they come back under the finger.
     poke()
@@ -574,10 +605,12 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
 
   override fun scrubEnd(t: Double) {
     main.removeCallbacks(liveTimeout)
+    val moved = liveSent >= 0
     liveWanted = -1.0
     liveSent = -1.0
     liveInFlight = false
     userSeek(t)
+    if (moved) settle(t)
     // Let go in the chapter the drag's seeks already reached (so no chapter change comes):
     // judged now, as a chapter you seeked into. It won't count down or auto-skip.
     if (ready && !member && chapters.at(t) == curChapter) autoSkip(curChapter)
@@ -600,7 +633,10 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     liveSent = -1.0
     liveInFlight = false
     // Only a file on the phone moved during the drag: put it back.
-    if (moved) seek(before, "absolute+exact")
+    if (moved) {
+      seek(before, "absolute+exact")
+      settle(before)
+    }
     log("scrub cancelled")
     checkEndLater()
     restartSeen = false
@@ -645,6 +681,17 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     main.postDelayed(liveTimeout, 150)
   }
 
+  /**
+   * The drag just let go seeked as it went: its last seek goes to [t], and
+   * the ones before it may still report chapters on the way.
+   */
+  private fun settle(t: Double) {
+    settleAt = t
+    main.removeCallbacks(settled)
+    // In case no restart comes (the end, an error).
+    main.postDelayed(settled, 3000)
+  }
+
   private fun playbackRestart() {
     if (liveInFlight) {
       main.removeCallbacks(liveTimeout)
@@ -652,6 +699,12 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
       flushLive()
     }
     if (!ui.timeline.dragging) restartSeen = true
+    // A seek landed: maybe one of the drag's last few, whose picture can
+    // still move it to another chapter. Settled a moment after the last one.
+    if (settleAt >= 0 && !ui.timeline.dragging) {
+      main.removeCallbacks(settled)
+      main.postDelayed(settled, 250)
+    }
   }
 
   // ── Fit and Fill ────────────────────────────────────────────────────
@@ -806,8 +859,10 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
       log("countdown cancel (left the chapter)")
     }
     ui.setChapterTitle(chapters.title(i))
-    // A drag's seeks only pass through chapters: auto-skip judges the one it lets go in (scrubEnd).
-    if (ready && !member && !ui.timeline.dragging) autoSkip(i)
+    // A drag's seeks only pass through chapters, even the ones that land after
+    // it's let go: auto-skip judges the one it ends in (and scrubEnd).
+    val passing = ui.timeline.dragging || (settleAt >= 0 && i != chapters.at(settleAt))
+    if (ready && !member && !passing) autoSkip(i)
     updateMoment()
     main.removeCallbacks(momentTick)
     main.postDelayed(momentTick, 8100)
@@ -948,6 +1003,8 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     ready = true
     loadedAt = now
     reconnecting = false
+    main.removeCallbacks(settled)
+    settleAt = -1.0
     cardUp = false
     stalled = false
     main.removeCallbacks(loadingCaption)
@@ -989,9 +1046,10 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     val dragging = ui.timeline.dragging
     val seekBusy = seeking && !dragging && t - seekingSince > 400
     if (seeking && !dragging && !seekBusy) next = minOf(next, seekingSince + 401)
-    val caption = if (pausedForCache && t - cacheSince >= 1500) "Buffering $bufferPct%" else null
-    if (pausedForCache && caption == null) next = minOf(next, cacheSince + 1500)
-    ui.setBusy(ready && (cacheBusy || seekBusy), caption)
+    // "Buffering N%" after 1.5 s.
+    val pct = if (pausedForCache && t - cacheSince >= 1500) bufferPct else null
+    if (pausedForCache && pct == null) next = minOf(next, cacheSince + 1500)
+    ui.setBusy(ready && (cacheBusy || seekBusy), pct)
     if (next != Long.MAX_VALUE) main.postAtTime(busyTick, next)
   }
 
@@ -1148,7 +1206,9 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
     main.post {
       if (closed) return@post
       when (property) {
-        "chapter" -> chapterChanged(value.toInt())
+        // With the surface gone there's no video, and paused before the audio
+        // began, mpv doesn't know where it is for a while: not a new chapter.
+        "chapter" -> if (value >= 0 || !surfaceGone) chapterChanged(value.toInt())
         "cache-buffering-state" -> {
           bufferPct = value.toInt()
           updateBusy()
@@ -1251,30 +1311,58 @@ class PlayerActivity : AppCompatActivity(), MPVLib.EventObserver, SurfaceHolder.
   }
 
   // ── The surface ─────────────────────────────────────────────────────
+  // mpv is told on the worker: when mpv's core is stuck, the app isn't.
+
+  /** The video track while the surface is gone (only the worker uses it). */
+  private var hiddenVid: String? = null
+  /** The surface is gone (Home, or another app on top): mpv plays without video. */
+  private var surfaceGone = false
 
   override fun surfaceCreated(holder: SurfaceHolder) {
+    surfaceGone = false
     if (!mpvReady) return
-    mpv.attachSurface(holder.surface)
-    mpv.setOptionString("force-window", "yes")
-    if (!fileStarted) {
-      fileStarted = true
-      mpv.command(arrayOf("loadfile", url))
-    } else {
-      mpv.setPropertyString("vo", "gpu")
+    val surface = holder.surface
+    val first = !fileStarted
+    fileStarted = true
+    val u = url
+    mpvDo { m ->
+      m.attachSurface(surface)
+      if (first) {
+        m.setOptionString("force-window", "yes")
+        m.command(arrayOf("loadfile", u))
+      } else {
+        m.setPropertyString("vo", "gpu")
+        m.setOptionString("force-window", "yes")
+        // The video again, from where it is (paused, it shows that frame).
+        m.setPropertyString("vid", hiddenVid ?: "auto")
+        hiddenVid = null
+      }
     }
   }
 
   override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
     if (!mpvReady) return
-    mpv.setPropertyString("android-surface-size", "${width}x$height")
+    mpvDo { it.setPropertyString("android-surface-size", "${width}x$height") }
     ui.lift()
   }
 
   override fun surfaceDestroyed(holder: SurfaceHolder) {
     if (!mpvReady) return
-    mpv.setPropertyString("vo", "null")
-    mpv.setOptionString("force-window", "no")
-    mpv.detachSurface()
+    surfaceGone = true
+    val t = now
+    // mpv lets go of the surface before it goes (when this returns), but the
+    // main thread doesn't wait long for it.
+    val inTime = mpvWait(2000) { m ->
+      // No video without a surface. mpv would open its decoder again with
+      // none, and MediaCodec can stall for good that way (it does on the
+      // emulator), mpv's core with it.
+      hiddenVid = m.getPropertyString("vid") ?: "auto"
+      m.setPropertyString("vid", "no")
+      m.setOptionString("force-window", "no")
+      m.setPropertyString("vo", "null")
+      m.detachSurface()
+    }
+    log(if (inTime) "surface gone (${now - t} ms)" else "surface gone, mpv still busy after ${now - t} ms")
   }
 
   // ── Keys ────────────────────────────────────────────────────────────
