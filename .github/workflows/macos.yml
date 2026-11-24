@@ -50,7 +50,22 @@ jobs:
           cache-on-failure: true
 
       - name: Build
-        run: scripts/macos/build.sh
+        env:
+          # The API clients built in, as the other builds have them (from
+          # ~/.local/share/ichioshi-release/keys.env there): repository secrets.
+          ICHIOSHI_ANILIST_CLIENT_ID: ${{ secrets.ICHIOSHI_ANILIST_CLIENT_ID }}
+          ICHIOSHI_ANILIST_CLIENT_SECRET: ${{ secrets.ICHIOSHI_ANILIST_CLIENT_SECRET }}
+          ICHIOSHI_MAL_CLIENT_ID: ${{ secrets.ICHIOSHI_MAL_CLIENT_ID }}
+          ICHIOSHI_MAL_CLIENT_SECRET: ${{ secrets.ICHIOSHI_MAL_CLIENT_SECRET }}
+        run: |
+          keys="$RUNNER_TEMP/keys.env"
+          (umask 077
+           for k in ICHIOSHI_ANILIST_CLIENT_ID ICHIOSHI_ANILIST_CLIENT_SECRET ICHIOSHI_MAL_CLIENT_ID ICHIOSHI_MAL_CLIENT_SECRET; do
+             eval "v=\${$k:-}"
+             if [ -n "$v" ]; then printf "%s='%s'\n" "$k" "$v"; fi
+           done > "$keys")
+          ICHIOSHI_KEYS="$keys" scripts/macos/build.sh
+          rm -f "$keys"
 
       - name: Self-test, with only the app's own GStreamer
         run: |
