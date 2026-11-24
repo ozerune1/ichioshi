@@ -971,6 +971,83 @@ pub fn text_subtitles(path: &Path) -> Result<TextSubtitles> {
 }
 
 /// The readable text of one subtitle event, without styling.
+/// Part of a file, as read over HTTP.
+pub trait ReadAt {
+    /// `len` bytes from `at` (fewer at the end).
+    fn read_at(&self, at: u64, len: u64) -> impl Future<Output = Result<Vec<u8>>> + Send;
+}
+
+async fn header_at(src: &(impl ReadAt + Sync), at: u64) -> Result<Header> {
+    header(&src.read_at(at, 16).await?).context("not a Matroska file, or damaged")
+}
+
+/// The text subtitle tracks' headers (an ASS track's styles) as a Matroska
+/// file has them, by track position (0-based, as ffprobe and Jellyfin
+/// number streams), read from the start of the file a piece at a time: for
+/// a file read over HTTP, a few small requests.
+pub async fn subtitle_headers(src: &(impl ReadAt + Sync)) -> Result<HashMap<u64, Vec<u8>>> {
+    const CODEC_PRIVATE: u32 = 0x63A2;
+    const CONTENT_ENCODING: u32 = 0x6240;
+    const CONTENT_ENCODING_SCOPE: u32 = 0x5032;
+    let ebml = header_at(src, 0).await?;
+    if ebml.id != EBML {
+        bail!("not a Matroska file");
+    }
+    let segment_at = ebml.len as u64 + ebml.size.context("not a Matroska file")?;
+    let segment = header_at(src, segment_at).await?;
+    if segment.id != SEGMENT {
+        bail!("no Matroska segment");
+    }
+    // The segment's top-level elements, one header at a time, to Tracks.
+    let mut at = segment_at + segment.len as u64;
+    for _ in 0..64 {
+        let h = header_at(src, at).await?;
+        let size = h
+            .size
+            .context("an element of unknown size before the tracks")?;
+        match h.id {
+            TRACKS if size <= 16 << 20 => {
+                let data = src.read_at(at + h.len as u64, size).await?;
+                let mut out = HashMap::new();
+                let entries = children(&data).into_iter().filter(|e| e.id == TRACK_ENTRY);
+                for (i, entry) in entries.enumerate() {
+                    let info = parse_track(entry.data);
+                    if !info.codec_id.starts_with("S_TEXT/")
+                        && !matches!(info.codec_id.as_str(), "S_ASS" | "S_SSA")
+                    {
+                        continue;
+                    }
+                    let parts = children(entry.data);
+                    // A header stored compressed (scope bit 2) is rare: left out.
+                    let compressed = parts
+                        .iter()
+                        .filter(|e| e.id == CONTENT_ENCODINGS)
+                        .flat_map(|e| children(e.data))
+                        .filter(|e| e.id == CONTENT_ENCODING)
+                        .any(|e| {
+                            children(e.data)
+                                .iter()
+                                .find(|s| s.id == CONTENT_ENCODING_SCOPE)
+                                .map_or(1, |s| uint(s.data))
+                                & 2
+                                != 0
+                        });
+                    if let Some(p) = parts.iter().find(|e| e.id == CODEC_PRIVATE)
+                        && !compressed
+                    {
+                        out.insert(i as u64, p.data.to_vec());
+                    }
+                }
+                return Ok(out);
+            }
+            TRACKS => bail!("the track list is too big"),
+            CLUSTER => bail!("no track list before the video"),
+            _ => at += h.len as u64 + size,
+        }
+    }
+    bail!("no track list near the start")
+}
+
 fn subtitle_text(codec_id: &str, payload: &[u8]) -> Option<String> {
     static MARKUP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{[^}]*\}|<[^>]*>").unwrap());
     let raw = String::from_utf8_lossy(payload);
@@ -1484,6 +1561,51 @@ pub(crate) mod tests {
         let mut file = element(EBML, &element(DOC_TYPE, b"matroska"));
         file.extend(element(SEGMENT, &seg));
         file
+    }
+
+    /// Subtitle headers read a piece at a time (as over HTTP): past a
+    /// SeekHead and padding, by track position, each read small.
+    #[tokio::test]
+    async fn reads_subtitle_headers_in_pieces() {
+        let mut seg = element(SEEK_HEAD, &element(SEEK, &uint_element(SEEK_POSITION, 0)));
+        seg.extend(void(5000));
+        seg.extend(element(INFO, &uint_element(0x2A_D7B1, 1_000_000)));
+        let mut tracks = Vec::new();
+        for (n, codec, private) in [
+            (1, &b"V_MPEG4/ISO/AVC"[..], &b"avc"[..]),
+            (2, b"S_TEXT/ASS", b"[Script Info]\nStyle: Signs,Arial,68"),
+            (3, b"S_TEXT/UTF8", b""),
+        ] {
+            let mut f = uint_element(TRACK_NUMBER, n);
+            f.extend(element(CODEC_ID, codec));
+            if !private.is_empty() {
+                f.extend(element(0x63A2, private));
+            }
+            tracks.extend(element(TRACK_ENTRY, &f));
+        }
+        seg.extend(element(TRACKS, &tracks));
+        seg.extend(element(CLUSTER, &uint_element(TIMESTAMP, 0)));
+        let mut file = element(EBML, &element(DOC_TYPE, b"matroska"));
+        file.extend(element(SEGMENT, &seg));
+        struct Bytes(Vec<u8>, std::sync::Mutex<Vec<u64>>);
+        impl ReadAt for Bytes {
+            async fn read_at(&self, at: u64, len: u64) -> Result<Vec<u8>> {
+                self.1.lock().unwrap().push(len);
+                let end = ((at + len) as usize).min(self.0.len());
+                Ok(self.0[at as usize..end].to_vec())
+            }
+        }
+        let src = Bytes(file, Default::default());
+        let got = subtitle_headers(&src).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[&1], b"[Script Info]\nStyle: Signs,Arial,68");
+        assert!(
+            src.1.lock().unwrap().iter().all(|&n| n < 1000),
+            "{:?}",
+            src.1
+        );
+        let not_mkv = Bytes(vec![0x30, 0x81, 0], Default::default());
+        assert!(subtitle_headers(&not_mkv).await.is_err());
     }
 
     fn defaults(path: &Path) -> Vec<(u64, bool)> {

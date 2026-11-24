@@ -348,6 +348,36 @@ impl Jellyfin {
         Ok(resp.bytes().await?.to_vec())
     }
 
+    /// The file's own subtitle headers (an ASS track's styles), by stream
+    /// index. Jellyfin's copies of ASS subtitles swap every Arial for Arial
+    /// Unicode MS, which most computers don't have, so those lines came out
+    /// in another font. Read from the start of the file (Matroska) in a few
+    /// small requests; empty if that doesn't work.
+    pub async fn subtitle_headers(&self, p: &Playable) -> HashMap<u64, Vec<u8>> {
+        let matroska = p.file_name.as_deref().is_some_and(|n| {
+            let n = n.to_ascii_lowercase();
+            [".mkv", ".mks", ".mka", ".webm"]
+                .iter()
+                .any(|e| n.ends_with(e))
+        });
+        if !matroska {
+            return HashMap::new();
+        }
+        let file = Ranges {
+            jellyfin: self,
+            url: format!(
+                "{}/Videos/{}/stream?static=true&mediaSourceId={}",
+                self.base, p.item, p.source
+            ),
+        };
+        crate::mkv::subtitle_headers(&file)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("subtitle styles from the file: {e:#}");
+                HashMap::new()
+            })
+    }
+
     /// An attachment (a font).
     pub async fn attachment(&self, p: &Playable, index: u64) -> Result<Vec<u8>> {
         let url = format!(
@@ -605,18 +635,7 @@ impl Jellyfin {
     /// Every text subtitle track (by stream index) and the fonts attached
     /// to the file. What can't be read is left out.
     pub async fn text_subtitles(&self, p: &Playable) -> crate::mkv::TextSubtitles {
-        let mut out = crate::mkv::TextSubtitles::default();
-        for s in p.streams.iter().filter(|s| s.kind == "Subtitle") {
-            if !codec_id(&s.kind, &s.codec).starts_with("S_TEXT/") {
-                continue;
-            }
-            match self.subtitle(p, s).await {
-                Ok(bytes) => {
-                    out.tracks.insert(s.index, subtitle_track(&s.codec, &bytes));
-                }
-                Err(e) => tracing::warn!("subtitles {} from Jellyfin: {e:#}", s.index),
-            }
-        }
+        let mut out = self.text_subtitles_only(p).await;
         for (index, name) in p.attachments.iter().filter(|(_, n)| is_font(n)) {
             match self.attachment(p, *index).await {
                 Ok(bytes) => out.fonts.push((name.clone(), bytes)),
@@ -625,6 +644,76 @@ impl Jellyfin {
         }
         out
     }
+
+    /// Every text subtitle track (by stream index), without the fonts.
+    pub async fn text_subtitles_only(&self, p: &Playable) -> crate::mkv::TextSubtitles {
+        let mut out = crate::mkv::TextSubtitles::default();
+        let ass = p
+            .streams
+            .iter()
+            .any(|s| s.kind == "Subtitle" && s.codec == "ass" && !s.external);
+        let headers = if ass {
+            self.subtitle_headers(p).await
+        } else {
+            HashMap::new()
+        };
+        for s in p.streams.iter().filter(|s| s.kind == "Subtitle") {
+            if !codec_id(&s.kind, &s.codec).starts_with("S_TEXT/") {
+                continue;
+            }
+            match self.subtitle(p, s).await {
+                Ok(bytes) => {
+                    let mut track = subtitle_track(&s.codec, &bytes);
+                    if s.codec == "ass"
+                        && !s.external
+                        && let Some(h) = headers.get(&s.index)
+                    {
+                        track.codec_private = with_standard_events(h);
+                    }
+                    out.tracks.insert(s.index, track);
+                }
+                Err(e) => tracing::warn!("subtitles {} from Jellyfin: {e:#}", s.index),
+            }
+        }
+        out
+    }
+}
+
+/// A file on Jellyfin, read a part at a time.
+struct Ranges<'a> {
+    jellyfin: &'a Jellyfin,
+    url: String,
+}
+
+impl crate::mkv::ReadAt for Ranges<'_> {
+    async fn read_at(&self, at: u64, len: u64) -> Result<Vec<u8>> {
+        let range = format!("bytes={at}-{}", at + len.max(1) - 1);
+        let j = self.jellyfin;
+        let resp = j
+            .send(
+                j.client
+                    .get(&self.url)
+                    .header(reqwest::header::RANGE, range),
+            )
+            .await?;
+        // Never the whole file, whatever happens.
+        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            bail!("Jellyfin doesn't send parts of files");
+        }
+        Ok(resp.bytes().await?.to_vec())
+    }
+}
+
+/// An ASS header with the standard event format, which the lines read from
+/// Jellyfin's copy are put in.
+fn with_standard_events(header: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(header);
+    let styles = text.split("[Events]").next().unwrap_or_default();
+    format!(
+        "{}\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        styles.trim_end()
+    )
+    .into_bytes()
 }
 
 /// Whether an attachment is a font (by its name).

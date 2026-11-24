@@ -65,6 +65,8 @@ struct Outcome {
     rounding: usize,
     /// Colours shifted as VSFilter shows them.
     shifted: bool,
+    /// Jellyfin's copy of the styles differs from the file's.
+    styles_rewritten: bool,
     /// Of those, frames where only mpv (or only we) showed something.
     only_mpv: usize,
     only_ours: usize,
@@ -301,9 +303,26 @@ fn check_into(
     let ass = matches!(stream.codec.as_str(), "ass" | "ssa");
     o.kind = if ass { "ass" } else { "plain" }.into();
 
-    // The subtitles and fonts, as the player gets them (text_subtitles).
+    // The subtitles, as the player gets them (text_subtitles: Jellyfin's
+    // lines, the file's own styles).
     let bytes = retry(|| rt.block_on(j.subtitle(&p, stream)))?;
-    let track = jellyfin::subtitle_track(&stream.codec, &bytes);
+    let track = retry(|| {
+        rt.block_on(j.text_subtitles_only(&p))
+            .tracks
+            .remove(&number)
+            .context("the player didn't get the track")
+    })?;
+    // mpv gets what the file has: its styles, and the same lines (Jellyfin
+    // keeps those as they are).
+    let mut bytes = bytes;
+    if ass && let Some(original) = rt.block_on(j.subtitle_headers(&p)).get(&number) {
+        let served = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+        let original = String::from_utf8_lossy(original).replace("\r\n", "\n");
+        let (head, lines) = served.split_once("[Events]").unwrap_or((&served, ""));
+        let original_head = original.split("[Events]").next().unwrap_or_default();
+        o.styles_rewritten = head.trim() != original_head.trim();
+        bytes = format!("{}\n\n[Events]{lines}", original_head.trim_end()).into_bytes();
+    }
     o.lines = track.events.len();
     if ass {
         for line in String::from_utf8_lossy(&track.codec_private).lines() {
@@ -458,7 +477,8 @@ fn check_into(
         _ => crate::subs::VideoMatrix::Other,
     };
     r.set_track(subs.tracks.get(&number), (w, h), matrix);
-    o.shifted = ass && matrix == crate::subs::VideoMatrix::Bt709
+    o.shifted = ass
+        && matrix == crate::subs::VideoMatrix::Bt709
         && o.header
             .iter()
             .all(|(k, v)| k != "YCbCr Matrix" || v.eq_ignore_ascii_case("TV.601") || v.is_empty());
