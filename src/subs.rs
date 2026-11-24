@@ -322,18 +322,21 @@ unsafe fn blend(rgba: &mut [u8], (fw, fh): (i32, i32), i: &AssImage) {
             }
             // SAFETY: within the bitmap libass gave (w × h at stride).
             let k = unsafe { *i.bitmap.add((y * i.stride + x) as usize) } as u32;
-            let sa = k * opacity / 255;
+            let sa = (k * opacity + 127) / 255;
             if sa == 0 {
                 continue;
             }
             let at = ((fy * fw + fx) * 4) as usize;
             let px = &mut rgba[at..at + 4];
-            let da = px[3] as u32;
-            let oa = sa + da * (255 - sa) / 255;
+            // What shows through, and the result's alpha, both ×255: the
+            // colour is their weighted average, so it can't pass 255 (it
+            // used to, and wrapped to black where faint layers overlap).
+            let under = px[3] as u32 * (255 - sa);
+            let total = sa * 255 + under;
             for (c, s) in [r, g, b].into_iter().enumerate() {
-                px[c] = ((s * sa + px[c] as u32 * da * (255 - sa) / 255) / oa.max(1)) as u8;
+                px[c] = ((s * sa * 255 + px[c] as u32 * under + total / 2) / total) as u8;
             }
-            px[3] = oa as u8;
+            px[3] = ((total + 127) / 255) as u8;
         }
     }
 }
@@ -402,6 +405,33 @@ mod tests {
                 .unwrap()
                 .save(std::path::Path::new(&dir).join("libass-real.png"))
                 .unwrap();
+        }
+    }
+
+    /// Faint white layers over each other (a fading line's shadow, outline
+    /// and fill) blend to light grey: the colour used to pass 255 and wrap
+    /// to black.
+    #[test]
+    fn faint_layers_stay_light() {
+        let bitmap = [255u8; 4];
+        let mut rgba = vec![0u8; 4 * 4];
+        for color in [0xf3f3_f3fb_u32, 0xf3f3_f3f3, 0xffff_fff3] {
+            let img = AssImage {
+                w: 2,
+                h: 2,
+                stride: 2,
+                bitmap: bitmap.as_ptr(),
+                color,
+                dst_x: 0,
+                dst_y: 0,
+                next: std::ptr::null(),
+                kind: 0,
+            };
+            // SAFETY: the bitmap is w × h at stride.
+            unsafe { blend(&mut rgba, (2, 2), &img) };
+        }
+        for p in rgba.chunks(4) {
+            assert!(p[0] >= 240 && (24..=30).contains(&p[3]), "{p:?}");
         }
     }
 
