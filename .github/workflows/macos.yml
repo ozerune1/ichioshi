@@ -1,0 +1,146 @@
+# The macOS app, built on GitHub's Macs (scripts/macos/build.sh) and checked
+# there: the self-test (Apple Silicon, Intel through Rosetta, and a stream
+# over HTTP) with the system's GStreamer moved away, so only what's in the
+# app is used; a picture of its window; and an in-app update from a
+# stand-in release. The disk image and the updater's archive are kept as
+# the run's artifacts.
+name: macOS
+
+on:
+  push:
+    branches: [mac-build]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GST_VERSION: "1.28.9"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  app:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GStreamer (gstreamer.freedesktop.org's packages)
+        run: |
+          base="https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION"
+          for p in "gstreamer-1.0-$GST_VERSION-universal.pkg" "gstreamer-1.0-devel-$GST_VERSION-universal.pkg"; do
+            curl -fsSLO "$base/$p"
+            curl -fsSLO "$base/$p.sha256sum"
+            shasum -a 256 -c "$p.sha256sum"
+            sudo installer -pkg "$p" -target / >/dev/null
+          done
+
+      - name: Tools
+        run: |
+          command -v pkg-config || brew install pkgconf
+          brew install ffmpeg
+          arch -x86_64 /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: scripts/macos/build.sh
+
+      - name: Self-test, with only the app's own GStreamer
+        run: |
+          video="$RUNNER_TEMP/test-ep.mkv"
+          ffmpeg -v error -f lavfi -i testsrc2=s=1280x720:r=24000/1001:d=10 -f lavfi -i sine=f=440:d=10 \
+            -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac "$video"
+          sudo mv /Library/Frameworks/GStreamer.framework /Library/Frameworks/GStreamer.framework.away
+          mkdir -p checks
+          app=target/macos/Ichioshi.app/Contents/MacOS/ichioshi
+          "$app" --version
+          (cd "$RUNNER_TEMP" && exec python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1) &
+          sleep 2
+          "$app" --self-test checks/self-test-arm64.txt "$video" || true
+          arch -x86_64 "$app" --self-test checks/self-test-x86_64.txt "$video" || true
+          "$app" --self-test checks/self-test-http.txt http://127.0.0.1:8765/test-ep.mkv || true
+          failed=0
+          for f in checks/self-test-*.txt; do
+            echo "== $f"; cat "$f"
+            tail -n1 "$f" | grep -qx 'all ok' || failed=1
+          done
+          exit $failed
+
+      - name: The window
+        run: |
+          mkdir -p checks
+          ICHIOSHI_STATE_DIR="$RUNNER_TEMP/state" target/macos/Ichioshi.app/Contents/MacOS/ichioshi \
+            > checks/app.log 2>&1 &
+          pid=$!
+          sleep 30
+          screencapture -x checks/window.png || echo "no screenshot"
+          kill "$pid" || true
+          tail -20 checks/app.log
+
+      - name: In-app update from a stand-in release
+        run: |
+          t="$RUNNER_TEMP/update"
+          mkdir -p "$t/apps" "$t/new" "$t/gh/files" "$t/gh/repos/ozerune1/ichioshi/releases"
+          cp -R target/macos/Ichioshi.app "$t/apps/"
+          cp -R target/macos/Ichioshi.app "$t/new/"
+          plutil -replace CFBundleShortVersionString -string 9.9.9 "$t/new/Ichioshi.app/Contents/Info.plist"
+          COPYFILE_DISABLE=1 tar -C "$t/new" --no-mac-metadata -czf "$t/gh/files/Ichioshi-macos-universal.tar.gz" Ichioshi.app
+          python3 - "$t/gh" <<'PY'
+          import hashlib, json, os, sys
+          root = sys.argv[1]
+          f = os.path.join(root, "files", "Ichioshi-macos-universal.tar.gz")
+          json.dump({"tag_name": "v9.9.9", "name": "Ichioshi 9.9.9", "body": "Test", "html_url": "http://x",
+                     "assets": [{"name": os.path.basename(f), "size": os.path.getsize(f),
+                                 "browser_download_url": "http://127.0.0.1:8766/files/" + os.path.basename(f),
+                                 "digest": "sha256:" + hashlib.sha256(open(f, "rb").read()).hexdigest()}]},
+                    open(os.path.join(root, "repos/ozerune1/ichioshi/releases/latest"), "w"))
+          PY
+          (cd "$t/gh" && exec python3 -m http.server 8766 --bind 127.0.0.1 >/dev/null 2>&1) &
+          sleep 2
+          ICHIOSHI_UPDATE_API=http://127.0.0.1:8766 ICHIOSHI_STATE_DIR="$t/state" \
+            "$t/apps/Ichioshi.app/Contents/MacOS/ichioshi" --update
+          plist="$t/apps/Ichioshi.app/Contents/Info.plist"
+          for i in $(seq 1 90); do
+            v=$(plutil -extract CFBundleShortVersionString raw "$plist" 2>/dev/null || true)
+            [ "$v" = 9.9.9 ] && break
+            sleep 1
+          done
+          echo "the installed app says: $v"
+          cat "$t/state/update/failed.txt" 2>/dev/null || true
+          test "$v" = 9.9.9
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Ichioshi-macos
+          retention-days: 14
+          path: |
+            dist/Ichioshi-macos-universal.dmg
+            dist/Ichioshi-macos-universal.tar.gz
+            checks/
+
+  tests:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: GStreamer (gstreamer.freedesktop.org's packages)
+        run: |
+          base="https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION"
+          for p in "gstreamer-1.0-$GST_VERSION-universal.pkg" "gstreamer-1.0-devel-$GST_VERSION-universal.pkg"; do
+            curl -fsSLO "$base/$p"
+            curl -fsSLO "$base/$p.sha256sum"
+            shasum -a 256 -c "$p.sha256sum"
+            sudo installer -pkg "$p" -target / >/dev/null
+          done
+          command -v pkg-config || brew install pkgconf
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests
+        env:
+          PKG_CONFIG_PATH: /Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig
+        run: cargo test --lib -p ichioshi -p ichioshi-setup
