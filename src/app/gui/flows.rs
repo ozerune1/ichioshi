@@ -1442,9 +1442,23 @@ fn library_on_your_servers() {
         log.lock().unwrap().push(req.clone());
         let path = req.target.split('?').next().unwrap();
         let q = req.query();
+        // Watched for: as last told (PUT episode/monitor), else all but
+        // episode 2.
+        let told = |id: u64| {
+            log.lock().unwrap().iter().rev().find_map(|r| {
+                if r.method != "PUT" || r.target != "/sonarr/api/v3/episode/monitor" {
+                    return None;
+                }
+                let b: Value = serde_json::from_slice(&r.body).ok()?;
+                b["episodeIds"]
+                    .as_array()?
+                    .contains(&json!(id))
+                    .then(|| b["monitored"].as_bool())?
+            })
+        };
         let ep = |id: u64, n: u32, file: u64| {
             json!({"id": id, "seasonNumber": 1, "episodeNumber": n, "hasFile": file > 0,
-                   "monitored": n != 2, "episodeFileId": file})
+                   "monitored": told(id).unwrap_or(n != 2), "episodeFileId": file})
         };
         let v: Value = match (req.method.as_str(), path) {
             ("GET", "/mapping") => json!([
@@ -1825,9 +1839,47 @@ fn library_on_your_servers() {
     });
     assert!(shows(&h, "Watch for this series"));
     assert!(shows_containing(&h, "Quality: HD-1080p"));
-    assert!(shows_containing(&h, "2 of its 3 episodes watched for"));
+    // (Episode 2 too, since it was searched for.)
+    assert!(shows_containing(&h, "3 of its 3 episodes watched for"));
     save(&h, &out, "6a-manage");
-    // Episode 2 watched for, from its row's box.
+    // Episode 2 not watched for, from its row's box: unticked at once, not
+    // once the servers are read again; and still, once they are.
+    let ticked = |g: &Gui| {
+        g.app
+            .library
+            .find(FRIEREN)
+            .and_then(|s| s.remote.as_ref()?.episodes.get(&2))
+            .map(|e| e.monitored)
+    };
+    assert_eq!(ticked(&h), Some(true));
+    send(
+        &mut h,
+        [act(Action::Manage(
+            crate::app::manage_ui::ManageAction::SetEpisodesMonitored(vec![2], false),
+        ))],
+    );
+    wait(&mut h, "not watching for it", |g| {
+        g.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Not watching for the episode")
+    });
+    assert_eq!(
+        sent("PUT", "/sonarr/api/v3/episode/monitor").last(),
+        Some(&json!({"episodeIds": [12], "monitored": false}))
+    );
+    assert_eq!(
+        ticked(&h),
+        Some(false),
+        "unticked as soon as Sonarr said so"
+    );
+    assert!(h.app.servers.refreshing, "the servers are being read again");
+    wait_until(&mut h, "the servers read again", |g| {
+        !g.app.servers.refreshing
+    });
+    assert_eq!(ticked(&h), Some(false));
+    assert!(shows_containing(&h, "2 of its 3 episodes watched for"));
+    // And ticked again.
     send(
         &mut h,
         [act(Action::Manage(
@@ -1844,6 +1896,7 @@ fn library_on_your_servers() {
         sent("PUT", "/sonarr/api/v3/episode/monitor").last(),
         Some(&json!({"episodeIds": [12], "monitored": true}))
     );
+    assert_eq!(ticked(&h), Some(true));
     // The series, not watched for (its box).
     click(&mut h, "Watch for this series");
     wait_until(&mut h, "saved", |g| {
@@ -2775,7 +2828,12 @@ fn tracks_lists_on_anilist_and_mal() {
         episodes: Some(3),
         ..Default::default()
     };
-    h.app.library.add(&new, &library);
+    let folder = h.app.library.add(&new, &library).folder.clone();
+    // Its episodes, on disk (none watched here).
+    std::fs::create_dir_all(&folder).unwrap();
+    for n in 1..=3 {
+        std::fs::write(folder.join(format!("Frieren - {n:02}.mkv")), b"video").unwrap();
+    }
     send(&mut h, [Message::Tick]);
     assert!(!h.app.tracking.any(), "nothing to show before signing in");
 
@@ -2846,8 +2904,13 @@ fn tracks_lists_on_anilist_and_mal() {
         entry(g, Service::AniList).is_some() && entry(g, Service::Mal).is_some()
     });
     click(&mut h, "Library");
+    wait_until(&mut h, "its episodes on disk", |g| {
+        g.app.on_disk(1).len() == 3
+    });
     save(&h, &out, "tracking-3-library");
     assert!(shows(&h, "Watching"), "the card's badge");
+    // Next: after the 2 episodes the lists say are watched.
+    assert!(shows_containing(&h, "Up next · Episode 3"));
     send(&mut h, [change(1, Change::Score(9.0))]);
     wait_until(&mut h, "saved", |g| {
         g.app.tracking.saving.is_empty() && entry(g, Service::Mal).is_some_and(|e| e.score == 9.0)
@@ -2862,9 +2925,13 @@ fn tracks_lists_on_anilist_and_mal() {
         "9"
     );
 
-    // The series page: completed, on both (all 3 episodes watched).
+    // The series page: episodes 1 and 2 marked watched, as both lists say,
+    // and the 3rd plays next (though none were watched here).
     click(&mut h, "Frieren");
     wait_until(&mut h, "details", |g| g.app.details(1).is_some());
+    assert_eq!(count(&h, "✓ AniList · MAL"), 2);
+    assert!(shows(&h, "▶  Play episode 3"));
+    // Completed, on both (all 3 episodes watched).
     send(&mut h, [change(1, Change::Status(Status::Completed))]);
     wait_until(&mut h, "completed", |g| {
         g.app.tracking.saving.is_empty()
@@ -2881,6 +2948,7 @@ fn tracks_lists_on_anilist_and_mal() {
         ("completed", "3")
     );
     assert!(shows(&h, "AniList: Completed · ★ 9 · 3/3"));
+    assert_eq!(count(&h, "✓ AniList · MAL"), 3);
     save(&h, &out, "tracking-4-series");
 
     // MyAnimeList fails to save: its entry is put back, and it says so.

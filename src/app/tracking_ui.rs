@@ -639,6 +639,52 @@ impl App {
             .or(shown)
     }
 
+    /// Episodes watched as your list says (the one `shown`), for what plays
+    /// next; none when the anime isn't on a list, or its episodes here are
+    /// numbered past the list's count (from the show's start, say), so the
+    /// numbers don't match.
+    pub(super) fn list_progress(&self, id: u64) -> Option<u32> {
+        let progress = self.tracking.shown(id)?.progress;
+        let count = self.episode_count(id).filter(|n| *n > 0);
+        if let Some(count) = count
+            && self.on_disk(id).last().is_some_and(|n| *n > count)
+        {
+            return None;
+        }
+        Some(progress)
+    }
+
+    /// Episode `n` watched, as your lists say (their episodes watched reach
+    /// it): its mark ("✓ AniList · MAL") and what that means. None when no
+    /// list says so.
+    pub(super) fn listed_watched(&self, id: u64, n: u32) -> Option<(String, String)> {
+        let lists: Vec<Service> = self
+            .tracking
+            .services()
+            .into_iter()
+            .filter(|s| self.tracking.entry(*s, id).is_some_and(|e| e.progress >= n))
+            .collect();
+        if lists.is_empty() {
+            return None;
+        }
+        let short: Vec<&str> = lists
+            .iter()
+            .map(|s| match s {
+                Service::AniList => "AniList",
+                Service::Mal => "MAL",
+            })
+            .collect();
+        let long: Vec<&str> = lists.iter().map(|s| s.name()).collect();
+        Some((
+            format!("✓ {}", short.join(" · ")),
+            if lists.len() == 1 {
+                format!("Watched, as your {} list says", long[0])
+            } else {
+                format!("Watched, as your {} lists say", long.join(" and "))
+            },
+        ))
+    }
+
     /// Change an entry on every list signed in to (each keeps its other
     /// fields); shown at once, put back if saving fails.
     fn change_list_entry(&mut self, id: u64, change: Change) -> Vec<Service> {

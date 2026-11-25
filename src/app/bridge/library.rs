@@ -71,7 +71,7 @@ pub(super) fn page(ui: &mut Ui) -> Value {
             continue;
         }
         let disk = app.on_disk(s.anilist_id);
-        let Some(next) = up_next(s, disk.iter().copied()) else {
+        let Some(next) = up_next(s, disk.iter().copied(), app.list_progress(s.anilist_id)) else {
             continue;
         };
         let details = s.details.as_ref();

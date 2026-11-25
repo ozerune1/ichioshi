@@ -209,7 +209,7 @@ impl Gui {
         let mut buttons = Row::new().spacing(10).align_y(Alignment::Center);
         if let Some(s) = series {
             let disk = episodes.iter().filter(|e| e.file.is_some()).map(|e| e.n);
-            if let Some(next) = up_next(s, disk) {
+            if let Some(next) = up_next(s, disk, self.app.list_progress(id)) {
                 let resume = s
                     .watched
                     .get(&next)
@@ -579,6 +579,10 @@ impl Gui {
         }
         if mal.is_some_and(|m| m.recap) {
             title = title.push(badge("Recap", MUTED));
+        }
+        // Watched, as your lists say.
+        if let Some((mark, what)) = self.app.listed_watched(id, n) {
+            title = title.push(with_tip(badge(mark, GREEN), what));
         }
         let mut middle = column![title].spacing(5).width(Fill);
         // Its file's release: group, BD or WEB, dual audio, censored.

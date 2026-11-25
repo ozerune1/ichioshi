@@ -124,6 +124,7 @@
             <span class="title">{e.title}
               {#if e.filler}<span class="badge gold">Filler</span>{/if}
               {#if e.recap}<span class="badge">Recap</span>{/if}
+              {#if e.listed}<span class="badge green" title="Watched, as your lists say">{e.listed}</span>{/if}
             </span>
             {#if e.tags.length}
               <span class="rtags">{#each e.tags as t}<span class="rt {t.tone}">{t.label}</span>{/each}</span>
@@ -236,6 +237,7 @@
   .ep:not(.here) .title { color: var(--faint); }
   .badge { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--surface2); color: var(--muted); margin-left: 4px; }
   .badge.gold { color: var(--gold); }
+  .badge.green { color: var(--green); }
   .rtags { display: flex; flex-wrap: wrap; gap: 5px; }
   .rt { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--surface2); color: var(--muted); }
   .rt.plain { background: none; padding: 1px 0; }

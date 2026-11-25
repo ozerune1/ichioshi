@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::discover_ui::Loaded;
 use super::{App, Msg, Page};
+use crate::library::ArrRef;
 use crate::servers::arr::{Arr, Event, FileInfo, Kind, Release, Rename, Scope, Tag};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +118,17 @@ pub(super) enum ManageAction {
     },
 }
 
+/// Episodes Sonarr was asked to watch for (or not), by its IDs: shown so as
+/// soon as it says it has, not once the servers are read again (all of
+/// them, which can take a while).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Monitored {
+    pub(super) episodes: Vec<u64>,
+    pub(super) on: bool,
+    /// Its series' season, watched for too (Sonarr's series, the season).
+    pub(super) season: Option<(u64, u32)>,
+}
+
 pub(super) enum ManageMsg {
     Record(u64, Result<Value, String>),
     Releases(u64, Looking, Result<Vec<Release>, String>),
@@ -127,9 +139,34 @@ pub(super) enum ManageMsg {
     Tags(u64, Result<Vec<Tag>, String>),
     Episode(u64, u32, Result<Value, String>),
     TagAdded(u64, Result<Tag, String>),
-    /// Something changed there: what to say; read the servers again.
-    Done(u64, Result<String, String>),
+    /// Something changed there: what to say (and, when it worked, the
+    /// episodes it now watches for, or doesn't); read the servers again.
+    Done(u64, Result<String, String>, Option<Monitored>),
     Deleted(u64, Result<String, String>),
+}
+
+/// `marks` on the library's series: the episodes (whichever anime they're
+/// part of: a split season's, say) and their seasons. Whether that changed
+/// anything.
+fn mark(series: &mut [crate::library::Series], marks: &Monitored) -> bool {
+    let mut changed = false;
+    for s in series {
+        let Some(r) = &mut s.remote else { continue };
+        let ArrRef::Sonarr { id, season, .. } = r.arr else {
+            continue;
+        };
+        for e in r.episodes.values_mut() {
+            if e.arr_id.is_some_and(|a| marks.episodes.contains(&a)) && e.monitored != marks.on {
+                e.monitored = marks.on;
+                changed = true;
+            }
+        }
+        if marks.season == Some((id, season)) && !r.monitored {
+            r.monitored = true;
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn loaded<T>(r: Result<T, String>) -> Loaded<T> {
@@ -235,6 +272,15 @@ impl App {
         F: FnOnce(Arr, u64) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<String>> + Send + 'static,
     {
+        self.manage_do_marking(None, work);
+    }
+
+    /// `manage_do`, and once it's worked, `marks` shown at once.
+    fn manage_do_marking<F, Fut>(&mut self, marks: Option<Monitored>, work: F)
+    where
+        F: FnOnce(Arr, u64) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<String>> + Send + 'static,
+    {
         let Some((arr, id, m)) = self.manage_arr() else {
             return;
         };
@@ -242,7 +288,15 @@ impl App {
         if let Some(m) = &mut self.manage {
             m.busy = true;
         }
-        self.spawn(async move { Msg::Manage(ManageMsg::Done(id, fut.await.map_err(err))) });
+        self.spawn(async move { Msg::Manage(ManageMsg::Done(id, fut.await.map_err(err), marks)) });
+    }
+
+    /// Sonarr watches for these episodes now, or doesn't (it said so): the
+    /// library shows it before the servers are read again.
+    pub(super) fn mark_monitored(&mut self, marks: &Monitored) {
+        if mark(&mut self.library.series, marks) {
+            self.library.save_or_warn();
+        }
     }
 
     pub(super) fn manage_action(&mut self, action: ManageAction) {
@@ -284,14 +338,22 @@ impl App {
                 let n = ids.len();
                 // Watching for episodes needs the season watched for too
                 // (else Sonarr ignores them).
-                let season = self
-                    .manage
-                    .as_ref()
-                    .and_then(|m| match (&m.record, m.season) {
-                        (Loaded::Ready(r), Some(s)) if on => Some((r.clone(), s)),
-                        _ => None,
-                    });
-                self.manage_do(move |arr, _| async move {
+                let (season, owner) = match self.manage.as_ref() {
+                    Some(m) => (
+                        match (&m.record, m.season) {
+                            (Loaded::Ready(r), Some(s)) if on => Some((r.clone(), s)),
+                            _ => None,
+                        },
+                        m.owner,
+                    ),
+                    None => (None, 0),
+                };
+                let marks = Monitored {
+                    episodes: ids.clone(),
+                    on,
+                    season: season.as_ref().map(|(_, s)| (owner, *s)),
+                };
+                self.manage_do_marking(Some(marks), move |arr, _| async move {
                     arr.monitor(&ids, on).await?;
                     if let Some((mut record, number)) = season {
                         let mut changed = false;
@@ -481,7 +543,12 @@ impl App {
                     self.set_info("Nothing missing to search for");
                     return;
                 }
-                self.manage_do(move |arr, owner| async move {
+                let marks = Monitored {
+                    episodes: ids.clone(),
+                    on: true,
+                    season: None,
+                };
+                self.manage_do_marking(Some(marks), move |arr, owner| async move {
                     arr.monitor(&ids, true).await?;
                     arr.search(owner, &ids).await?;
                     Ok(match ids.len() {
@@ -737,9 +804,14 @@ impl App {
                 self.servers.queue_read = None;
                 self.refresh_servers();
             }
-            ManageMsg::Done(id, r) => {
+            ManageMsg::Done(id, r, marks) => {
                 match r {
-                    Ok(said) => self.set_info(said),
+                    Ok(said) => {
+                        if let Some(marks) = marks {
+                            self.mark_monitored(&marks);
+                        }
+                        self.set_info(said);
+                    }
                     Err(e) => self.set_error(e),
                 }
                 if self.manage.as_ref().is_some_and(|m| m.anilist == id) {
@@ -766,5 +838,93 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::{Remote, RemoteEpisode, Series};
+
+    /// An anime in Sonarr: `show`'s `season`, with these episodes (its
+    /// number, Sonarr's ID, watched for).
+    fn in_sonarr(anilist: u64, show: u64, season: u32, eps: &[(u32, u64, bool)]) -> Series {
+        let mut s: Series =
+            serde_json::from_value(json!({"anilist_id": anilist, "folder": "/x"})).unwrap();
+        s.remote = Some(Remote {
+            arr: ArrRef::Sonarr {
+                id: show,
+                tvdb: 1,
+                season,
+                offset: 0,
+            },
+            path: String::new(),
+            slug: String::new(),
+            monitored: false,
+            jellyfin: None,
+            episodes: eps
+                .iter()
+                .map(|&(n, id, on)| {
+                    let e = RemoteEpisode {
+                        arr_id: Some(id),
+                        monitored: on,
+                        ..Default::default()
+                    };
+                    (n, e)
+                })
+                .collect(),
+        });
+        s
+    }
+
+    fn watched_for(series: &[Series], anilist: u64) -> Vec<bool> {
+        let s = series.iter().find(|s| s.anilist_id == anilist).unwrap();
+        let r = s.remote.as_ref().unwrap();
+        r.episodes.values().map(|e| e.monitored).collect()
+    }
+
+    /// What Sonarr was told shows on the episodes' boxes at once: not only
+    /// once the servers are read again.
+    #[test]
+    fn episodes_show_what_sonarr_was_told() {
+        let mut series = vec![
+            in_sonarr(
+                10,
+                1,
+                1,
+                &[(1, 101, true), (2, 102, false), (3, 103, false)],
+            ),
+            // The same season's second cour, as another anime.
+            in_sonarr(11, 1, 1, &[(1, 104, false)]),
+            in_sonarr(12, 2, 1, &[(1, 201, false)]),
+        ];
+        let stop = Monitored {
+            episodes: vec![101],
+            on: false,
+            season: None,
+        };
+        assert!(mark(&mut series, &stop));
+        assert_eq!(watched_for(&series, 10), [false, false, false]);
+        assert!(!mark(&mut series, &stop), "nothing left to change");
+
+        // Watching for some (the season too, in both its anime).
+        let watch = Monitored {
+            episodes: vec![102, 104],
+            on: true,
+            season: Some((1, 1)),
+        };
+        assert!(mark(&mut series, &watch));
+        assert_eq!(watched_for(&series, 10), [false, true, false]);
+        assert_eq!(watched_for(&series, 11), [true]);
+        assert_eq!(watched_for(&series, 12), [false], "another series");
+        let season = |id: u64| {
+            series
+                .iter()
+                .find(|s| s.anilist_id == id)
+                .and_then(|s| s.remote.as_ref())
+                .unwrap()
+                .monitored
+        };
+        assert!(season(10) && season(11) && !season(12));
     }
 }

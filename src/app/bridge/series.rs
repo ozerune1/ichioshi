@@ -74,7 +74,7 @@ fn actions(ui: &mut Ui, ap: &AnimePage, rows: &[EpisodeRow]) -> Vec<Value> {
     let mut buttons = Vec::new();
     if let Some(s) = series {
         let disk = rows.iter().filter(|e| e.file.is_some()).map(|e| e.n);
-        if let Some(next) = up_next(s, disk) {
+        if let Some(next) = up_next(s, disk, app.list_progress(id)) {
             let resume = s
                 .watched
                 .get(&next)
@@ -508,6 +508,8 @@ fn episode(ui: &mut Ui, id: u64, e: &EpisodeRow, coverage: &Coverage<'_>) -> Val
         "done": done,
         "filler": mal.is_some_and(|m| m.filler),
         "recap": mal.is_some_and(|m| m.recap),
+        // Watched, as your lists say ("✓ AniList · MAL").
+        "listed": app.listed_watched(id, n).map(|(mark, _)| mark),
         "score": mal.and_then(|m| m.score).map(|v| format!("★ {v:.2}")),
         "tags": tags,
         "progress": progress,

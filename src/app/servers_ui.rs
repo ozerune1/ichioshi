@@ -97,10 +97,12 @@ pub(super) enum ServersMsg {
         seq: u64,
         result: Result<(Arc<Mapping>, Built), String>,
     },
-    /// Something handed over: what to say, then read everything again.
+    /// Something handed over: what to say (and, when it worked, episodes
+    /// Sonarr now watches for), then read everything again.
     Done {
         id: u64,
         result: Result<String, String>,
+        marks: Option<super::manage_ui::Monitored>,
     },
     /// The queues, read again (and what couldn't be read).
     Queue(Vec<(Kind, Queued)>, Vec<String>),
@@ -365,10 +367,15 @@ impl App {
                 }
                 self.servers.queue_read = None;
             }
-            ServersMsg::Done { id, result } => {
+            ServersMsg::Done { id, result, marks } => {
                 self.servers.busy.remove(&id);
                 match result {
-                    Ok(said) => self.set_info(said),
+                    Ok(said) => {
+                        if let Some(marks) = marks {
+                            self.mark_monitored(&marks);
+                        }
+                        self.set_info(said);
+                    }
                     Err(e) => self.set_error(e),
                 }
                 self.refresh_servers();
@@ -667,7 +674,11 @@ impl App {
             }
             .map(|_| format!("Added {title} to {}", kind.name()))
             .map_err(|e| format!("Couldn't add it: {e:#}"));
-            Msg::Servers(ServersMsg::Done { id, result })
+            Msg::Servers(ServersMsg::Done {
+                id,
+                result,
+                marks: None,
+            })
         });
     }
 
@@ -797,7 +808,11 @@ impl App {
             }
             .await
             .map_err(|e| format!("{e:#}"));
-            Msg::Servers(ServersMsg::Done { id, result })
+            Msg::Servers(ServersMsg::Done {
+                id,
+                result,
+                marks: None,
+            })
         });
     }
 
@@ -828,11 +843,16 @@ impl App {
             return;
         }
         let n = wanted.len();
+        // Only what's watched for is searched for.
+        let marks = (kind == Kind::Sonarr).then(|| super::manage_ui::Monitored {
+            episodes: wanted.clone(),
+            on: true,
+            season: None,
+        });
         self.servers.busy.insert(id);
         self.spawn(async move {
             let result = async {
                 if kind == Kind::Sonarr {
-                    // Only what's watched for is searched for.
                     arr.monitor(&wanted, true).await?;
                 }
                 arr.search(owner, &wanted).await
@@ -844,7 +864,7 @@ impl App {
                 (_, n) => format!("Sonarr is searching for {n} episodes"),
             })
             .map_err(|e| format!("Couldn't search: {e:#}"));
-            Msg::Servers(ServersMsg::Done { id, result })
+            Msg::Servers(ServersMsg::Done { id, result, marks })
         });
     }
 

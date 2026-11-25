@@ -460,7 +460,7 @@ impl Gui {
                 continue;
             }
             let disk = on_disk(self, s.anilist_id);
-            if let Some(next) = up_next(s, disk.iter().copied()) {
+            if let Some(next) = up_next(s, disk.iter().copied(), a.list_progress(s.anilist_id)) {
                 shelf = shelf.push(self.continue_card(s, next));
                 shelved += 1;
             }

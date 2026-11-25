@@ -51,10 +51,19 @@ pub(super) fn episode_files(series: &Series, busy: &HashSet<PathBuf>) -> BTreeMa
 
 /// The episode to watch next (of those on disk, in order): the first after
 /// the last one seen, or the first of all once everything's been seen.
+/// What's been seen is what your list says (`listed`, its episodes
+/// watched) when the anime's on one, else what was watched here.
 pub(super) fn up_next(
     series: &Series,
     mut on_disk: impl Iterator<Item = u32> + Clone,
+    listed: Option<u32>,
 ) -> Option<u32> {
+    if let Some(progress) = listed {
+        return on_disk
+            .clone()
+            .find(|e| *e > progress)
+            .or_else(|| on_disk.next());
+    }
     let last_done = series
         .watched
         .iter()
@@ -98,5 +107,52 @@ impl super::App {
         if done && !before {
             self.sync_watched(id, episode);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::Watch;
+
+    /// A series with `done` seen to the end here.
+    fn seen(done: &[u32]) -> Series {
+        let mut s: Series =
+            serde_json::from_value(serde_json::json!({"anilist_id": 1, "folder": "/x"})).unwrap();
+        for &n in done {
+            s.watched.insert(
+                n,
+                Watch {
+                    position: 1400.0,
+                    duration: 1420.0,
+                    done: true,
+                    at: 0,
+                },
+            );
+        }
+        s
+    }
+
+    /// What plays next: after the last episode seen here, or, when the
+    /// anime's on one of your lists, after its episodes watched there.
+    #[test]
+    fn up_next_follows_your_list() {
+        let disk = || [1, 2, 3, 4, 5].into_iter();
+        // Seen here: after the last one; the first again once all are.
+        assert_eq!(up_next(&seen(&[]), disk(), None), Some(1));
+        assert_eq!(up_next(&seen(&[1, 2]), disk(), None), Some(3));
+        assert_eq!(up_next(&seen(&[1, 2, 3, 4, 5]), disk(), None), Some(1));
+        // The list says 3 (watched somewhere else): the 4th, though none
+        // were seen here.
+        assert_eq!(up_next(&seen(&[]), disk(), Some(3)), Some(4));
+        // Rewatching: all seen here before, the list back at 2.
+        assert_eq!(up_next(&seen(&[1, 2, 3, 4, 5]), disk(), Some(2)), Some(3));
+        // The list says none yet.
+        assert_eq!(up_next(&seen(&[1, 2]), disk(), Some(0)), Some(1));
+        // Watched to the last on disk: the first again.
+        assert_eq!(up_next(&seen(&[]), disk(), Some(5)), Some(1));
+        // The next one there is, past a gap.
+        assert_eq!(up_next(&seen(&[]), [1, 2, 6].into_iter(), Some(3)), Some(6));
+        assert_eq!(up_next(&seen(&[]), std::iter::empty(), Some(3)), None);
     }
 }
