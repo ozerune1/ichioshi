@@ -93,15 +93,16 @@ impl App {
                     for r in search.releases.iter().take(super::MAX_NYAA_ROWS) {
                         match &r.kind {
                             ReleaseKind::Torrent { item, .. } => {
-                                wanted.push((item.info_hash.clone(), Some(item.id)))
+                                wanted.push((item.info_hash.clone(), item.nyaa_id()))
                             }
                             ReleaseKind::Episodes(items) => {
                                 wanted.extend(
                                     items
                                         .iter()
-                                        .map(|(_, item)| (item.info_hash.clone(), Some(item.id))),
+                                        .map(|(_, item)| (item.info_hash.clone(), item.nyaa_id())),
                                 );
                             }
+                            ReleaseKind::Stream { .. } => {}
                         }
                     }
                 }
@@ -119,7 +120,7 @@ impl App {
                     wanted.extend(
                         items
                             .iter()
-                            .map(|(_, item)| (item.info_hash.clone(), Some(item.id))),
+                            .map(|(_, item)| (item.info_hash.clone(), item.nyaa_id())),
                     );
                 }
             }

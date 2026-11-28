@@ -92,7 +92,7 @@ fn actions(ui: &mut Ui, ap: &AnimePage, rows: &[EpisodeRow]) -> Vec<Value> {
         }
     } else if app.manage.as_ref().is_some_and(|m| m.anilist == id) {
         // In Sonarr as a later part of a series there: nothing to add.
-    } else if app.servers_mode() {
+    } else if app.page_on_servers() {
         let to = match app.server_place(id) {
             Some((Kind::Radarr, _)) => "Radarr",
             _ => "Sonarr",
@@ -107,7 +107,7 @@ fn actions(ui: &mut Ui, ap: &AnimePage, rows: &[EpisodeRow]) -> Vec<Value> {
     } else {
         buttons.push(ui.button("+  Add to library", Some(Action::AddToLibrary)));
     }
-    if app.servers_mode() {
+    if app.page_on_servers() {
         let to = match series.and_then(|s| s.remote.as_ref()).map(|r| r.arr) {
             Some(ArrRef::Radarr { .. }) => "Radarr",
             Some(_) => "Sonarr",
@@ -167,7 +167,7 @@ fn actions(ui: &mut Ui, ap: &AnimePage, rows: &[EpisodeRow]) -> Vec<Value> {
 fn lists(ui: &mut Ui, id: u64) -> Value {
     let app = ui.app;
     let t = &app.tracking;
-    if !t.any() {
+    if !t.any() || !app.may_list(id) {
         return Value::Null;
     }
     let change = |c: Change| Action::Tracking(TrackingAction::Change { id, change: c });
@@ -245,7 +245,7 @@ fn library_box(ui: &mut Ui, ap: &AnimePage) -> Value {
     let app = ui.app;
     let anime = &ap.anime;
     let id = anime.anilist_id;
-    if app.servers_mode() {
+    if app.page_on_servers() {
         if let Some(m) = app.manage.as_ref().filter(|m| m.anilist == id) {
             return json!({"t": "manage", "panel": super::manage::panel(ui, m)});
         }
@@ -331,7 +331,7 @@ fn episodes(ui: &mut Ui, ap: &AnimePage, rows: &[EpisodeRow], extras: &[(String,
     let mut summary = format!(
         "{have} of {} {}",
         rows.len(),
-        if app.servers_mode() {
+        if app.page_on_servers() {
             "on your servers"
         } else {
             "in your library"
@@ -465,7 +465,7 @@ fn episode(ui: &mut Ui, id: u64, e: &EpisodeRow, coverage: &Coverage<'_>) -> Val
                 })
             }),
         ));
-    } else if app.servers_mode() {
+    } else if app.page_on_servers() {
     } else {
         let why = (!coverage.has(n)).then(|| coverage.why_not());
         buttons.push(ui.button_why(
@@ -711,7 +711,7 @@ fn release(ui: &mut Ui, ap: &AnimePage) -> Value {
     } else {
         "Or pick which files to download yourself.".to_owned()
     };
-    let choose = (!app.servers_mode() && (!cards.is_empty() || has_choice)).then(|| {
+    let choose = (!app.page_on_servers() && (!cards.is_empty() || has_choice)).then(|| {
         json!({
             "button": ui.button("Choose files…", enabled.then_some(Action::ChooseFiles)),
             "note": note,

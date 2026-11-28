@@ -38,6 +38,12 @@ fn group<'a>(
     )
 }
 
+/// What 18+ anime do, when they're on.
+pub(crate) const ADULT_TIP: &str = "They show up in search, Discover and the calendar. \
+    Releases come from Sukebei and TokyoTosho, then hstream.moe and ohentai.org; the highest \
+    resolution wins, wherever it's from. They're always kept on this device, even when your \
+    library is on your servers: never sent to Sonarr, Radarr or Jellyfin.";
+
 impl Gui {
     pub(super) fn settings_page(&self) -> Element<'_, Message> {
         // A phone's: More, or one group.
@@ -47,7 +53,9 @@ impl Gui {
                 return self.more_page();
             };
             return page(match section {
-                Section::Library => self.library_settings(),
+                Section::Library => column![self.library_settings(), self.adult_settings()]
+                    .spacing(18)
+                    .into(),
                 Section::Languages => self.language_settings(),
                 Section::Downloading => self.download_settings(),
                 Section::Usenet => self.usenet_settings(),
@@ -70,6 +78,7 @@ impl Gui {
             ),
             gap(10.0),
             self.library_settings(),
+            self.adult_settings(),
             self.language_settings(),
             self.download_settings(),
             self.usenet_settings(),
@@ -153,6 +162,32 @@ impl Gui {
                     ),
                     "Between equally good releases (two SeaDex \"best\" picks, or two Nyaa \
                      releases from the same tier), pick the dual-audio one."
+                        .into()
+                ),
+            ]
+            .spacing(14),
+        )
+    }
+
+    fn adult_settings(&self) -> Element<'_, Message> {
+        group(
+            "18+ anime",
+            "Adult anime are left out unless you turn them on.",
+            column![
+                with_tip(
+                    check("Show 18+ anime", self.app.settings.adult, |on| edit(
+                        move |g| g.app.set_adult(on)
+                    )),
+                    ADULT_TIP.into()
+                ),
+                with_tip(
+                    check(
+                        "Put 18+ anime on your AniList and MyAnimeList lists",
+                        self.app.settings.adult_lists,
+                        |on| edit(move |g| g.app.settings.adult_lists = on)
+                    ),
+                    "Off: watching them doesn't update your lists, and their pages don't \
+                     change them."
                         .into()
                 ),
             ]

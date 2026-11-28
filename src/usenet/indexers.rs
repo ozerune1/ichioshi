@@ -32,6 +32,108 @@ pub struct NzbLink {
     pub url: String,
 }
 
+/// AnimeTosho's feed (its NZBs and its links on file hosts).
+pub const ANIMETOSHO: &str = "https://feed.animetosho.net";
+
+/// A file of a release AnimeTosho mirrors, with its links on file hosts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostedFile {
+    pub name: String,
+    pub size: u64,
+    /// Best first; only hosts a debrid service can fetch from.
+    pub links: Vec<String>,
+}
+
+/// File hosts TorBox fetches from (its list, 27 Nov 2026), in the order to
+/// try them. (FileDitch isn't one; others need an account.)
+const FETCHABLE_HOSTS: &[&str] = &[
+    "gofile",
+    "buzzheavier",
+    "pixeldrain",
+    "krakenfiles",
+    "akirabox",
+    "zerofs",
+    "1fichier",
+    "mediafire",
+    "mega",
+    "send",
+];
+
+/// The files AnimeTosho mirrored of a torrent, with their file-host links.
+/// None if it doesn't have the release (or hasn't finished mirroring it).
+pub async fn hosted_files(
+    http: &reqwest::Client,
+    animetosho: &str,
+    hash: &str,
+) -> Result<Vec<HostedFile>> {
+    let hash = hash.trim().to_ascii_lowercase();
+    let url = format!(
+        "{}/json?show=torrent&btih={hash}",
+        animetosho.trim_end_matches('/')
+    );
+    let resp = http
+        .get(&url)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .context("AnimeTosho didn't answer")?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Vec::new());
+    }
+    if !resp.status().is_success() {
+        bail!("AnimeTosho: HTTP {}", resp.status());
+    }
+    let v: Value = resp
+        .json()
+        .await
+        .context("AnimeTosho sent something else")?;
+    Ok(hosted_from(&v, &hash))
+}
+
+#[cfg(test)]
+pub fn hosted_files_for_test(v: &Value, hash: &str) -> Vec<HostedFile> {
+    hosted_from(v, hash)
+}
+
+fn hosted_from(v: &Value, hash: &str) -> Vec<HostedFile> {
+    let complete = v["status"].as_str() == Some("complete");
+    let same = v["info_hash"]
+        .as_str()
+        .is_some_and(|h| h.eq_ignore_ascii_case(hash));
+    if !complete || !same {
+        return Vec::new();
+    }
+    v["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| {
+            let name = f["filename"].as_str()?.to_owned();
+            let size = f["size"].as_u64()?;
+            let mut links: Vec<(usize, String)> = f["links"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(host, link)| {
+                    let rank = FETCHABLE_HOSTS
+                        .iter()
+                        .position(|h| host.to_ascii_lowercase().starts_with(h))?;
+                    // A file split in parts can't be fetched as one.
+                    let link = match link {
+                        Value::String(s) => s.clone(),
+                        Value::Array(parts) if parts.len() == 1 => parts[0].as_str()?.to_owned(),
+                        _ => return None,
+                    };
+                    link.starts_with("https://").then_some((rank, link))
+                })
+                .collect();
+            links.sort();
+            let links: Vec<String> = links.into_iter().map(|(_, l)| l).collect();
+            (!links.is_empty()).then_some(HostedFile { name, size, links })
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct Indexers {
     http: reqwest::Client,
@@ -44,7 +146,7 @@ impl Indexers {
     pub fn new(http: reqwest::Client) -> Self {
         Self::with_bases(
             http,
-            "https://feed.animetosho.net",
+            ANIMETOSHO,
             "https://api.tsukihime.org",
             "https://storage.tsukihime.org",
         )

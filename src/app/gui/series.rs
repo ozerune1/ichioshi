@@ -45,7 +45,7 @@ impl Gui {
                 .push(container(text(d).size(14).line_height(1.55).color(MUTED)).max_width(920));
         }
         // On the servers, managing it comes first (as Sonarr's page).
-        let servers = self.app.servers_mode();
+        let servers = self.app.page_on_servers();
         if servers {
             rest = rest.push(self.library_box(ap));
         }
@@ -230,7 +230,7 @@ impl Gui {
             }
         } else if self.app.manage.as_ref().is_some_and(|m| m.anilist == id) {
             // In Sonarr as a later part of a series there: nothing to add.
-        } else if self.app.servers_mode() {
+        } else if self.app.page_on_servers() {
             let to = match self.app.server_place(id) {
                 Some((crate::servers::arr::Kind::Radarr, _)) => "Radarr",
                 _ => "Sonarr",
@@ -251,7 +251,7 @@ impl Gui {
                 Some(act(Action::AddToLibrary)),
             ));
         }
-        if self.app.servers_mode() {
+        if self.app.page_on_servers() {
             // The servers download whole releases, with their own client.
             let to = match series.and_then(|s| s.remote.as_ref()).map(|r| r.arr) {
                 Some(crate::library::ArrRef::Radarr { .. }) => "Radarr",
@@ -335,6 +335,10 @@ impl Gui {
     /// Your lists: status, score and episodes watched, and what each list
     /// says.
     fn lists_panel(&self, id: u64) -> Element<'_, Message> {
+        if !self.app.may_list(id) {
+            return weak("Kept off your lists: it's 18+ (Settings › 18+ anime puts them on).")
+                .into();
+        }
         let t = &self.app.tracking;
         let episodes = self.app.episode_count(id);
         let mut top = row![text("Your lists").size(12).font(SEMI).color(FAINT)]
@@ -441,7 +445,7 @@ impl Gui {
         let mut summary = format!(
             "{have} of {} {}",
             episodes.len(),
-            if self.app.servers_mode() {
+            if self.app.page_on_servers() {
                 "on your servers"
             } else {
                 "in your library"
@@ -727,7 +731,7 @@ impl Gui {
                 ),
                 format!("Have {to} look for it with its own indexers"),
             )
-        } else if self.app.servers_mode() {
+        } else if self.app.page_on_servers() {
             space().width(0).into()
         } else if coverage.has(n) {
             small("↓ Download", Some(act(Action::DownloadEpisodes(vec![n]))))
@@ -913,7 +917,12 @@ impl Gui {
                 cell(fmt_bytes(r.total_size())),
                 cell(r.tags.join(", ")),
                 match nyaa_id {
-                    Some(id) => link("Nyaa ↗", Some(open_url(crate::nyaa::view_url(id)))),
+                    Some(id) => link(
+                        "Nyaa ↗",
+                        Some(open_url(crate::nyaa::view_url(
+                            crate::nyaa::TorrentId::nyaa(id),
+                        ))),
+                    ),
                     None => with_tip(
                         text(format!("{} (private)", r.tracker))
                             .size(12)
@@ -1079,10 +1088,15 @@ impl Gui {
             cell(fmt_bytes(r.size)),
             seeders,
             match &r.kind {
-                ReleaseKind::Torrent { item, .. } => {
-                    link("Nyaa ↗", Some(open_url(crate::nyaa::view_url(item.id))))
-                }
+                ReleaseKind::Torrent { item, .. } => link(
+                    format!("{} ↗", item.site.name()),
+                    Some(open_url(crate::nyaa::view_url(item.torrent()))),
+                ),
                 ReleaseKind::Episodes(_) => text("Per episode").size(12).color(FAINT).into(),
+                ReleaseKind::Stream { site, episodes } => link(
+                    format!("{} ↗", site.name()),
+                    Some(open_url(episodes[0].url.clone())),
+                ),
             },
         ];
         if usenet {
@@ -1091,8 +1105,13 @@ impl Gui {
                 ReleaseKind::Episodes(items) => {
                     items.iter().map(|(_, i)| i.info_hash.as_str()).collect()
                 }
+                ReleaseKind::Stream { .. } => Vec::new(),
             };
-            cells.push(self.usenet_cell(&hashes));
+            cells.push(if hashes.is_empty() {
+                cell("—")
+            } else {
+                self.usenet_cell(&hashes)
+            });
         }
         release_row(
             cells,
@@ -1198,7 +1217,7 @@ impl Gui {
 
     fn library_box<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
         let anime = &ap.anime;
-        if self.app.servers_mode() {
+        if self.app.page_on_servers() {
             if let Some(m) = self
                 .app
                 .manage

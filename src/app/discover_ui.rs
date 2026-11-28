@@ -95,8 +95,9 @@ impl App {
                     .insert(filter.clone(), (Loaded::Loading, Instant::now()));
                 let client = self.http.clone();
                 let today = Local::now().date_naive();
+                let adult = self.adult_on();
                 self.spawn(async move {
-                    let result = browse::browse(&client, &filter, today)
+                    let result = browse::browse(&client, &filter, today, adult)
                         .await
                         .map_err(|e| format!("{e:#}"));
                     Msg::Discovered { filter, result }
@@ -117,8 +118,9 @@ impl App {
                     .insert(week, (Loaded::Loading, Instant::now()));
                 let client = self.http.clone();
                 let (from, to) = (midnight(week), midnight(week + chrono::Days::new(7)));
+                let adult = self.adult_on();
                 self.spawn(async move {
-                    let result = browse::schedule(&client, from, to)
+                    let result = browse::schedule(&client, from, to, adult)
                         .await
                         .map_err(|e| format!("{e:#}"));
                     Msg::Schedule { week, result }

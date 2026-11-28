@@ -351,6 +351,7 @@ impl Gui {
         let a = &self.app;
         let jobs = a.debrid.manager.views();
         let usenet_jobs = a.usenet.manager.views();
+        let streams = a.streams.views();
         let torrents = a.engine().map(|e| e.torrents()).unwrap_or_default();
         let active = a.active_downloads();
         let order = match (a.usenet.active(), a.debrid.service()) {
@@ -386,7 +387,7 @@ impl Gui {
                 ));
             }
         }
-        if jobs.is_empty() && usenet_jobs.is_empty() && torrents.is_empty() {
+        if jobs.is_empty() && usenet_jobs.is_empty() && torrents.is_empty() && streams.is_empty() {
             if !matches!(
                 a.engine,
                 EngineState::Starting | EngineState::WaitingForVpn(_)
@@ -410,6 +411,7 @@ impl Gui {
         let mut all = Vec::new();
         all.extend(usenet_jobs.iter().map(|v| Picked::Usenet(v.job.id)));
         all.extend(jobs.iter().map(|v| Picked::Debrid(v.job.id)));
+        all.extend(streams.iter().map(|v| Picked::Stream(v.job.id)));
         all.extend(torrents.iter().rev().map(|(id, _)| Picked::Torrent(*id)));
         list = list.push(self.pick_bar(all, false));
         for v in &usenet_jobs {
@@ -417,6 +419,9 @@ impl Gui {
         }
         for v in &jobs {
             list = list.push(self.download_card(debrid_card(v)));
+        }
+        for v in &streams {
+            list = list.push(self.download_card(stream_card(v)));
         }
         for (id, handle) in torrents.iter().rev() {
             list = list.push(self.download_card(torrent_card(*id, handle)));
@@ -792,6 +797,77 @@ fn torrent_card<'a>(id: crate::engine::TorrentId, handle: &TorrentHandle) -> Car
         ),
         name,
         files,
+    }
+}
+
+/// An 18+ episode from a streaming site.
+fn stream_card<'a>(v: &crate::streams::View) -> Card<'a> {
+    use crate::streams::Phase;
+    let job = &v.job;
+    let id = job.id;
+    let site = job.episode.site.name();
+    let have = v.live.done;
+    let sizes = match v.live.total {
+        Some(t) => format!("{} of {}", fmt_bytes(have), fmt_bytes(t)),
+        None => fmt_bytes(have),
+    };
+    let detail = match &v.live.phase {
+        Phase::Queued => "Waiting for the episodes before it".to_owned(),
+        Phase::Starting => format!("Reading its page on {site}…"),
+        Phase::Downloading => {
+            let mut d = format!("{sizes}  ·  Downloading from {site}");
+            if v.live.speed > 0.0 {
+                d.push_str(&format!("  ·  {}", fmt_speed(v.live.speed / 1_048_576.0)));
+                if let Some(t) = v.live.total {
+                    let left = t.saturating_sub(have) as f64 / v.live.speed;
+                    d.push_str(&format!("  ·  {} left", fmt_duration(left)));
+                }
+            }
+            d
+        }
+        Phase::Done => format!("{sizes}  ·  Done · from {site}"),
+        Phase::Paused => format!("{sizes}  ·  Paused"),
+        Phase::Failed(_) => sizes,
+    };
+    let mut b = Vec::new();
+    match &v.live.phase {
+        Phase::Queued | Phase::Starting | Phase::Downloading => {
+            b.push(small("Pause", Some(act(Action::StreamPause(id)))))
+        }
+        Phase::Paused => b.push(small("Resume", Some(act(Action::StreamResume(id))))),
+        Phase::Failed(_) => b.push(small("Retry", Some(act(Action::StreamResume(id))))),
+        Phase::Done => {}
+    }
+    if DESKTOP {
+        b.push(small(
+            "Open folder",
+            Some(act(Action::OpenFolder(job.folder.clone()))),
+        ));
+    }
+    b.push(small(
+        "Remove",
+        Some(act(Action::StreamRemove {
+            id,
+            delete_files: false,
+        })),
+    ));
+    let fraction = v.live.fraction().unwrap_or(0.0);
+    Card {
+        key: format!("s{id}"),
+        picked: Picked::Stream(id),
+        source: site,
+        color: ACCENT,
+        name: job.stem(),
+        hash: String::new(),
+        fraction,
+        detail,
+        error: match &v.live.phase {
+            Phase::Failed(e) => Some(e.clone()),
+            _ => None,
+        },
+        note: None,
+        buttons: b,
+        files: vec![(fraction, job.episode.title.clone())],
     }
 }
 

@@ -274,6 +274,49 @@ impl Client {
         }
     }
 
+    /// Whether the service can fetch files from file hosts for you (TorBox).
+    pub fn fetches_links(&self) -> bool {
+        self.provider == Provider::TorBox
+    }
+
+    /// Whether the service has the torrent cached (`None`: it can't say).
+    pub async fn cached(&self, info_hash: &str) -> Result<Option<bool>> {
+        match self.provider {
+            Provider::TorBox => torbox::cached(self, info_hash).await.map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// Have the service fetch a file from a file host; returns its ID.
+    pub async fn web_add(&self, link: &str, name: &str) -> Result<String> {
+        match self.provider {
+            Provider::TorBox => torbox::web_add(self, link, name).await,
+            p => Err(anyhow!("{} doesn't fetch from file hosts here", p.name())),
+        }
+    }
+
+    pub async fn web_status(&self, id: &str) -> Result<Remote> {
+        match self.provider {
+            Provider::TorBox => torbox::web_status(self, id).await,
+            p => Err(anyhow!("{} doesn't fetch from file hosts here", p.name())),
+        }
+    }
+
+    /// A direct HTTPS link for a fetched file.
+    pub async fn web_link(&self, id: &str, file: &RemoteFile) -> Result<String> {
+        match self.provider {
+            Provider::TorBox => torbox::web_link(self, id, file).await,
+            p => Err(anyhow!("{} doesn't fetch from file hosts here", p.name())),
+        }
+    }
+
+    pub async fn web_delete(&self, id: &str) -> Result<()> {
+        match self.provider {
+            Provider::TorBox => torbox::web_delete(self, id).await,
+            _ => Ok(()),
+        }
+    }
+
     /// Delete the torrent from the account.
     pub async fn delete(&self, id: &str) -> Result<()> {
         match self.provider {

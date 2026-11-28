@@ -160,6 +160,39 @@ fn signed_in_as(app: &App) -> Vec<String> {
 }
 
 fn library(ui: &mut Ui) -> Vec<Value> {
+    let mut items = library_items(ui);
+    let app = ui.app;
+    items.push(heading(
+        "18+ anime",
+        Some("Adult anime are left out unless you turn them on.".into()),
+    ));
+    items.push(check(
+        ui,
+        "Show 18+ anime",
+        app.settings.adult,
+        |app, on| app.set_adult(on),
+    ));
+    items.push(said(ADULT_TIP, "muted"));
+    items.push(check(
+        ui,
+        "Put 18+ anime on your AniList and MyAnimeList lists",
+        app.settings.adult_lists,
+        |app, on| app.settings.adult_lists = on,
+    ));
+    items.push(said(
+        "Off: watching them doesn't update your lists, and their pages don't change them.",
+        "muted",
+    ));
+    items
+}
+
+/// Adult anime, said the phone's way.
+const ADULT_TIP: &str = "They show up in search, Discover and the calendar. Releases come \
+    from Sukebei and TokyoTosho, then hstream.moe and ohentai.org; the highest resolution \
+    wins, wherever it's from. They're always kept on this phone, even when your library is on \
+    your servers: never sent to Sonarr, Radarr or Jellyfin.";
+
+fn library_items(ui: &mut Ui) -> Vec<Value> {
     let app = ui.app;
     let on_servers = app.servers_mode();
     let mode = chips(

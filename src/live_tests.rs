@@ -86,7 +86,7 @@ fn client() -> reqwest::Client {
 )]
 async fn search_finds_seadex_entry_with_nyaa_release() {
     let _net = crate::mock_http::real();
-    let results = seadex::search(&client(), "Sousou no Frieren")
+    let results = seadex::search(&client(), "Sousou no Frieren", false)
         .await
         .unwrap();
     let frieren = results
@@ -124,7 +124,7 @@ async fn nyaa_torrent_lists_the_files_seadex_describes() {
     let entry = &entries[&FRIEREN];
     let release = &entry.releases[entry.best_nyaa(false).unwrap()];
 
-    let bytes = nyaa::fetch_torrent(&http, release.nyaa_id().unwrap())
+    let bytes = nyaa::fetch_torrent(&http, nyaa::TorrentId::nyaa(release.nyaa_id().unwrap()))
         .await
         .unwrap();
     let dir = scratch_dir("list");
@@ -461,7 +461,7 @@ async fn nyaa_fallback_ranks_shows_without_seadex_entries() {
 
     let mut checked = 0;
     for romaji in titles {
-        let found = seadex::search(&http, &romaji).await.unwrap();
+        let found = seadex::search(&http, &romaji, false).await.unwrap();
         let Some(anime) = found
             .into_iter()
             .find(|a| a.romaji.as_deref() == Some(romaji.as_str()))
@@ -488,6 +488,7 @@ async fn nyaa_fallback_ranks_shows_without_seadex_entries() {
             let kind = match &r.kind {
                 ReleaseKind::Torrent { .. } => "torrent",
                 ReleaseKind::Episodes(_) => "per-episode",
+                ReleaseKind::Stream { .. } => "streamed",
             };
             println!(
                 "  {:<14} {:<18} {:<26} {:<10} {:>9} seeds {:<8} {kind} | {}",
@@ -517,5 +518,68 @@ async fn nyaa_fallback_ranks_shows_without_seadex_entries() {
     assert!(
         checked > 0,
         "no current-season show without a SeaDex Nyaa release found"
+    );
+}
+
+/// 18+ anime: AniList finds them only when asked; their releases come from
+/// Sukebei (and TokyoTosho) and the streaming sites, highest resolution
+/// first.
+#[tokio::test]
+#[ignore = "network"]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "the lock orders whole tests, each on its own runtime"
+)]
+async fn finds_adult_releases() {
+    let _net = crate::mock_http::real();
+    let http = client();
+    let hidden = seadex::anilist_search(&http, "Kuroinu Kedakaki Seijo", false)
+        .await
+        .unwrap();
+    assert!(hidden.iter().all(|a| !a.adult), "left out unless asked");
+    let found = seadex::anilist_search(&http, "Kuroinu Kedakaki Seijo", true)
+        .await
+        .unwrap();
+    let anime = found
+        .into_iter()
+        .find(|a| a.adult)
+        .expect("an 18+ match with adult on");
+    println!("{} ({:?} / {:?})", anime.title, anime.romaji, anime.english);
+    let plan = crate::fallback::SearchPlan::for_anime(&anime);
+    assert!(plan.adult);
+    let releases = crate::fallback::find_releases(&http, &plan, false)
+        .await
+        .unwrap();
+    for r in releases.iter().take(12) {
+        println!(
+            "  {:<16} {:<10} {:<22} {:<10} {}",
+            r.group,
+            r.quality_label(),
+            r.episodes_label(),
+            r.seeders_label(),
+            r.title()
+        );
+    }
+    let on_sukebei = |r: &crate::fallback::NyaaRelease| match &r.kind {
+        crate::fallback::ReleaseKind::Torrent { item, .. } => item.site != nyaa::Site::Nyaa,
+        crate::fallback::ReleaseKind::Episodes(items) => {
+            items.iter().all(|(_, i)| i.site != nyaa::Site::Nyaa)
+        }
+        crate::fallback::ReleaseKind::Stream { .. } => false,
+    };
+    assert!(releases.iter().any(on_sukebei), "Sukebei's releases");
+    assert!(
+        releases.iter().any(|r| r.stream_site().is_some()),
+        "a streaming site has it"
+    );
+    let usable: Vec<_> = releases
+        .iter()
+        .filter(|r| r.usable() && !r.incomplete)
+        .collect();
+    assert!(
+        usable
+            .windows(2)
+            .all(|w| w[0].resolution.unwrap_or(0) >= w[1].resolution.unwrap_or(0)),
+        "highest resolution first"
     );
 }

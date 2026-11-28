@@ -13,20 +13,17 @@ use serde_json::json;
 const ANILIST_URL: &str = "https://graphql.anilist.co";
 const SEADEX_ENTRIES_URL: &str = "https://releases.moe/api/collections/entries/records";
 
-const SEARCH_QUERY: &str = r#"
-query ($search: String) {
-  Page(perPage: 30) {
-    media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
-      id
-      format
-      seasonYear
-      episodes
-      title { romaji english }
-      coverImage { medium large }
-    }
-  }
+/// AniList's title search. Adult anime are left out unless `adult`: AniList
+/// includes them when `isAdult` isn't given (and takes `isAdult: null` as
+/// false), so the filter is written in or left out.
+fn search_query(adult: bool) -> String {
+    let filter = if adult { "" } else { ", isAdult: false" };
+    format!(
+        "query ($search: String) {{ Page(perPage: 30) {{ media(search: $search, type: ANIME, \
+         sort: SEARCH_MATCH{filter}) {{ id format seasonYear episodes isAdult \
+         title {{ romaji english }} coverImage {{ medium large }} }} }} }}"
+    )
 }
-"#;
 
 /// An AniList search hit, plus its SeaDex entry if it has one.
 #[derive(Debug, Clone)]
@@ -43,6 +40,9 @@ pub struct Anime {
     pub cover_small: Option<String>,
     pub cover_large: Option<String>,
     pub entry: Option<Entry>,
+    /// An 18+ title (AniList's `isAdult`): found only with 18+ on, and kept
+    /// local (never sent to Sonarr or Jellyfin).
+    pub adult: bool,
 }
 
 impl Anime {
@@ -154,13 +154,14 @@ impl Release {
 
 /// Search AniList for `query` and attach SeaDex entries to the hits.
 /// Hits that have an entry come first; AniList's relevance order is kept otherwise.
-pub async fn search(client: &reqwest::Client, query: &str) -> Result<Vec<Anime>> {
+/// Adult anime only with `adult`.
+pub async fn search(client: &reqwest::Client, query: &str, adult: bool) -> Result<Vec<Anime>> {
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut results = anilist_search(client, query).await?;
+    let mut results = anilist_search(client, query, adult).await?;
     if results.is_empty() {
         return Ok(results);
     }
@@ -175,8 +176,12 @@ pub async fn search(client: &reqwest::Client, query: &str) -> Result<Vec<Anime>>
     Ok(results)
 }
 
-/// Search AniList only (no SeaDex lookup).
-pub async fn anilist_search(client: &reqwest::Client, query: &str) -> Result<Vec<Anime>> {
+/// Search AniList only (no SeaDex lookup). Adult anime only with `adult`.
+pub async fn anilist_search(
+    client: &reqwest::Client,
+    query: &str,
+    adult: bool,
+) -> Result<Vec<Anime>> {
     #[derive(Deserialize)]
     struct Resp {
         data: Option<Data>,
@@ -203,6 +208,8 @@ pub async fn anilist_search(client: &reqwest::Client, query: &str) -> Result<Vec
         #[serde(rename = "seasonYear")]
         season_year: Option<i32>,
         episodes: Option<u32>,
+        #[serde(rename = "isAdult", default)]
+        is_adult: Option<bool>,
         title: Title,
         #[serde(rename = "coverImage")]
         cover_image: Option<Cover>,
@@ -219,8 +226,8 @@ pub async fn anilist_search(client: &reqwest::Client, query: &str) -> Result<Vec
     }
 
     let resp = client
-        .post(ANILIST_URL)
-        .json(&json!({ "query": SEARCH_QUERY, "variables": { "search": query } }))
+        .post(anilist_url())
+        .json(&json!({ "query": search_query(adult), "variables": { "search": query } }))
         .send()
         .await
         .context("could not reach AniList")?;
@@ -261,6 +268,7 @@ pub async fn anilist_search(client: &reqwest::Client, query: &str) -> Result<Vec
                 cover_small: cover.as_ref().and_then(|c| c.medium.clone()),
                 cover_large: cover.and_then(|c| c.large.or(c.medium)),
                 entry: None,
+                adult: m.is_adult.unwrap_or(false),
             }
         })
         .collect())

@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 
-use crate::nyaa::{self, NyaaItem};
+use crate::nyaa::{self, NyaaItem, Site};
 use crate::seadex::Anime;
+use crate::streams::{StreamEpisode, StreamSite};
 use crate::tiers::{Rank, tiers};
 use crate::title::{self, Source};
 
@@ -41,6 +42,11 @@ pub enum ReleaseKind {
     },
     /// One torrent per episode, sorted by episode.
     Episodes(Vec<(u32, NyaaItem)>),
+    /// A streaming site's episodes (18+ anime), sorted by episode.
+    Stream {
+        site: StreamSite,
+        episodes: Vec<StreamEpisode>,
+    },
 }
 
 impl NyaaRelease {
@@ -49,16 +55,30 @@ impl NyaaRelease {
         match &self.kind {
             ReleaseKind::Torrent { item, .. } => &item.title,
             ReleaseKind::Episodes(eps) => &eps[0].1.title,
+            ReleaseKind::Stream { episodes, .. } => &episodes[0].title,
+        }
+    }
+
+    /// The streaming site it's on, if it isn't torrents.
+    pub fn stream_site(&self) -> Option<StreamSite> {
+        match &self.kind {
+            ReleaseKind::Stream { site, .. } => Some(*site),
+            _ => None,
         }
     }
 
     pub fn usable(&self) -> bool {
+        if self.stream_site().is_some() {
+            return true;
+        }
         !self.rank.is_blocked() && !self.remake && self.max_seeders > 0
     }
 
     /// Why a release isn't usable, for display.
     pub fn problem(&self) -> Option<&'static str> {
-        if self.rank.is_blocked() {
+        if self.stream_site().is_some() {
+            None
+        } else if self.rank.is_blocked() {
             Some("Low-quality group or raw")
         } else if self.remake {
             Some("Marked as a remake on Nyaa")
@@ -89,6 +109,15 @@ impl NyaaRelease {
                     format!("{n} episodes ({list})")
                 }
             }
+            ReleaseKind::Stream { episodes, .. } => {
+                let n = episodes.len();
+                let list = compress_ranges(episodes.iter().map(|e| e.episode));
+                if n == 1 {
+                    format!("Episode {list}")
+                } else {
+                    format!("{n} episodes ({list})")
+                }
+            }
         }
     }
 
@@ -103,7 +132,9 @@ impl NyaaRelease {
     }
 
     pub fn seeders_label(&self) -> String {
-        if self.min_seeders == self.max_seeders {
+        if self.stream_site().is_some() {
+            "Streamed".to_owned()
+        } else if self.min_seeders == self.max_seeders {
             self.max_seeders.to_string()
         } else {
             format!("{}–{}", self.min_seeders, self.max_seeders)
@@ -120,7 +151,14 @@ impl NyaaRelease {
             } => Some(b - a + 1),
             ReleaseKind::Torrent { episodes: None, .. } => None,
             ReleaseKind::Episodes(eps) => Some(eps.len() as u32),
+            ReleaseKind::Stream { episodes, .. } => Some(episodes.len() as u32),
         }
+    }
+
+    /// Between releases of one resolution: torrents (Sukebei, TokyoTosho),
+    /// then hstream.moe, then ohentai.org.
+    fn source_preference(&self) -> u8 {
+        self.stream_site().map_or(3, StreamSite::preference)
     }
 
     /// Unknown counts are assumed to be whole-season batches.
@@ -137,6 +175,10 @@ pub struct SearchPlan {
     pub names: Vec<String>,
     /// The season results must be from (`None` = no filter).
     pub season: Option<u32>,
+    /// An 18+ anime: searched on Sukebei, highest resolution first.
+    pub adult: bool,
+    /// Its names as they are (streaming sites match them their own way).
+    pub titles: Vec<String>,
 }
 
 impl SearchPlan {
@@ -145,6 +187,11 @@ impl SearchPlan {
     pub fn for_anime(anime: &Anime) -> Self {
         let mut names = Vec::new();
         let mut season = None;
+        let titles = [&anime.english, &anime.romaji]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
         for t in [&anime.romaji, &anime.english].into_iter().flatten() {
             let (base, s) = title::split_season(t);
             season = season.or(s);
@@ -162,6 +209,8 @@ impl SearchPlan {
             queries: names.clone(),
             names,
             season: is_series.then_some(season.unwrap_or(1)),
+            adult: anime.adult,
+            titles,
         }
     }
 
@@ -171,18 +220,29 @@ impl SearchPlan {
             queries: vec![query.trim().to_owned()],
             names: Vec::new(),
             season: None,
+            adult: false,
+            titles: vec![query.trim().to_owned()],
         }
     }
 
     pub fn display_query(&self) -> String {
         self.queries.first().cloned().unwrap_or_default()
     }
+
+    /// Where it's searched: Sukebei for 18+ anime, else Nyaa.
+    pub fn site(&self) -> Site {
+        if self.adult {
+            Site::Sukebei
+        } else {
+            Site::Nyaa
+        }
+    }
 }
 
 /// How many of the top per-episode releases get a follow-up search.
 const FILL_IN_GROUPS: usize = 6;
 
-/// Search Nyaa and rank what it finds, best first.
+/// Search Nyaa (Sukebei for 18+ anime) and rank what it finds, best first.
 pub async fn find_releases(
     client: &reqwest::Client,
     plan: &SearchPlan,
@@ -194,21 +254,31 @@ pub async fn find_releases(
         .filter(|q| !q.is_empty())
         .cloned()
         .collect();
+    let site = plan.site();
     let mut items = Vec::new();
     let mut seen = HashSet::new();
     let mut last_error = None;
-    for result in search_all(client, queries.clone()).await {
+    for result in search_all(client, site, queries.clone()).await {
         match result {
-            Ok(found) => items.extend(found.into_iter().filter(|i| seen.insert(i.id))),
+            Ok(found) => items.extend(found.into_iter().filter(|i| seen.insert(i.torrent()))),
             Err(e) => last_error = Some(e),
         }
     }
     if items.is_empty()
         && let Some(e) = last_error
     {
-        bail!(e.context("Nyaa search failed"));
+        bail!(e.context(format!("{} search failed", site.name())));
     }
-    let releases = rank_items(items.clone(), plan, prefer_dual_audio);
+    let mut streams = Vec::new();
+    if plan.adult {
+        let (more, found) = tokio::join!(
+            tokyotosho_items(client, &queries, &items, plan),
+            stream_releases(client, plan)
+        );
+        items.extend(more.into_iter().filter(|i| seen.insert(i.torrent())));
+        streams = found;
+    }
+    let releases = rank_with(items.clone(), streams.clone(), plan, prefer_dual_audio);
 
     // Nyaa returns at most 75 results per search, most-seeded first, which
     // cuts off older episodes of per-episode releases. Search again for the
@@ -234,14 +304,141 @@ pub async fn find_releases(
     if follow_ups.is_empty() {
         return Ok(releases);
     }
-    for found in search_all(client, follow_ups).await.into_iter().flatten() {
-        items.extend(found.into_iter().filter(|i| seen.insert(i.id)));
+    for found in search_all(client, site, follow_ups)
+        .await
+        .into_iter()
+        .flatten()
+    {
+        items.extend(found.into_iter().filter(|i| seen.insert(i.torrent())));
     }
-    Ok(rank_items(items, plan, prefer_dual_audio))
+    Ok(rank_with(items, streams, plan, prefer_dual_audio))
 }
 
-/// Run Nyaa searches, a few at a time. Results are in query order.
-async fn search_all(client: &reqwest::Client, queries: Vec<String>) -> Vec<Result<Vec<NyaaItem>>> {
+/// The show on the streaming sites, a release per site that has it.
+async fn stream_releases(client: &reqwest::Client, plan: &SearchPlan) -> Vec<NyaaRelease> {
+    let tasks: Vec<_> = StreamSite::ALL
+        .into_iter()
+        .map(|site| {
+            let (client, titles) = (client.clone(), plan.titles.clone());
+            tokio::spawn(async move { crate::streams::find(&client, site, &titles).await })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (site, task) in StreamSite::ALL.into_iter().zip(tasks) {
+        let found = match task.await {
+            Ok(Ok(Some(found))) => found,
+            Ok(Ok(None)) => continue,
+            Ok(Err(e)) => {
+                tracing::warn!("{}: {e:#}", site.name());
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!("{}: {e}", site.name());
+                continue;
+            }
+        };
+        let mut episodes = found.episodes;
+        episodes.sort_by_key(|e| e.episode);
+        episodes.dedup_by_key(|e| e.episode);
+        out.push(NyaaRelease {
+            group: site.name().to_owned(),
+            rank: Rank {
+                score: 0,
+                label: "Streaming site".to_owned(),
+            },
+            resolution: found.resolution,
+            source: Source::Web,
+            dual_audio: false,
+            size: 0,
+            min_seeders: 0,
+            max_seeders: 0,
+            remake: false,
+            trusted: false,
+            incomplete: false,
+            kind: ReleaseKind::Stream { site, episodes },
+        });
+    }
+    out
+}
+
+/// How many of TokyoTosho's entries get their seeders read (a page each).
+const TOSHO_ENTRIES: usize = 12;
+
+/// TokyoTosho's "Hentai (Anime)" torrents that Sukebei's results don't have
+/// (by info hash), for the show, with their seeders. Its searches also match
+/// file names, so titles are filtered here.
+async fn tokyotosho_items(
+    client: &reqwest::Client,
+    queries: &[String],
+    known: &[NyaaItem],
+    plan: &SearchPlan,
+) -> Vec<NyaaItem> {
+    use crate::tokyotosho;
+    let mut hashes: HashSet<String> = known
+        .iter()
+        .map(|i| i.info_hash.to_ascii_lowercase())
+        .collect();
+    let mut found = Vec::new();
+    for q in queries {
+        match tokyotosho::search(client, q).await {
+            Ok(list) => {
+                for it in list {
+                    let Some(hash) = it.info_hash.clone() else {
+                        continue;
+                    };
+                    if is_archive(&it.title)
+                        || !matches_plan(&it.title, plan)
+                        || !hashes.insert(hash.to_ascii_lowercase())
+                    {
+                        continue;
+                    }
+                    found.push(it);
+                }
+            }
+            Err(e) => tracing::warn!("TokyoTosho search failed: {e:#}"),
+        }
+    }
+    found.truncate(TOSHO_ENTRIES);
+    let tasks: Vec<_> = found
+        .iter()
+        .map(|it| {
+            let (client, id) = (client.clone(), it.tosho_id);
+            tokio::spawn(async move { tokyotosho::peers(&client, id).await })
+        })
+        .collect();
+    let mut items = Vec::new();
+    for (it, task) in found.into_iter().zip(tasks) {
+        let seeders = match task.await {
+            Ok(Ok(Some(p))) => p.seeders,
+            _ => 0,
+        };
+        let (site, id) = match it.sukebei_id {
+            Some(id) => (Site::Sukebei, id),
+            None => {
+                nyaa::remember_tosho_link(it.tosho_id, &it.torrent_url);
+                (Site::TokyoTosho, it.tosho_id)
+            }
+        };
+        items.push(NyaaItem {
+            site,
+            id,
+            title: it.title,
+            seeders,
+            size: it.size.unwrap_or(0),
+            info_hash: it.info_hash.unwrap_or_default(),
+            trusted: false,
+            remake: false,
+        });
+    }
+    items
+}
+
+/// Run searches on a site, a few at a time. Results are in query order.
+async fn search_all(
+    client: &reqwest::Client,
+    site: Site,
+    queries: Vec<String>,
+) -> Vec<Result<Vec<NyaaItem>>> {
     let limit = Arc::new(tokio::sync::Semaphore::new(3));
     let tasks: Vec<_> = queries
         .into_iter()
@@ -250,7 +447,7 @@ async fn search_all(client: &reqwest::Client, queries: Vec<String>) -> Vec<Resul
             let limit = limit.clone();
             tokio::spawn(async move {
                 let _permit = limit.acquire_owned().await;
-                nyaa::search(&client, &q).await
+                nyaa::search(&client, site, &q).await
             })
         })
         .collect();
@@ -265,13 +462,24 @@ async fn search_all(client: &reqwest::Client, queries: Vec<String>) -> Vec<Resul
 }
 
 /// Filter, group and rank search results. Best release first.
+#[cfg(test)]
 pub fn rank_items(
     items: Vec<NyaaItem>,
     plan: &SearchPlan,
     prefer_dual_audio: bool,
 ) -> Vec<NyaaRelease> {
+    rank_with(items, Vec::new(), plan, prefer_dual_audio)
+}
+
+/// The same, with releases from streaming sites among them.
+fn rank_with(
+    items: Vec<NyaaItem>,
+    streams: Vec<NyaaRelease>,
+    plan: &SearchPlan,
+    prefer_dual_audio: bool,
+) -> Vec<NyaaRelease> {
     let tiers = tiers();
-    let mut releases = Vec::new();
+    let mut releases = streams;
     // Single-episode torrents, keyed by everything that makes them "the same release".
     type Key = (
         String,
@@ -370,6 +578,25 @@ pub fn rank_items(
         r.incomplete = r.episode_count().is_some_and(|n| n * 5 < most_episodes * 4);
     }
 
+    if plan.adult {
+        // 18+ anime: the highest resolution wins, wherever it's from; then
+        // torrents before streaming sites, and the usual order. (Release-
+        // group tiers say little here.)
+        releases.sort_by_key(|r| {
+            std::cmp::Reverse((
+                r.usable(),
+                !r.incomplete,
+                r.resolution.unwrap_or(0),
+                r.source_preference(),
+                prefer_dual_audio && r.dual_audio,
+                r.rank.score,
+                r.coverage(),
+                r.trusted,
+                r.max_seeders,
+            ))
+        });
+        return releases;
+    }
     releases.sort_by_key(|r| {
         std::cmp::Reverse((
             r.usable(),
@@ -445,6 +672,7 @@ mod tests {
 
     fn item(id: u64, title: &str, seeders: u32) -> NyaaItem {
         NyaaItem {
+            site: Site::Nyaa,
             id,
             title: title.into(),
             seeders,
@@ -468,7 +696,35 @@ mod tests {
             cover_small: None,
             cover_large: None,
             entry: None,
+            adult: false,
         }
+    }
+
+    #[test]
+    fn adult_releases_rank_by_resolution_first() {
+        let mut a = anime("Overflow", None);
+        a.adult = true;
+        let plan = SearchPlan::for_anime(&a);
+        assert!(plan.adult);
+        assert_eq!(plan.site(), Site::Sukebei);
+        // A ranked group at 720p loses to an unknown one at 1080p, and that
+        // to 2160p (for other anime, 1080p would win).
+        let items = vec![
+            item(1, "[SubsPlease] Overflow (01-08) (720p) [Batch]", 300),
+            item(2, "[Doomdos] Overflow (01-08) [1080p OV WEB-DL]", 20),
+            item(3, "[Someone] Overflow (01-08) [2160p]", 5),
+        ];
+        let releases = rank_items(items, &plan, false);
+        let res: Vec<_> = releases.iter().map(|r| r.resolution).collect();
+        assert_eq!(res, [Some(2160), Some(1080), Some(720)]);
+
+        // A custom search on its page still goes to Sukebei.
+        let custom = SearchPlan {
+            adult: plan.adult,
+            ..SearchPlan::custom("overflow uncensored")
+        };
+        assert_eq!(custom.site(), Site::Sukebei);
+        assert_eq!(SearchPlan::custom("show").site(), Site::Nyaa);
     }
 
     #[test]

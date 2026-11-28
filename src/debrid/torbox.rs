@@ -2,6 +2,9 @@
 //!
 //! Torrents are added with seeding off. When one is downloaded,
 //! `requestdl` gives a download URL per file.
+//!
+//! Web downloads (a file on a file host, fetched by TorBox) work the same
+//! way under `/webdl`.
 
 use anyhow::Result;
 use reqwest::StatusCode;
@@ -62,9 +65,12 @@ pub(super) async fn add(c: &Client, torrent: &[u8], name: &str) -> Result<String
 }
 
 pub(super) async fn status(c: &Client, torrent: &str) -> Result<Remote> {
-    let req = c
-        .get("/torrents/mylist")
-        .query(&[("id", torrent), ("bypass_cache", "true")]);
+    item_status(c, "/torrents/mylist", torrent).await
+}
+
+/// A torrent's or web download's state, from its list.
+async fn item_status(c: &Client, list: &str, item: &str) -> Result<Remote> {
+    let req = c.get(list).query(&[("id", item), ("bypass_cache", "true")]);
     let (status, v) = c.send(req).await?;
     let t = match data(c, status, v)? {
         Value::Array(list) => list.into_iter().next().unwrap_or(Value::Null),
@@ -117,6 +123,66 @@ pub(super) async fn link(c: &Client, torrent: &str, file: &RemoteFile) -> Result
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| c.error("no download URL in the reply"))
+}
+
+/// Whether TorBox has the torrent cached (ready at once).
+pub(super) async fn cached(c: &Client, info_hash: &str) -> Result<bool> {
+    let req = c.get("/torrents/checkcached").query(&[
+        ("hash", info_hash),
+        ("format", "object"),
+        ("list_files", "false"),
+    ]);
+    let (status, v) = c.send(req).await?;
+    Ok(match data(c, status, v)? {
+        Value::Object(found) => !found.is_empty(),
+        Value::Array(found) => !found.is_empty(),
+        _ => false,
+    })
+}
+
+/// Have TorBox fetch a file from a file host; returns its web download ID.
+pub(super) async fn web_add(c: &Client, link: &str, name: &str) -> Result<String> {
+    let (status, v) = c
+        .send(
+            c.post("/webdl/createwebdownload")
+                .form(&[("link", link), ("name", name)]),
+        )
+        .await?;
+    let d = data(c, status, v)?;
+    id(&d["webdownload_id"]).ok_or_else(|| c.error("no web download ID in the reply"))
+}
+
+pub(super) async fn web_status(c: &Client, web: &str) -> Result<Remote> {
+    item_status(c, "/webdl/mylist", web).await
+}
+
+pub(super) async fn web_link(c: &Client, web: &str, file: &RemoteFile) -> Result<String> {
+    let req = c.get("/webdl/requestdl").query(&[
+        ("token", c.key.as_str()),
+        ("web_id", web),
+        ("file_id", file.id.as_str()),
+        ("zip_link", "false"),
+    ]);
+    let (status, v) = c.send(req).await?;
+    data(c, status, v)?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| c.error("no download URL in the reply"))
+}
+
+pub(super) async fn web_delete(c: &Client, web: &str) -> Result<()> {
+    let webdl_id: u64 = web
+        .parse()
+        .map_err(|_| c.error(format!("bad web download ID {web}")))?;
+    let body = json!({"webdl_id": webdl_id, "operation": "delete"});
+    let (status, v) = c
+        .send(c.post("/webdl/controlwebdownload").json(&body))
+        .await?;
+    match data(c, status, v) {
+        Ok(_) => Ok(()),
+        Err(e) if e.downcast_ref::<Gone>().is_some() => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 pub(super) async fn delete(c: &Client, torrent: &str) -> Result<()> {

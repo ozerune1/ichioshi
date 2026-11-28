@@ -712,7 +712,7 @@ impl Gui {
     }
 
     fn play_now(&mut self, id: u64, episode: u32) -> Task<Message> {
-        if self.app.servers_mode() {
+        if self.app.on_servers(id) {
             // Its offline copy, if there's one; else Jellyfin's stream.
             return match self.app.offline_copy(id, episode).cloned() {
                 Some(path) => {
@@ -781,7 +781,12 @@ impl Gui {
         // Your languages choose the audio and subtitles (the series' own,
         // else the library's), as they do for remuxes.
         let prefs = self.app.prefs_for(series);
-        let described = crate::gst_video::describe(&path, Some(&prefs));
+        // Subtitle files beside it (streamed episodes' "<name>.en.ass") are
+        // more of its tracks.
+        let sidecars = crate::sidecar::find(&path);
+        let mut info = crate::mkv::probe(&path).unwrap_or_default();
+        crate::sidecar::add_tracks(&mut info, &sidecars);
+        let described = crate::gst_video::describe_info(&info, Some(&prefs));
         let uri = match crate::gst_video::file_uri(&path) {
             Ok(u) => u,
             Err(e) => {
@@ -792,10 +797,23 @@ impl Gui {
         // The subtitles and fonts, read off the UI thread.
         let read = path.clone();
         let subs = async move {
-            tokio::task::spawn_blocking(move || crate::mkv::text_subtitles(&read))
-                .await
-                .ok()
-                .and_then(Result::ok)
+            tokio::task::spawn_blocking(move || {
+                let mut subs = crate::mkv::text_subtitles(&read).ok();
+                for (i, (_, file)) in sidecars.iter().enumerate() {
+                    match crate::sidecar::read_ass(file) {
+                        Ok(track) => {
+                            subs.get_or_insert_with(Default::default)
+                                .tracks
+                                .insert(crate::sidecar::FIRST_NUMBER + i as u64, track);
+                        }
+                        Err(e) => tracing::warn!("{}: {e:#}", file.display()),
+                    }
+                }
+                subs
+            })
+            .await
+            .ok()
+            .flatten()
         };
         self.start_player(id, episode, &uri, path, described, subs)
     }

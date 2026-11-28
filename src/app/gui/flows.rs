@@ -132,6 +132,7 @@ fn anime_page(id: u64, episodes: u32, release: Option<crate::seadex::Release>) -
                 theoretical_best: String::new(),
                 releases: vec![r],
             }),
+            adult: false,
         },
         chosen: Some(0),
         nyaa: None,
@@ -1212,6 +1213,7 @@ fn per_episode_releases_prefer_usenet() {
     let items: Vec<(u32, NyaaItem)> = (0..3)
         .map(|i| {
             let item = NyaaItem {
+                site: crate::nyaa::Site::Nyaa,
                 id: 901 + i as u64,
                 title: format!("[Group] Show - 0{} [1080p]", i + 1),
                 seeders: 50,
@@ -3875,4 +3877,72 @@ fn signs_in_with_the_built_in_client() {
     save(&h, &out, "built-in-2-own-client");
     click(&mut h, "Use Ichioshi's client instead");
     assert_eq!(count(&h, "Use your own API client"), 1);
+}
+
+/// 18+ anime: off until turned on in Settings; then kept on this computer
+/// even when the library is on your servers (never sent to Sonarr), and
+/// along when switching libraries.
+#[test]
+fn adult_anime_stay_on_this_computer() {
+    const OVERFLOW: u64 = 113417;
+    let base = tempfile::tempdir().unwrap();
+    let base = base.path();
+    let mut h = app_harness(base);
+    assert!(!h.app.adult_on(), "off at first");
+    click(&mut h, "Settings");
+    click(&mut h, "Show 18+ anime");
+    assert!(h.app.adult_on());
+
+    let overflow = crate::library::NewSeries {
+        anilist_id: OVERFLOW,
+        english: Some("Overflow".into()),
+        adult: true,
+        ..Default::default()
+    };
+    h.app.library.add(&overflow, &base.join("downloads"));
+    click(&mut h, "Jellyfin, Sonarr and Radarr");
+    assert!(h.app.servers_mode());
+    let s = h
+        .app
+        .library
+        .find(OVERFLOW)
+        .expect("it goes along to the servers' library");
+    assert!(s.adult && s.remote.is_none());
+    assert!(!h.app.on_servers(OVERFLOW), "kept here");
+    // Off your AniList and MyAnimeList lists, unless that's the setting.
+    assert!(!h.app.may_list(OVERFLOW));
+    assert!(h.app.may_list(FRIEREN));
+    click(
+        &mut h,
+        "Put 18+ anime on your AniList and MyAnimeList lists",
+    );
+    assert!(h.app.may_list(OVERFLOW));
+    click(
+        &mut h,
+        "Put 18+ anime on your AniList and MyAnimeList lists",
+    );
+    assert!(!h.app.may_list(OVERFLOW));
+    assert!(h.app.on_servers(FRIEREN), "anything else is the servers'");
+    // Reading the servers again doesn't drop it.
+    let merged =
+        crate::servers::build::merge(&h.app.library.series, Vec::new(), true, &Default::default());
+    assert!(merged.iter().any(|s| s.anilist_id == OVERFLOW));
+
+    // Its page adds and downloads here, not through Sonarr.
+    h.app.page = anime_page(OVERFLOW, 8, None);
+    if let Page::Anime(ap) = &mut h.app.page {
+        ap.anime.adult = true;
+    }
+    assert!(!h.app.page_on_servers());
+    let _ = h.update(Message::Tick);
+    assert!(!shows_containing(&h, "Add to Sonarr"));
+    // Others still go to Sonarr.
+    h.app.page = anime_page(FRIEREN, 28, None);
+    assert!(h.app.page_on_servers());
+
+    // Back on this computer: still there.
+    click(&mut h, "Settings");
+    click(&mut h, "On this computer");
+    assert!(!h.app.servers_mode());
+    assert!(h.app.library.find(OVERFLOW).is_some_and(|s| s.adult));
 }

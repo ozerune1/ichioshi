@@ -721,7 +721,7 @@ pub(crate) mod tests {
                     genre: None,
                     format: None,
                 };
-                let list = crate::browse::browse(&client, &filter, today)
+                let list = crate::browse::browse(&client, &filter, today, false)
                     .await
                     .unwrap();
                 println!(
@@ -737,7 +737,7 @@ pub(crate) mod tests {
                 genre: Some("Mecha".into()),
                 format: Some("MOVIE".into()),
             };
-            let list = crate::browse::browse(&client, &filter, today)
+            let list = crate::browse::browse(&client, &filter, today, false)
                 .await
                 .unwrap();
             println!(
@@ -746,7 +746,7 @@ pub(crate) mod tests {
                 list.first().map(|m| m.title())
             );
             let now = chrono::Utc::now().timestamp();
-            let week = crate::browse::schedule(&client, now - 3 * 86_400, now + 4 * 86_400)
+            let week = crate::browse::schedule(&client, now - 3 * 86_400, now + 4 * 86_400, false)
                 .await
                 .unwrap();
             println!(

@@ -214,8 +214,9 @@ impl App {
         }
         if known.is_none() {
             let client = self.http.clone();
+            let adult = self.adult_on();
             self.spawn(async move {
-                let result = seadex::anilist_search(&client, &query)
+                let result = seadex::anilist_search(&client, &query, adult)
                     .await
                     .ok()
                     .and_then(|r| r.into_iter().next());

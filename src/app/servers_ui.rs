@@ -425,9 +425,33 @@ impl App {
             return;
         }
         self.library.save_or_warn();
+        // 18+ series are kept here whichever library is shown: they go along.
+        let adult: Vec<crate::library::Series> = self
+            .library
+            .series
+            .iter()
+            .filter(|s| s.adult)
+            .cloned()
+            .collect();
         self.servers.config.mode = mode;
         let root = self.library_dir();
         self.library = Library::load(library_file(&self.state_dir, mode), &root);
+        if !adult.is_empty() {
+            for s in adult {
+                match self
+                    .library
+                    .series
+                    .iter_mut()
+                    .find(|o| o.anilist_id == s.anilist_id)
+                {
+                    // (Unless the servers have it themselves.)
+                    Some(o) if o.remote.is_some() => {}
+                    Some(o) => *o = s,
+                    None => self.library.series.push(s),
+                }
+            }
+            self.library.save_or_warn();
+        }
         self.pages.stats.clear();
         self.pages.last_stats = None;
         self.servers.progress.clear();
@@ -695,8 +719,8 @@ impl App {
             return Ok(match &r.kind {
                 ReleaseKind::Torrent { item, .. } => vec![(
                     item.title.clone(),
-                    crate::nyaa::torrent_url(item.id),
-                    crate::nyaa::magnet(&item.info_hash),
+                    crate::nyaa::torrent_url(item.torrent()),
+                    item.magnet(),
                     item.size,
                 )],
                 ReleaseKind::Episodes(items) => items
@@ -704,12 +728,18 @@ impl App {
                     .map(|(_, i)| {
                         (
                             i.title.clone(),
-                            crate::nyaa::torrent_url(i.id),
-                            crate::nyaa::magnet(&i.info_hash),
+                            crate::nyaa::torrent_url(i.torrent()),
+                            i.magnet(),
                             i.size,
                         )
                     })
                     .collect(),
+                ReleaseKind::Stream { site, .. } => {
+                    return Err(format!(
+                        "{}'s episodes are downloaded here, not by Sonarr",
+                        site.name()
+                    ));
+                }
             });
         }
         let Some(r) = super::chosen_release(ap) else {
@@ -723,6 +753,7 @@ impl App {
             ));
         };
         // The torrent's own name says best what's in it.
+        let nyaa = crate::nyaa::TorrentId::nyaa(nyaa);
         let title = match self.pages.release_files.get(&nyaa) {
             Some(super::library_ui::ReleaseFiles::Ready(listing)) => listing.name.clone(),
             _ => return Err("Still reading the release; try again in a moment".into()),

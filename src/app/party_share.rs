@@ -107,7 +107,7 @@ impl App {
         series: u64,
         episode: u32,
     ) -> Option<(PathBuf, Option<crate::mkv::Replaced>)> {
-        if self.servers_mode() {
+        if self.on_servers(series) {
             return Some((self.offline_copy(series, episode)?.clone(), None));
         }
         let s = self.library.find(series)?;

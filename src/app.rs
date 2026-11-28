@@ -80,6 +80,14 @@ struct Settings {
     check_updates: bool,
     /// Your name in watch parties (empty: your account's).
     party_name: String,
+    /// 18+ anime: found in search, Discover and the calendar, with releases
+    /// from Sukebei and others. They're always kept here, never sent to
+    /// Sonarr or Jellyfin.
+    adult: bool,
+    /// Whether 18+ anime go on your AniList and MyAnimeList lists (watched
+    /// episodes, and changes made on their pages). Off: the lists never
+    /// hear of them.
+    adult_lists: bool,
 }
 
 impl Default for Settings {
@@ -98,6 +106,8 @@ impl Default for Settings {
             player: Default::default(),
             check_updates: true,
             party_name: String::new(),
+            adult: false,
+            adult_lists: false,
         }
     }
 }
@@ -297,7 +307,7 @@ enum Msg {
     DefaultsDone,
     HandedOver(Result<String, String>),
     ReleaseFiles {
-        id: u64,
+        id: crate::nyaa::TorrentId,
         result: Result<Listing, String>,
     },
     Details {
@@ -396,6 +406,13 @@ enum Action {
     DriveCancelUpload,
     DebridSetEnabled(bool),
     DebridCheck,
+    /// An episode downloading from a streaming site.
+    StreamPause(u64),
+    StreamResume(u64),
+    StreamRemove {
+        id: u64,
+        delete_files: bool,
+    },
     DebridPause(u64),
     DebridResume(u64),
     DebridRemove {
@@ -488,6 +505,8 @@ enum Picked {
     Torrent(TorrentId),
     Debrid(u64),
     Usenet(u64),
+    /// An episode from a streaming site.
+    Stream(u64),
     /// In Sonarr's or Radarr's queue.
     Queued(crate::servers::arr::Kind, u64),
 }
@@ -615,7 +634,10 @@ impl NyaaSearch {
         if self.query.trim() == self.default_plan.display_query() {
             self.default_plan.clone()
         } else {
-            SearchPlan::custom(&self.query)
+            SearchPlan {
+                adult: self.default_plan.adult,
+                ..SearchPlan::custom(&self.query)
+            }
         }
     }
 }
@@ -841,6 +863,8 @@ pub struct App {
     vpn: VpnState,
     /// Usenet providers, lookups and downloads.
     usenet: UsenetState,
+    /// 18+ episodes downloading from streaming sites.
+    streams: Arc<crate::streams::Manager>,
     /// AniList and MyAnimeList accounts, and your lists on them.
     tracking: tracking_ui::TrackingState,
     /// Jellyfin, Sonarr and Radarr, when the library is there.
@@ -893,6 +917,10 @@ impl App {
         let debrid = DebridState::load(&state_dir, rt.clone(), ctx.clone());
         let vpn = VpnState::load(&state_dir, &rt, ctx.clone());
         let usenet = UsenetState::load(&state_dir, rt.clone(), ctx.clone(), http.clone());
+        let streams = {
+            let ctx = ctx.clone();
+            crate::streams::Manager::load(&state_dir, rt.clone(), move || ctx.request_repaint())
+        };
         let servers = servers_ui::ServersState::load(&state_dir);
         let library = Library::load(
             servers_ui::library_file(&state_dir, servers.config.mode),
@@ -930,6 +958,7 @@ impl App {
             debrid,
             vpn,
             usenet,
+            streams,
             tracking: tracking_ui::TrackingState::load(&state_dir),
             servers,
             manage: None,
@@ -1047,6 +1076,7 @@ impl App {
         // Debrid and Usenet downloads resume from their partial files next time.
         self.debrid.manager.stop();
         self.usenet.manager.stop();
+        self.streams.stop();
         // Pause torrents cleanly so they resume quickly next time.
         if let Some(engine) = self.engine() {
             let stop = async {
@@ -1384,6 +1414,7 @@ impl App {
                         Picked::Torrent(id) => self.perform(Action::Remove { id, delete_files }),
                         Picked::Debrid(id) => self.debrid_remove(id, delete_files),
                         Picked::Usenet(id) => self.usenet_remove(id, delete_files),
+                        Picked::Stream(id) => self.streams.remove(id, delete_files),
                         Picked::Queued(kind, id) => queued.entry(kind).or_default().push(id),
                     }
                 }
@@ -1456,7 +1487,7 @@ impl App {
             Action::DiscussionMore => self.discussion_more(),
             Action::DiscussionPost => self.discussion_post(),
             Action::OpenSeries(id) => self.open_series(id),
-            Action::AddToLibrary if self.servers_mode() => {
+            Action::AddToLibrary if self.page_on_servers() => {
                 self.servers_action(servers_ui::ServersAction::Add)
             }
             Action::AddToLibrary => self.add_to_library(),
@@ -1469,8 +1500,9 @@ impl App {
             Action::OpenLanguages => self.pages.languages = Some(self.settings.prefs.clone()),
             Action::SetSeriesPrefs { id, prefs } => self.set_series_prefs(id, prefs),
             Action::RemuxLibrary { id, files } => self.remux_library(id, files),
-            // The servers download whole releases themselves.
-            Action::DownloadEpisodes(_) if self.servers_mode() => {
+            // The servers download whole releases themselves (18+ anime
+            // are downloaded here, as in a library of your own).
+            Action::DownloadEpisodes(_) if self.page_on_servers() => {
                 self.servers_action(servers_ui::ServersAction::Push)
             }
             Action::DownloadEpisodes(episodes) => self.download_episodes(episodes),
@@ -1485,6 +1517,16 @@ impl App {
             Action::Party(action) => self.party_action(action),
             Action::Import(action) => self.import_action(action),
             Action::DebridCheck => self.debrid_check(),
+            Action::StreamPause(id) => self.streams.pause(id),
+            Action::StreamResume(id) => self.streams.resume(id),
+            Action::StreamRemove { id, delete_files } => {
+                self.streams.remove(id, delete_files);
+                self.set_info(if delete_files {
+                    "Removed and deleted its file"
+                } else {
+                    "Removed (a finished file stays in the library)"
+                });
+            }
             Action::DebridPause(id) => self.debrid.manager.pause(id),
             Action::DebridResume(id) => self.debrid.manager.resume(id),
             Action::DebridRemove { id, delete_files } => self.debrid_remove(id, delete_files),
@@ -1554,6 +1596,58 @@ impl App {
         self.settings.prefer_dual_audio || prefs.wants_dub()
     }
 
+    /// Whether 18+ anime are shown (search, Discover, the calendar).
+    pub(super) fn adult_on(&self) -> bool {
+        self.settings.adult
+    }
+
+    /// Turn 18+ anime on or off. Lists fetched the other way are fetched
+    /// again.
+    pub(super) fn set_adult(&mut self, on: bool) {
+        if self.settings.adult == on {
+            return;
+        }
+        self.settings.adult = on;
+        self.discover.shelves.clear();
+        self.calendar.weeks.clear();
+        if !on && self.discover.filter.genre.as_deref() == Some(crate::browse::ADULT_GENRE) {
+            self.discover.filter.genre = None;
+        }
+    }
+
+    /// Whether an anime is 18+: in the library as one, or on the page now.
+    pub(super) fn is_adult(&self, id: u64) -> bool {
+        self.library.find(id).is_some_and(|s| s.adult)
+            || matches!(&self.page, Page::Anime(ap) if ap.anime.anilist_id == id && ap.anime.adult)
+    }
+
+    /// Whether an anime may go on your AniList and MyAnimeList lists: 18+
+    /// ones only with that setting.
+    pub(super) fn may_list(&self, id: u64) -> bool {
+        self.settings.adult_lists || !self.is_adult(id)
+    }
+
+    /// Whether a torrent is downloaded for an 18+ series (whose files may
+    /// come from file hosts, through TorBox, when it hasn't the torrent).
+    pub(super) fn adult_download(&self, info_hash: &str) -> bool {
+        self.library.series_for(info_hash).is_some_and(|s| s.adult)
+    }
+
+    /// Whether a series is on your servers rather than in a folder here: in
+    /// servers mode, except 18+ series (always kept here).
+    pub(super) fn on_servers(&self, id: u64) -> bool {
+        self.servers_mode() && !self.library.find(id).is_some_and(|s| s.adult)
+    }
+
+    /// Whether the anime on the current page goes to your servers (it may
+    /// not be in the library yet).
+    pub(super) fn page_on_servers(&self) -> bool {
+        match &self.page {
+            Page::Anime(ap) => !ap.anime.adult && self.on_servers(ap.anime.anilist_id),
+            _ => self.servers_mode(),
+        }
+    }
+
     fn start_search(&mut self) {
         let query = self.query.trim().to_owned();
         if query.is_empty() {
@@ -1564,8 +1658,9 @@ impl App {
         self.searching = true;
         self.last_query = query.clone();
         let client = self.http.clone();
+        let adult = self.adult_on();
         self.spawn(async move {
-            let result = seadex::search(&client, &query)
+            let result = seadex::search(&client, &query, adult)
                 .await
                 .map_err(|e| format!("Search failed: {e:#}"));
             Msg::SearchDone { seq, result }
@@ -1641,6 +1736,14 @@ impl App {
                         self.page = Page::Files(page);
                         return;
                     }
+                    // Its episodes are picked on the series page.
+                    ReleaseKind::Stream { site, .. } => {
+                        self.set_info(format!(
+                            "{} has no files to pick from: download its episodes from the list",
+                            site.name()
+                        ));
+                        return;
+                    }
                 }
             }
             None => {
@@ -1694,7 +1797,8 @@ impl App {
                 });
                 if !links.is_empty() && !elsewhere {
                     let result: anyhow::Result<Listing> = async {
-                        let bytes = nyaa::fetch_torrent(&client, nyaa_id).await?;
+                        let bytes =
+                            nyaa::fetch_torrent(&client, nyaa::TorrentId::nyaa(nyaa_id)).await?;
                         let mut listing = crate::engine::listing_from_bytes(bytes)?;
                         listing.existing =
                             info_hash_of(&listing.torrent_bytes).and_then(|h| usenet.existing(&h));
@@ -1713,9 +1817,11 @@ impl App {
                 // No BitTorrent: read the .torrent file here.
                 (Some(manager), _) => {
                     async {
-                        let bytes = nyaa::fetch_torrent(&client, nyaa_id).await.map_err(|e| {
-                            anyhow::anyhow!("{e:#} (debrid downloads need the .torrent file)")
-                        })?;
+                        let bytes = nyaa::fetch_torrent(&client, nyaa::TorrentId::nyaa(nyaa_id))
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!("{e:#} (debrid downloads need the .torrent file)")
+                            })?;
                         let mut listing = crate::engine::listing_from_bytes(bytes)?;
                         listing.existing =
                             info_hash_of(&listing.torrent_bytes).and_then(|h| manager.existing(&h));
@@ -1725,7 +1831,12 @@ impl App {
                 }
                 (None, Some(engine)) => {
                     async {
-                        let source = match nyaa::fetch_torrent(&client, nyaa_id).await {
+                        let source = match nyaa::fetch_torrent(
+                            &client,
+                            nyaa::TorrentId::nyaa(nyaa_id),
+                        )
+                        .await
+                        {
                             Ok(bytes) => Source::TorrentFile(bytes),
                             Err(e) => match info_hash {
                                 Some(hash) => {
@@ -1848,6 +1959,9 @@ impl App {
                 self.set_error(why);
                 return;
             }
+            if self.adult_download(&hash) {
+                self.debrid.manager.allow_links(&hash);
+            }
             let result = self
                 .debrid
                 .manager
@@ -1902,6 +2016,12 @@ impl App {
             )
         });
         let backend = if self.debrid.config.enabled {
+            // 18+ episodes may come from file hosts, through TorBox.
+            for (_, item) in &items {
+                if self.adult_download(&item.info_hash) {
+                    self.debrid.manager.allow_links(&item.info_hash);
+                }
+            }
             match self.download_ready() {
                 Ok(()) => Some(Err(self.debrid.manager.clone())),
                 Err(why) if usenet.is_none() => {
@@ -1928,17 +2048,17 @@ impl App {
                     if let Some((indexers, manager, cached)) = &usenet {
                         let links = match cached.get(&item.info_hash.to_ascii_lowercase()) {
                             Some(links) => links.clone(),
-                            None => indexers.lookup(&item.info_hash, Some(item.id)).await,
+                            None => indexers.lookup(&item.info_hash, item.nyaa_id()).await,
                         };
                         if !links.is_empty() {
                             let listing = crate::engine::listing_from_bytes(
-                                nyaa::fetch_torrent(&client, item.id).await?,
+                                nyaa::fetch_torrent(&client, item.torrent()).await?,
                             )?;
                             let all: Vec<usize> = listing.files.iter().map(|f| f.index).collect();
                             return manager.add(&listing, &all, output_folder.clone(), links);
                         }
                     }
-                    let bytes = nyaa::fetch_torrent(&client, item.id).await?;
+                    let bytes = nyaa::fetch_torrent(&client, item.torrent()).await?;
                     match &backend {
                         Some(Ok(engine)) => {
                             engine.download(bytes, None, output_folder.clone()).await
@@ -1999,7 +2119,13 @@ impl App {
             .views()
             .iter()
             .filter(|v| v.live.active() || v.live.phase == crate::usenet::jobs::Phase::Queued)
-            .count();
+            .count()
+            + self
+                .streams
+                .views()
+                .iter()
+                .filter(|v| v.live.active())
+                .count();
         // On the servers: what's in Sonarr's and Radarr's queues too.
         let queued = if self.servers_mode() {
             self.servers.queue.len()
@@ -2026,6 +2152,7 @@ fn new_series(anime: &Anime) -> crate::library::NewSeries {
         format: anime.format.clone(),
         year: anime.year,
         episodes: anime.episodes,
+        adult: anime.adult,
     }
 }
 

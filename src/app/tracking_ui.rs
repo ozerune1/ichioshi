@@ -312,7 +312,7 @@ impl App {
 
     /// An episode was finished in the player: put it on the lists.
     pub(super) fn sync_watched(&mut self, id: u64, episode: u32) {
-        if !self.tracking.config.sync_watched || !self.tracking.any() {
+        if !self.tracking.config.sync_watched || !self.tracking.any() || !self.may_list(id) {
             return;
         }
         // Numbered past the end (counted from the show's start, say): which
@@ -688,6 +688,10 @@ impl App {
     /// Change an entry on every list signed in to (each keeps its other
     /// fields); shown at once, put back if saving fails.
     fn change_list_entry(&mut self, id: u64, change: Change) -> Vec<Service> {
+        // 18+ anime stay off the lists unless that's the setting.
+        if !self.may_list(id) {
+            return Vec::new();
+        }
         let episodes = self.episode_count(id);
         let mut saved = Vec::new();
         for service in self.tracking.services() {

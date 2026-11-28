@@ -603,12 +603,13 @@ fn remote_series(
         remote: Some(remote),
         releases: Default::default(),
         offline: Default::default(),
+        adult: false,
     }
 }
 
 /// The new list, keeping what's known of each series from before (AniList's
 /// details and titles, when it was added, its languages, and progress not
-/// in Jellyfin yet).
+/// in Jellyfin yet). 18+ series stay: they're kept here, not on the servers.
 pub fn merge(
     old: &[Series],
     mut new: Vec<Series>,
@@ -620,7 +621,7 @@ pub fn merge(
     let read: HashSet<u64> = new.iter().map(|s| s.anilist_id).collect();
     let kept: Vec<Series> = old
         .iter()
-        .filter(|s| !read.contains(&s.anilist_id) && unread.covers(s))
+        .filter(|s| !read.contains(&s.anilist_id) && (s.adult || unread.covers(s)))
         .cloned()
         .collect();
     let old: HashMap<u64, &Series> = old.iter().map(|s| (s.anilist_id, s)).collect();

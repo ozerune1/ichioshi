@@ -65,6 +65,7 @@ pub(super) fn page(ui: &mut Ui) -> Value {
     // What's downloading here.
     let usenet = app.usenet.manager.views();
     let debrid = app.debrid.manager.views();
+    let streams = app.streams.views();
     let torrents = app.engine().map(|e| e.torrents()).unwrap_or_default();
     let mut own = Vec::new();
     for v in &usenet {
@@ -76,6 +77,11 @@ pub(super) fn page(ui: &mut Ui) -> Value {
         let key = format!("d{}", v.job.id);
         picks.insert(key.clone(), Picked::Debrid(v.job.id));
         own.push(debrid_card(ui, v, key));
+    }
+    for v in &streams {
+        let key = format!("s{}", v.job.id);
+        picks.insert(key.clone(), Picked::Stream(v.job.id));
+        own.push(stream_card(ui, v, key));
     }
     for (id, handle) in torrents.iter().rev() {
         let key = format!("t{id}");
@@ -459,6 +465,61 @@ fn torrent_card(
         None,
         buttons,
         files,
+    )
+}
+
+/// An 18+ episode from a streaming site.
+fn stream_card(ui: &mut Ui, v: &crate::streams::View, key: String) -> Value {
+    use crate::streams::Phase;
+    let job = &v.job;
+    let id = job.id;
+    let site = job.episode.site.name();
+    let have = v.live.done;
+    let sizes = match v.live.total {
+        Some(t) => format!("{} of {}", fmt_bytes(have), fmt_bytes(t)),
+        None => fmt_bytes(have),
+    };
+    let detail = match &v.live.phase {
+        Phase::Queued => "Waiting for the episodes before it".to_owned(),
+        Phase::Starting => format!("Reading its page on {site}…"),
+        Phase::Downloading => format!("{sizes} · Downloading from {site}"),
+        Phase::Done => format!("{sizes} · Done · from {site}"),
+        Phase::Paused => format!("{sizes} · Paused"),
+        Phase::Failed(_) => sizes,
+    };
+    let mut buttons = Vec::new();
+    match &v.live.phase {
+        Phase::Queued | Phase::Starting | Phase::Downloading => {
+            buttons.push(ui.button("Pause", Some(Action::StreamPause(id))))
+        }
+        Phase::Paused => buttons.push(ui.button("Resume", Some(Action::StreamResume(id)))),
+        Phase::Failed(_) => buttons.push(ui.button("Retry", Some(Action::StreamResume(id)))),
+        Phase::Done => {}
+    }
+    buttons.push(ui.button(
+        "Remove",
+        Some(Action::StreamRemove {
+            id,
+            delete_files: false,
+        }),
+    ));
+    let fraction = v.live.fraction().unwrap_or(0.0);
+    card(
+        ui,
+        key,
+        site,
+        "accent",
+        &job.stem(),
+        "",
+        fraction,
+        detail,
+        match &v.live.phase {
+            Phase::Failed(e) => Some(e.clone()),
+            _ => None,
+        },
+        None,
+        buttons,
+        vec![(fraction, job.episode.title.clone())],
     )
 }
 

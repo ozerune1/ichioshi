@@ -38,6 +38,9 @@ impl App {
             let provider = self.debrid.config.provider;
             if self.debrid.config.enabled && self.debrid.config.key(provider).is_some() {
                 self.handover.handed.insert(key);
+                if self.adult_download(&v.job.info_hash) {
+                    self.debrid.manager.allow_links(&v.job.info_hash);
+                }
                 match self.debrid.manager.add(provider, &listing, &wanted, output) {
                     Ok(()) => {
                         self.usenet.manager.remove(v.job.id, false);

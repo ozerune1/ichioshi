@@ -148,23 +148,21 @@ impl App {
             return;
         }
         // The library's folders are on this computer only in its own
-        // library (the servers' have none here).
-        if !self.servers_mode() {
-            if !self.settings.migrated {
-                self.settings.migrated = true;
-                self.move_old_remuxes();
-            }
-            self.move_finished_torrents();
-            self.move_finished_jobs();
+        // library (the servers' have none here, except 18+ series', which
+        // are downloaded here and moved in like any).
+        if !self.servers_mode() && !self.settings.migrated {
+            self.settings.migrated = true;
+            self.move_old_remuxes();
         }
+        self.move_finished_torrents();
+        self.move_finished_jobs();
         self.hand_over_failed();
     }
 
     /// Now and then: read the releases of episode files not read yet (or
     /// changed), a few at a time, off the UI thread.
     pub(super) fn describe_episodes(&mut self) {
-        if self.servers_mode()
-            || self.lib.describing
+        if self.lib.describing
             || self
                 .lib
                 .last_describe
@@ -175,6 +173,10 @@ impl App {
         self.lib.last_describe = Some(Instant::now());
         let mut todo = Vec::new();
         'all: for s in &self.library.series {
+            // (A series on the servers has no files here.)
+            if self.on_servers(s.anilist_id) {
+                continue;
+            }
             let Some(stats) = self.pages.stats.get(&s.anilist_id) else {
                 continue;
             };
@@ -311,8 +313,7 @@ impl App {
     /// Every few seconds: set default tracks on episodes that need it, one
     /// at a time in the background. Nothing is removed from the files.
     pub(super) fn apply_defaults(&mut self) {
-        if self.servers_mode()
-            || self.lib.applying
+        if self.lib.applying
             || self
                 .lib
                 .last_defaults
@@ -323,6 +324,9 @@ impl App {
         self.lib.last_defaults = Some(Instant::now());
         let mut work: Vec<(u64, String, PathBuf, LangPrefs)> = Vec::new();
         for series in &self.library.series {
+            if self.on_servers(series.anilist_id) {
+                continue;
+            }
             let prefs = self.prefs_for(series);
             for (rel, path) in self.pending_defaults(series) {
                 work.push((series.anilist_id, rel, path, prefs.clone()));
@@ -659,7 +663,7 @@ use std::collections::{BTreeMap, HashMap};
 use super::{AnimePage, Origin, Page, ReleaseKind};
 use crate::engine::Listing;
 use crate::library::Details;
-use crate::nyaa::NyaaItem;
+use crate::nyaa::{NyaaItem, TorrentId};
 use crate::seadex::Anime;
 
 /// What the library page shows about a series (refreshed every few seconds).
@@ -698,6 +702,8 @@ pub(super) enum Coverage<'a> {
     },
     /// One torrent per episode.
     PerEpisode(BTreeMap<u32, &'a NyaaItem>),
+    /// A streaming site's episodes (18+ anime).
+    Stream(BTreeMap<u32, &'a crate::streams::StreamEpisode>),
 }
 
 impl Coverage<'_> {
@@ -705,6 +711,7 @@ impl Coverage<'_> {
         match self {
             Coverage::Batch { files, .. } => files.contains_key(&episode),
             Coverage::PerEpisode(items) => items.contains_key(&episode),
+            Coverage::Stream(eps) => eps.contains_key(&episode),
             _ => false,
         }
     }
@@ -713,6 +720,7 @@ impl Coverage<'_> {
         match self {
             Coverage::Batch { files, .. } => files.keys().max().copied().unwrap_or(0),
             Coverage::PerEpisode(items) => items.keys().max().copied().unwrap_or(0),
+            Coverage::Stream(eps) => eps.keys().max().copied().unwrap_or(0),
             _ => 0,
         }
     }
@@ -740,7 +748,7 @@ pub(super) struct PagesState {
     /// The library's languages, while being changed.
     pub(super) languages: Option<LangPrefs>,
     /// The files of releases on series pages, by Nyaa ID.
-    pub(super) release_files: HashMap<u64, ReleaseFiles>,
+    pub(super) release_files: HashMap<TorrentId, ReleaseFiles>,
 }
 
 impl App {
@@ -755,9 +763,14 @@ impl App {
             return;
         }
         self.pages.last_stats = Some(Instant::now());
-        if self.servers_mode() {
+        // On the servers, what they have; 18+ series are counted here, from
+        // their folders, as in a library of your own.
+        let servers = self.servers_mode();
+        if servers {
             self.servers_stats();
-            return;
+            if !self.library.series.iter().any(|s| s.adult) {
+                return;
+            }
         }
         let mut active: HashSet<String> = HashSet::new();
         if let Some(engine) = self.engine() {
@@ -857,8 +870,18 @@ impl App {
             }
         }
         let busy = self.busy_files();
+        // Episodes downloading from streaming sites, into series' folders.
+        let streaming: Vec<crate::streams::View> = self
+            .streams
+            .views()
+            .into_iter()
+            .filter(|v| v.live.active())
+            .collect();
         let mut stats = HashMap::new();
         for series in &self.library.series {
+            if servers && !series.adult {
+                continue;
+            }
             // Files a torrent is still writing aren't episodes yet.
             let files: Vec<(String, u64)> = series
                 .video_files()
@@ -898,17 +921,26 @@ impl App {
                     }
                 }
             }
+            let mut streamed = false;
+            for v in streaming.iter().filter(|v| v.job.folder == series.folder) {
+                streamed = true;
+                progress.insert(v.job.episode.episode, v.live.fraction().unwrap_or(0.0));
+            }
             let s = SeriesStats {
                 bytes: files.iter().map(|f| f.1).sum(),
                 episodes,
                 files,
                 pending: self.pending_defaults(series).len(),
-                downloading: series.downloads.iter().any(|h| active.contains(h)),
+                downloading: streamed || series.downloads.iter().any(|h| active.contains(h)),
                 progress,
             };
             stats.insert(series.anilist_id, s);
         }
-        self.pages.stats = stats;
+        if servers {
+            self.pages.stats.extend(stats);
+        } else {
+            self.pages.stats = stats;
+        }
     }
 
     /// AniList details for what's on screen, a couple at a time.
@@ -1018,6 +1050,7 @@ impl App {
             cover_small: series.cover.clone(),
             cover_large: series.cover.clone().or(d.and_then(|d| d.cover.clone())),
             entry: None,
+            adult: series.adult,
         };
         self.look_up_and_show(anime);
         if let Page::Anime(ap) = &mut self.page {
@@ -1156,13 +1189,13 @@ impl App {
 
     /// The Nyaa torrent of the release chosen on a series page, if it's one
     /// torrent (per-episode releases don't need reading).
-    fn chosen_torrent(ap: &AnimePage) -> Option<u64> {
+    fn chosen_torrent(ap: &AnimePage) -> Option<TorrentId> {
         match &ap.nyaa {
             Some(search) => match &search.releases.get(search.chosen?)?.kind {
-                ReleaseKind::Torrent { item, .. } => Some(item.id),
-                ReleaseKind::Episodes(_) => None,
+                ReleaseKind::Torrent { item, .. } => Some(item.torrent()),
+                ReleaseKind::Episodes(_) | ReleaseKind::Stream { .. } => None,
             },
-            None => super::chosen_release(ap)?.nyaa_id(),
+            None => super::chosen_release(ap)?.nyaa_id().map(TorrentId::nyaa),
         }
     }
 
@@ -1187,7 +1220,7 @@ impl App {
         });
     }
 
-    pub(super) fn handle_release_files(&mut self, id: u64, result: Result<Listing, String>) {
+    pub(super) fn handle_release_files(&mut self, id: TorrentId, result: Result<Listing, String>) {
         let files = match result {
             Ok(listing) => ReleaseFiles::Ready(listing),
             Err(e) => ReleaseFiles::Failed(e),
@@ -1215,9 +1248,16 @@ impl App {
     pub(super) fn coverage<'a>(&'a self, ap: &'a AnimePage) -> Coverage<'a> {
         if let Some(search) = &ap.nyaa
             && let Some(r) = search.chosen.and_then(|i| search.releases.get(i))
-            && let ReleaseKind::Episodes(items) = &r.kind
         {
-            return Coverage::PerEpisode(items.iter().map(|(e, i)| (*e, i)).collect());
+            match &r.kind {
+                ReleaseKind::Episodes(items) => {
+                    return Coverage::PerEpisode(items.iter().map(|(e, i)| (*e, i)).collect());
+                }
+                ReleaseKind::Stream { episodes, .. } => {
+                    return Coverage::Stream(episodes.iter().map(|e| (e.episode, e)).collect());
+                }
+                ReleaseKind::Torrent { .. } => {}
+            }
         }
         let Some(id) = Self::chosen_torrent(ap) else {
             let searching = ap.entry_loading || ap.nyaa.as_ref().is_some_and(|s| s.loading);
@@ -1261,6 +1301,7 @@ impl App {
         enum Plan {
             Files(Listing, Vec<usize>),
             Items(Vec<(u32, NyaaItem)>),
+            Stream(Vec<crate::streams::StreamEpisode>),
         }
         let plan = match self.coverage(ap) {
             Coverage::Batch { listing, files } => Plan::Files(
@@ -1275,6 +1316,12 @@ impl App {
                 episodes
                     .iter()
                     .filter_map(|e| items.get(e).map(|i| (*e, (*i).clone())))
+                    .collect(),
+            ),
+            Coverage::Stream(eps) => Plan::Stream(
+                episodes
+                    .iter()
+                    .filter_map(|e| eps.get(e).map(|ep| (*ep).clone()))
                     .collect(),
             ),
             other => {
@@ -1317,6 +1364,19 @@ impl App {
                 self.library
                     .record(items.iter().map(|(_, i)| i.info_hash.clone()), &new, &root);
                 self.download_episode_torrents(items, title, folder);
+            }
+            // Straight into its folder, one job per episode.
+            Plan::Stream(eps) => {
+                let folder = self.library.add(&new, &root).folder.clone();
+                let n = eps.len();
+                let site = eps.first().map(|e| e.site.name()).unwrap_or_default();
+                for ep in eps {
+                    self.streams.add(ep, &title, folder.clone());
+                }
+                self.set_info(format!(
+                    "Downloading {n} episode{} of {title} from {site}",
+                    if n == 1 { "" } else { "s" }
+                ));
             }
         }
         self.pages.last_stats = None;

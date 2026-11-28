@@ -96,6 +96,7 @@ pub struct Described {
 /// Tracks and chapters, from the file (Matroska); with `prefs`, the audio
 /// and subtitles they choose (as for the library's default tracks and
 /// remuxes), else the file's defaults.
+#[cfg(test)]
 pub fn describe(path: &Path, prefs: Option<&crate::prefs::LangPrefs>) -> Described {
     match crate::mkv::probe(path) {
         Ok(info) => describe_info(&info, prefs),
@@ -103,7 +104,7 @@ pub fn describe(path: &Path, prefs: Option<&crate::prefs::LangPrefs>) -> Describ
     }
 }
 
-/// As [`describe`], from what's known of a file's tracks.
+/// As `describe`, from what's known of a file's tracks.
 pub fn describe_info(
     info: &crate::mkv::MkvInfo,
     prefs: Option<&crate::prefs::LangPrefs>,

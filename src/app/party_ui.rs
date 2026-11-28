@@ -545,7 +545,7 @@ impl App {
         let Some(s) = self.library.find(series) else {
             return Have::Missing;
         };
-        if self.servers_mode() {
+        if self.on_servers(series) {
             if self.offline_copy(series, episode).is_some() {
                 return Have::Ready;
             }

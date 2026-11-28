@@ -68,10 +68,16 @@ impl Gui {
             value: None,
             label: "Any genre".into(),
         }];
-        genres.extend(GENRES.iter().map(|g| Pick {
-            value: Some((*g).to_owned()),
-            label: (*g).to_owned(),
-        }));
+        genres.extend(
+            GENRES
+                .iter()
+                .copied()
+                .chain(self.app.adult_on().then_some(browse::ADULT_GENRE))
+                .map(|g| Pick {
+                    value: Some(g.to_owned()),
+                    label: g.to_owned(),
+                }),
+        );
         let genre_now = genres.iter().find(|p| p.value == f.genre).cloned();
         let mut formats = vec![Pick {
             value: None,

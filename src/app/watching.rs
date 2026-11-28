@@ -101,7 +101,7 @@ impl super::App {
             },
         );
         self.library.save_or_warn();
-        if self.servers_mode() {
+        if self.on_servers(id) {
             self.report_watched(id, episode, position, done || before);
         }
         if done && !before {

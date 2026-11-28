@@ -172,6 +172,10 @@ pub struct Series {
     /// Copies of episodes on the servers kept here, to watch offline.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub offline: BTreeMap<u32, PathBuf>,
+    /// An 18+ series: always in a folder here, even when the library is
+    /// on your servers (it's never sent to Sonarr or Jellyfin).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adult: bool,
 }
 
 /// Who released an episode's file, and how: its group, BD or WEB, dual
@@ -389,6 +393,8 @@ pub struct NewSeries {
     pub format: Option<String>,
     pub year: Option<i32>,
     pub episodes: Option<u32>,
+    /// An 18+ anime (kept local).
+    pub adult: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -506,6 +512,7 @@ impl Library {
             s.format = s.format.take().or(new.format.clone());
             s.year = s.year.or(new.year);
             s.episodes = s.episodes.or(new.episodes);
+            s.adult |= new.adult;
             return &mut self.series[i];
         }
         let folder = self.folder_for(new, root);
@@ -527,6 +534,7 @@ impl Library {
             remote: None,
             releases: BTreeMap::new(),
             offline: BTreeMap::new(),
+            adult: new.adult,
         });
         self.save_or_warn();
         self.series.last_mut().unwrap()

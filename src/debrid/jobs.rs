@@ -46,6 +46,16 @@ pub struct Job {
     /// The files the service was told to fetch (Real-Debrid only).
     #[serde(default)]
     pub remote_selection: Vec<usize>,
+    /// Its files may come from file hosts (AnimeTosho's links) when the
+    /// service doesn't have the torrent cached (TorBox; 18+ anime).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub links: bool,
+    /// The file-host links didn't work: the torrent is used.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub links_failed: bool,
+    /// The service's web downloads of its files, by file index.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub web_ids: BTreeMap<usize, String>,
 }
 
 impl Job {
@@ -138,6 +148,10 @@ pub struct Manager {
     keys: Mutex<BTreeMap<Provider, String>>,
     notify: Box<dyn Fn() + Send + Sync>,
     timing: Timing,
+    /// Torrents whose files may come from file hosts, once added.
+    link_hashes: Mutex<std::collections::HashSet<String>>,
+    /// Where file-host links are looked up (AnimeTosho).
+    animetosho: Mutex<String>,
     #[cfg(test)]
     bases: Mutex<HashMap<Provider, String>>,
 }
@@ -223,6 +237,8 @@ impl Manager {
             keys: Mutex::new(keys),
             notify: Box::new(notify),
             timing,
+            link_hashes: Mutex::default(),
+            animetosho: Mutex::new(crate::usenet::indexers::ANIMETOSHO.to_owned()),
             #[cfg(test)]
             bases: Mutex::default(),
         });
@@ -264,6 +280,22 @@ impl Manager {
     #[cfg(test)]
     pub fn use_base_for_test(&self, provider: Provider, base: &str) {
         self.bases.lock().unwrap().insert(provider, base.to_owned());
+    }
+
+    /// Look file-host links up here instead of AnimeTosho (tests).
+    #[cfg(test)]
+    pub fn use_animetosho_for_test(&self, base: &str) {
+        *self.animetosho.lock().unwrap() = base.to_owned();
+    }
+
+    /// Let the torrent added next with this info hash have its files
+    /// fetched from file hosts (AnimeTosho's links) when the service
+    /// hasn't got it cached: for 18+ anime, through TorBox.
+    pub fn allow_links(&self, info_hash: &str) {
+        self.link_hashes
+            .lock()
+            .unwrap()
+            .insert(info_hash.trim().to_ascii_lowercase());
     }
 
     fn torrent_path(&self, info_hash: &str) -> PathBuf {
@@ -316,6 +348,11 @@ impl Manager {
             })
             .collect();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let links = self
+            .link_hashes
+            .lock()
+            .unwrap()
+            .remove(&info_hash.to_ascii_lowercase());
         let job = Job {
             id,
             provider,
@@ -326,6 +363,9 @@ impl Manager {
             files,
             paused: false,
             remote_selection: Vec::new(),
+            links,
+            links_failed: false,
+            web_ids: BTreeMap::new(),
         };
         let have: Vec<u64> = job
             .files
@@ -691,6 +731,33 @@ impl Manager {
             return Ok(());
         }
 
+        // From file hosts, if it may, the service has no copy of the
+        // torrent at hand, and every file still missing has a link.
+        if job.links && !job.links_failed && job.remote_id.is_none() && client.fetches_links() {
+            let cached = client.cached(&job.info_hash).await.ok().flatten();
+            if cached == Some(false) {
+                match self
+                    .pass_links(id, client, &job, &missing, live, cancel)
+                    .await
+                {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
+                    Err(e) => {
+                        tracing::warn!("{}: file-host links failed: {e:#}", job.name);
+                        live.lock().unwrap().note = Some(format!(
+                            "Its file-host links didn't work ({e:#}); getting the torrent"
+                        ));
+                        (self.notify)();
+                    }
+                }
+                self.update_job(id, |j| {
+                    j.links_failed = true;
+                    j.web_ids.clear();
+                });
+            }
+        }
+
         let remote_id = match &job.remote_id {
             Some(r) => r.clone(),
             None => {
@@ -816,6 +883,168 @@ impl Manager {
         }
         Ok(())
     }
+}
+
+impl Manager {
+    /// Fetch the missing files from file hosts, through the service.
+    /// `Ok(false)`: AnimeTosho doesn't have links for all of them.
+    async fn pass_links(
+        &self,
+        id: u64,
+        client: &Client,
+        job: &Job,
+        missing: &[&(usize, JobFile)],
+        live: &Mutex<Live>,
+        cancel: &AtomicBool,
+    ) -> Result<bool> {
+        let base = self.animetosho.lock().unwrap().clone();
+        let hosted =
+            crate::usenet::indexers::hosted_files(&self.http, &base, &job.info_hash).await?;
+        // Each missing file's links: by its name, else by a size no other
+        // file has.
+        let mut links: Vec<Vec<String>> = Vec::new();
+        for (_, f) in missing {
+            let name = file_name(&f.path);
+            let by_name = hosted.iter().find(|h| h.name == name && h.size == f.len);
+            let by_size = || {
+                let same: Vec<_> = hosted.iter().filter(|h| h.size == f.len).collect();
+                (same.len() == 1).then(|| same[0])
+            };
+            match by_name.or_else(by_size) {
+                Some(h) => links.push(h.links.clone()),
+                None => return Ok(false),
+            }
+        }
+        for ((i, file), links) in missing.iter().zip(links) {
+            let dest = job.dest(file);
+            let mut last: Option<anyhow::Error> = None;
+            let mut done = false;
+            for link in &links {
+                if cancel.load(Ordering::Relaxed) {
+                    bail!("cancelled");
+                }
+                match self
+                    .fetch_link(id, client, *i, file, link, &dest, live, cancel)
+                    .await
+                {
+                    Ok(()) => {
+                        done = true;
+                        break;
+                    }
+                    Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
+                    Err(e) => {
+                        tracing::warn!("{link}: {e:#}");
+                        self.update_job(id, |j| {
+                            j.web_ids.remove(i);
+                        });
+                        last = Some(e);
+                    }
+                }
+            }
+            if !done {
+                return Err(last.unwrap_or_else(|| anyhow!("no links for {}", file.path)));
+            }
+            live.lock().unwrap().have[*i] = file.len;
+        }
+        Ok(true)
+    }
+
+    /// One file from one file-host link: the service fetches it, then it's
+    /// downloaded from the service.
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_link(
+        &self,
+        id: u64,
+        client: &Client,
+        index: usize,
+        file: &JobFile,
+        link: &str,
+        dest: &Path,
+        live: &Mutex<Live>,
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        let web = match self.job(id)?.web_ids.get(&index) {
+            Some(w) => w.clone(),
+            None => {
+                self.set_phase(live, cancel, Phase::Adding);
+                let w = client.web_add(link, file_name(&file.path)).await?;
+                self.update_job(id, |j| {
+                    j.web_ids.insert(index, w.clone());
+                });
+                w
+            }
+        };
+        let mut polls = 0u32;
+        let remote = loop {
+            if cancel.load(Ordering::Relaxed) {
+                bail!("cancelled");
+            }
+            let remote = client.web_status(&web).await?;
+            match &remote.state {
+                RemoteState::Ready | RemoteState::NeedsSelection => break remote,
+                RemoteState::Failed(message) => {
+                    let _ = client.web_delete(&web).await;
+                    bail!("{message}");
+                }
+                RemoteState::Working {
+                    status,
+                    progress,
+                    speed,
+                    ..
+                } => {
+                    self.set_phase(
+                        live,
+                        cancel,
+                        Phase::Remote {
+                            status: format!("{status} (from a file host)"),
+                            progress: *progress,
+                            speed: *speed,
+                            seeders: None,
+                        },
+                    );
+                    // About an hour and a half.
+                    if polls > 600 {
+                        let _ = client.web_delete(&web).await;
+                        bail!("the file host is too slow");
+                    }
+                    polls += 1;
+                    let wait = if polls < 15 {
+                        self.timing.poll
+                    } else {
+                        self.timing.poll * 3
+                    };
+                    sleep_unless(wait, cancel).await;
+                }
+            }
+        };
+        // One file per link, of the same size (else it's another file).
+        let Some(remote_file) = remote.files.iter().find(|f| f.size == file.len) else {
+            let _ = client.web_delete(&web).await;
+            bail!("the file host has another file than {}", file.path);
+        };
+        let url = client.web_link(&web, remote_file).await?;
+        self.set_phase(live, cancel, Phase::Downloading);
+        live.lock().unwrap().note = None;
+        fetch(&self.http, &url, dest, file.len, cancel, |have, speed| {
+            let mut l = live.lock().unwrap();
+            l.have[index] = have;
+            l.speed = speed;
+            drop(l);
+            (self.notify)();
+        })
+        .await
+        .with_context(|| format!("downloading {}", file.path))?;
+        let _ = client.web_delete(&web).await;
+        self.update_job(id, |j| {
+            j.web_ids.remove(&index);
+        });
+        Ok(())
+    }
+}
+
+/// The last part of a path in a torrent.
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 /// An error retrying won't fix (the service said no).
@@ -1366,6 +1595,101 @@ pub(crate) mod tests {
             body
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 18+ anime through TorBox: a torrent it hasn't cached comes from
+    /// AnimeTosho's file-host links instead (a dead link is skipped); one it
+    /// has cached, or with no links, comes as a torrent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetches_file_host_links_when_not_cached() {
+        let body = content(9, 40_000);
+        let torrent = make_torrent("Ep", &[("Ep - 01.mkv", 40_000)]);
+        let listing = crate::engine::listing_from_bytes(torrent.clone()).unwrap();
+        let hash = listing_hash(&torrent);
+        let added = Arc::new(Mutex::new(Vec::<String>::new()));
+        let base_cell = Arc::new(Mutex::new(String::new()));
+        let (added_in, base_for, body_in, hash_in) =
+            (added.clone(), base_cell.clone(), body.clone(), hash.clone());
+        let base = mock(move |req| {
+            let ok = |data: serde_json::Value| reply(200, json!({"success": true, "data": data}));
+            let fail = |code: &str, detail: &str| {
+                reply(
+                    503,
+                    json!({"success": false, "error": code, "detail": detail}),
+                )
+            };
+            match req.target.split('?').next().unwrap() {
+                "/torrents/checkcached" => ok(json!({})),
+                "/at/json" => reply(
+                    200,
+                    json!({
+                        "status": "complete", "info_hash": hash_in,
+                        "files": [{"filename": "Ep - 01.mkv", "size": 40_000, "links": {
+                            "FileDitch": "https://fileditch.example/x",
+                            "GoFile": "https://gofile.io/d/dead",
+                            "BuzzHeavier": "https://buzzheavier.com/live",
+                        }}],
+                    }),
+                ),
+                "/webdl/createwebdownload" => {
+                    let link = req.form().get("link").cloned().unwrap_or_default();
+                    added_in.lock().unwrap().push(link.clone());
+                    if link.contains("dead") {
+                        fail("LINK_OFFLINE", "The link given is inaccessible.")
+                    } else {
+                        ok(json!({"webdownload_id": 8}))
+                    }
+                }
+                "/webdl/mylist" => ok(json!({"id": 8, "download_state": "completed",
+                    "download_finished": true, "download_present": true,
+                    "files": [{"id": 0, "name": "Ep - 01.mkv", "size": 40_000}]})),
+                "/webdl/requestdl" => ok(json!(format!("{}/cdn/ep", base_for.lock().unwrap()))),
+                "/webdl/controlwebdownload" => ok(json!(null)),
+                "/cdn/ep" => serve(req, &body_in),
+                other => panic!("unexpected {other}"),
+            }
+        })
+        .await;
+        *base_cell.lock().unwrap() = base.clone();
+        let dir = scratch("tb-links");
+        let out = dir.join("Ep");
+        let m = manager(&dir.join("state"), Provider::TorBox, &base);
+        m.use_animetosho_for_test(&format!("{base}/at"));
+        m.allow_links(&hash);
+        m.add(Provider::TorBox, &listing, &[0], out.clone())
+            .unwrap();
+        let id = m.job_for(&hash).unwrap();
+        wait_for(&m, id, "done", |v| v.live.phase == Phase::Done).await;
+        assert_eq!(
+            std::fs::read_to_string(out.join("Ep - 01.mkv")).unwrap(),
+            body
+        );
+        assert_eq!(
+            *added.lock().unwrap(),
+            ["https://gofile.io/d/dead", "https://buzzheavier.com/live"],
+            "hosts TorBox can fetch from, best first; FileDitch isn't one"
+        );
+        let job = m.view(id).unwrap().job;
+        assert!(job.links && !job.links_failed && job.remote_id.is_none());
+        assert!(job.web_ids.is_empty(), "TorBox's copy is deleted after");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_animetosho_file_links() {
+        let v = json!({"status": "complete", "info_hash": "AB",
+        "files": [
+            {"filename": "a.mkv", "size": 5, "links": {"ZeroFS": "https://zerofs.link/f/1",
+                "MultiUp": "https://multiup.io/x", "GoFile": "https://gofile.io/d/1"}},
+            {"filename": "b.mkv", "size": 6, "links": {"GoFile": ["https://gofile.io/p1", "https://gofile.io/p2"]}},
+        ]});
+        let files = crate::usenet::indexers::hosted_files_for_test(&v, "ab");
+        assert_eq!(files.len(), 1, "a file in parts can't be fetched");
+        assert_eq!(
+            files[0].links,
+            ["https://gofile.io/d/1", "https://zerofs.link/f/1"]
+        );
+        assert!(crate::usenet::indexers::hosted_files_for_test(&v, "cd").is_empty());
     }
 
     /// A torrent the service can't get fails with the service's reason; a

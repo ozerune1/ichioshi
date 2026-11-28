@@ -18,14 +18,20 @@ mod app;
 
 pub use app::bridge::{Bridge, Command};
 mod browse;
+/// MPEG-DASH manifests (hstream.moe's).
+mod dash;
 mod debrid;
 mod discuss;
 mod engine;
 mod fallback;
+/// Joining fragmented MP4 video and audio into one file.
+mod fmp4;
 mod fsutil;
 mod gdrive;
 #[cfg(all(feature = "gui", not(target_os = "android")))]
 mod gst_video;
+/// hstream.moe: 18+ anime as DASH video and audio, joined into one file.
+mod hstream;
 mod library;
 #[cfg(test)]
 mod live_tests;
@@ -34,6 +40,8 @@ mod mkv;
 mod mock_http;
 mod net;
 mod nyaa;
+/// 18+ anime as single MP4s (a fallback source).
+mod ohentai;
 mod party;
 mod party_seed;
 mod pick;
@@ -43,12 +51,18 @@ mod prefs;
 mod remux;
 mod seadex;
 mod servers;
+/// Subtitle files beside a video, read as tracks.
+mod sidecar;
 mod storage;
+/// Downloading 18+ anime from streaming sites (hstream.moe, ohentai.org).
+mod streams;
 mod subs;
 #[cfg(test)]
 mod subs_check;
 mod tiers;
 mod title;
+/// TokyoTosho's "Hentai (Anime)" torrents (with Sukebei, for 18+ anime).
+mod tokyotosho;
 mod tracking;
 mod update;
 mod usenet;

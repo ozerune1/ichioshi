@@ -103,7 +103,7 @@ fn open(
         }));
     };
     // On the servers: its offline copy, else Jellyfin's stream.
-    if app.servers_mode() {
+    if app.on_servers(id) {
         if let Some(path) = app.offline_copy(id, episode) {
             send(path.display().to_string(), "file");
             return;

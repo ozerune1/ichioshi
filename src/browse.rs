@@ -59,6 +59,7 @@ impl Media {
             cover_small: self.cover.clone(),
             cover_large: self.cover.clone(),
             entry: None,
+            adult: self.adult,
         }
     }
 }
@@ -164,11 +165,15 @@ pub fn season_name((season, year): (&str, i32)) -> String {
     format!("{s} {year}")
 }
 
-/// A shelf's anime (no adult ones), most relevant first.
+/// AniList's genre of 18+ anime, offered when they're shown.
+pub const ADULT_GENRE: &str = "Hentai";
+
+/// A shelf's anime (adult ones only with `adult`), most relevant first.
 pub async fn browse(
     client: &reqwest::Client,
     filter: &Filter,
     today: NaiveDate,
+    adult: bool,
 ) -> Result<Vec<Media>> {
     let now = season_of(today);
     let (sort, season) = match filter.shelf {
@@ -178,9 +183,11 @@ pub async fn browse(
         Shelf::Popular => ("POPULARITY_DESC", None),
         Shelf::TopRated => ("SCORE_DESC", None),
     };
+    // Left out, AniList's filter takes in adult anime too.
+    let adult_filter = if adult { "" } else { "isAdult: false, " };
     let q = format!(
         "query ($sort: [MediaSort], $season: MediaSeason, $year: Int, $genre: String, \
-         $format: MediaFormat) {{ Page(perPage: 50) {{ media(type: ANIME, isAdult: false, \
+         $format: MediaFormat) {{ Page(perPage: 50) {{ media(type: ANIME, {adult_filter}\
          sort: $sort, season: $season, seasonYear: $year, genre: $genre, format: $format) \
          {{ {MEDIA} }} }} }}"
     );
@@ -203,7 +210,7 @@ pub async fn browse(
         .into_iter()
         .flatten()
         .map(media)
-        .filter(|m| !m.adult)
+        .filter(|m| adult || !m.adult)
         .collect())
 }
 
@@ -216,9 +223,14 @@ pub struct Airing {
     pub media: Media,
 }
 
-/// Every episode airing from `from` to `to` (Unix times), in order; no
-/// adult anime.
-pub async fn schedule(client: &reqwest::Client, from: i64, to: i64) -> Result<Vec<Airing>> {
+/// Every episode airing from `from` to `to` (Unix times), in order; adult
+/// anime only with `adult`.
+pub async fn schedule(
+    client: &reqwest::Client,
+    from: i64,
+    to: i64,
+    adult: bool,
+) -> Result<Vec<Airing>> {
     let q = format!(
         "query ($page: Int, $from: Int, $to: Int) {{ Page(page: $page, perPage: 50) {{ \
          pageInfo {{ hasNextPage }} airingSchedules(airingAt_greater: $from, \
@@ -239,7 +251,7 @@ pub async fn schedule(client: &reqwest::Client, from: i64, to: i64) -> Result<Ve
                 continue;
             };
             let media = media(&a["media"]);
-            if !media.adult && media.id != 0 {
+            if (adult || !media.adult) && media.id != 0 {
                 out.push(Airing {
                     at,
                     episode: episode as u32,
@@ -442,8 +454,8 @@ mod tests {
             format: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 11, 22).unwrap();
-        let found = rt.block_on(browse(&client, &filter, today));
-        let airing = rt.block_on(schedule(&client, 0, 2_000_000_000));
+        let found = rt.block_on(browse(&client, &filter, today, false));
+        let airing = rt.block_on(schedule(&client, 0, 2_000_000_000, false));
         reset();
         let found = found.unwrap();
         assert_eq!(found.len(), 1, "no adult anime");

@@ -85,7 +85,10 @@ pub(super) fn discover(ui: &mut Ui) -> Value {
         "on": f.genre.is_none(),
         "id": ui.edit(|app| app.discover.filter.genre = None),
     })];
-    for g in GENRES {
+    for g in GENRES
+        .into_iter()
+        .chain(app.adult_on().then_some(browse::ADULT_GENRE))
+    {
         genres.push(json!({
             "label": g,
             "on": f.genre.as_deref() == Some(g),
