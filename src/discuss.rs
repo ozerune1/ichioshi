@@ -721,7 +721,7 @@ pub(crate) mod tests {
                     genre: None,
                     format: None,
                 };
-                let list = crate::browse::browse(&client, &filter, today, false)
+                let (list, _) = crate::browse::browse(&client, &filter, today, false, 1)
                     .await
                     .unwrap();
                 println!(
@@ -737,7 +737,7 @@ pub(crate) mod tests {
                 genre: Some("Mecha".into()),
                 format: Some("MOVIE".into()),
             };
-            let list = crate::browse::browse(&client, &filter, today, false)
+            let (list, _) = crate::browse::browse(&client, &filter, today, false, 1)
                 .await
                 .unwrap();
             println!(

@@ -1,7 +1,7 @@
 //! Discover (AniList's lists of anime) and the airing calendar: what's
 //! airing each day of a week, for the anime on your lists (or everything).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
@@ -20,10 +20,62 @@ pub(super) enum Loaded<T> {
 /// How long fetched lists are kept before being fetched again.
 const KEEP: Duration = Duration::from_secs(3600);
 
+/// A list fetched a page at a time, for endless scrolling: what's here so
+/// far, and the page after it.
+pub(crate) struct Paged<T> {
+    pub(crate) items: Vec<T>,
+    /// The next page to ask for (pages count from 1), if there's more.
+    pub(crate) next: Option<u32>,
+    pub(crate) more: More,
+}
+
+/// Where the next page is.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) enum More {
+    #[default]
+    Idle,
+    Loading,
+    Failed(String),
+}
+
+impl<T> Paged<T> {
+    /// The first page; `more` if there are others after it.
+    pub(crate) fn first(items: Vec<T>, more: bool) -> Self {
+        Paged {
+            items,
+            next: more.then_some(2),
+            more: More::Idle,
+        }
+    }
+
+    /// Page `page`'s items, after those here (ones already here are left
+    /// out: a list can shift while it's read). A page that isn't the next
+    /// one (an old answer) changes nothing.
+    pub(crate) fn add(&mut self, page: u32, items: Vec<T>, more: bool, id: impl Fn(&T) -> u64) {
+        if self.next != Some(page) {
+            return;
+        }
+        let have: HashSet<u64> = self.items.iter().map(&id).collect();
+        self.items
+            .extend(items.into_iter().filter(|i| !have.contains(&id(i))));
+        self.next = more.then_some(page + 1);
+        self.more = More::Idle;
+    }
+
+    /// The page to ask for now, if there's more and it isn't being fetched.
+    pub(crate) fn wanted(&self) -> Option<u32> {
+        if self.more == More::Loading {
+            None
+        } else {
+            self.next
+        }
+    }
+}
+
 pub(super) struct DiscoverState {
     pub(super) filter: Filter,
-    /// Each shelf as fetched, and when.
-    pub(super) shelves: HashMap<Filter, (Loaded<Vec<Media>>, Instant)>,
+    /// Each shelf as fetched (the pages so far), and when its first was.
+    pub(super) shelves: HashMap<Filter, (Loaded<Paged<Media>>, Instant)>,
 }
 
 impl Default for DiscoverState {
@@ -77,7 +129,7 @@ impl App {
         match self.page {
             Page::Discover => {
                 let filter = self.discover.filter.clone();
-                let stale = |(loaded, at): &(Loaded<Vec<Media>>, Instant)| match loaded {
+                let stale = |(loaded, at): &(Loaded<Paged<Media>>, Instant)| match loaded {
                     Loaded::Loading => false,
                     Loaded::Ready(_) => at.elapsed() > KEEP,
                     Loaded::Failed(_) => at.elapsed() > Duration::from_secs(60),
@@ -97,10 +149,14 @@ impl App {
                 let today = Local::now().date_naive();
                 let adult = self.adult_on();
                 self.spawn(async move {
-                    let result = browse::browse(&client, &filter, today, adult)
+                    let result = browse::browse(&client, &filter, today, adult, 1)
                         .await
                         .map_err(|e| format!("{e:#}"));
-                    Msg::Discovered { filter, result }
+                    Msg::Discovered {
+                        filter,
+                        page: 1,
+                        result,
+                    }
                 });
             }
             Page::Calendar => {
@@ -130,9 +186,51 @@ impl App {
         }
     }
 
-    pub(super) fn handle_discovered(&mut self, filter: Filter, result: Result<Vec<Media>, String>) {
+    /// The shown shelf's next page, as you scroll to its end (if there's
+    /// one, and it isn't being fetched already).
+    pub(super) fn discover_more(&mut self) {
+        let filter = self.discover.filter.clone();
+        let Some((Loaded::Ready(shelf), _)) = self.discover.shelves.get_mut(&filter) else {
+            return;
+        };
+        let Some(page) = shelf.wanted() else {
+            return;
+        };
+        shelf.more = More::Loading;
+        let client = self.http.clone();
+        let today = Local::now().date_naive();
+        let adult = self.adult_on();
+        self.spawn(async move {
+            let result = browse::browse(&client, &filter, today, adult, page)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            Msg::Discovered {
+                filter,
+                page,
+                result,
+            }
+        });
+    }
+
+    pub(super) fn handle_discovered(
+        &mut self,
+        filter: Filter,
+        page: u32,
+        result: Result<(Vec<Media>, bool), String>,
+    ) {
+        if page > 1 {
+            let Some((Loaded::Ready(shelf), _)) = self.discover.shelves.get_mut(&filter) else {
+                return;
+            };
+            match result {
+                Ok((list, more)) => shelf.add(page, list, more, |m| m.id),
+                Err(e) if shelf.next == Some(page) => shelf.more = More::Failed(e),
+                Err(_) => {}
+            }
+            return;
+        }
         let loaded = match result {
-            Ok(list) => Loaded::Ready(list),
+            Ok((list, more)) => Loaded::Ready(Paged::first(list, more)),
             Err(e) => Loaded::Failed(e),
         };
         self.discover
@@ -202,6 +300,22 @@ mod tests {
         assert!(!still_yours([Watching, Dropped].into_iter()));
         assert!(!still_yours([Dropped, Watching].into_iter()));
         assert!(!still_yours([].into_iter()), "on no list");
+    }
+
+    #[test]
+    fn pages_add_up_once_each() {
+        let mut p = Paged::first(vec![1u64, 2, 3], true);
+        assert_eq!(p.wanted(), Some(2));
+        p.more = More::Loading;
+        assert_eq!(p.wanted(), None, "not asked for twice");
+        p.add(2, vec![3, 4, 5], true, |i| *i);
+        assert_eq!(p.items, [1, 2, 3, 4, 5], "3 moved onto page 2: kept once");
+        assert_eq!((p.next, &p.more), (Some(3), &More::Idle));
+        p.add(2, vec![9], false, |i| *i);
+        assert_eq!(p.items.len(), 5, "an old answer changes nothing");
+        p.add(3, vec![6], false, |i| *i);
+        assert_eq!((p.items.len(), p.wanted()), (6, None), "the last page");
+        assert_eq!(Paged::first(vec![1u64], false).wanted(), None);
     }
 
     #[test]

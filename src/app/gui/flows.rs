@@ -3467,10 +3467,31 @@ fn discovers_schedules_and_discusses() {
                     {"airingAt": at + 120, "episode": 1, "media": show(3, "Someone Else's")}]}}}),
             );
         }
-        if q.contains("media(type: ANIME") {
+        if q.contains("media(search: $search") {
+            assert_eq!(v["search"], "Found");
+            let (hits, more) = if v["page"] == 2 {
+                (vec![show(11, "Found Two"), show(12, "Found Three")], false)
+            } else {
+                (vec![show(10, "Found One"), show(11, "Found Two")], true)
+            };
             return reply(
                 200,
-                json!({"data": {"Page": {"media": [show(1, "Show One"), show(3, "Someone Else's")]}}}),
+                json!({"data": {"Page": {"pageInfo": {"hasNextPage": more}, "media": hits}}}),
+            );
+        }
+        if q.contains("media(type: ANIME") {
+            // A second page, the last (with one the first had: once only).
+            if v["page"] == 2 {
+                return reply(
+                    200,
+                    json!({"data": {"Page": {"pageInfo": {"hasNextPage": false},
+                        "media": [show(3, "Someone Else's"), show(4, "Page Two Show")]}}}),
+                );
+            }
+            return reply(
+                200,
+                json!({"data": {"Page": {"pageInfo": {"hasNextPage": true},
+                    "media": [show(1, "Show One"), show(3, "Someone Else's")]}}}),
             );
         }
         if q.contains("threads(") {
@@ -3538,6 +3559,17 @@ fn discovers_schedules_and_discusses() {
     wait_for(&mut h, "Someone Else's");
     assert!(shows(&h, "Watching"), "your list's status on the card");
     save(&h, &out, "1-discover");
+    // Its next page, at its end (scrolling there asks the same way).
+    click(&mut h, "Show more");
+    wait_for(&mut h, "Page Two Show");
+    let shelf = |g: &Gui| match g.app.discover.shelves.get(&g.app.discover.filter) {
+        Some((crate::app::discover_ui::Loaded::Ready(p), _)) => {
+            (p.items.iter().map(|m| m.id).collect::<Vec<_>>(), p.next)
+        }
+        _ => (Vec::new(), None),
+    };
+    assert_eq!(shelf(&h), (vec![1, 3, 4], None), "each once, and no more");
+    assert!(!shows(&h, "Show more"), "the shelf's end");
     click_with(&mut h, "Next season", || {
         containing("Next season · ".into())
     });
@@ -3571,6 +3603,18 @@ fn discovers_schedules_and_discusses() {
         matches!(h.app.page, Page::Discover),
         "Back goes to Discover"
     );
+
+    // Search results go on the same way.
+    click(&mut h, "Search");
+    type_into(&mut h, "search", "Found", true);
+    wait_for(&mut h, "Found Two");
+    click(&mut h, "Show more");
+    wait_for(&mut h, "Found Three");
+    let ids: Vec<u64> = h.app.results.iter().map(|a| a.anilist_id).collect();
+    assert_eq!(ids, [10, 11, 12], "each once, in order");
+    assert_eq!(h.app.results_next, None);
+    assert!(!shows(&h, "Show more"));
+    save(&h, &out, "1b-search-more");
 
     // The calendar: your list's anime only (not the dropped one)...
     click(&mut h, "Calendar");

@@ -19,11 +19,15 @@ const SEADEX_ENTRIES_URL: &str = "https://releases.moe/api/collections/entries/r
 fn search_query(adult: bool) -> String {
     let filter = if adult { "" } else { ", isAdult: false" };
     format!(
-        "query ($search: String) {{ Page(perPage: 30) {{ media(search: $search, type: ANIME, \
+        "query ($search: String, $page: Int) {{ Page(page: $page, perPage: {SEARCH_PAGE}) {{ \
+         pageInfo {{ hasNextPage }} media(search: $search, type: ANIME, \
          sort: SEARCH_MATCH{filter}) {{ id format seasonYear episodes isAdult \
          title {{ romaji english }} coverImage {{ medium large }} }} }} }}"
     )
 }
+
+/// Search results a page at a time.
+pub const SEARCH_PAGE: u32 = 50;
 
 /// An AniList search hit, plus its SeaDex entry if it has one.
 #[derive(Debug, Clone)]
@@ -155,15 +159,27 @@ impl Release {
 /// Search AniList for `query` and attach SeaDex entries to the hits.
 /// Hits that have an entry come first; AniList's relevance order is kept otherwise.
 /// Adult anime only with `adult`.
+#[cfg(test)]
 pub async fn search(client: &reqwest::Client, query: &str, adult: bool) -> Result<Vec<Anime>> {
+    Ok(search_page(client, query, adult, 1).await?.0)
+}
+
+/// Page `page` (from 1) of [`search`]'s hits, and whether AniList has
+/// more after it. A page's hits with an entry come first in it.
+pub async fn search_page(
+    client: &reqwest::Client,
+    query: &str,
+    adult: bool,
+    page: u32,
+) -> Result<(Vec<Anime>, bool)> {
     let query = query.trim();
     if query.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     }
 
-    let mut results = anilist_search(client, query, adult).await?;
+    let (mut results, more) = anilist_page(client, query, adult, page).await?;
     if results.is_empty() {
-        return Ok(results);
+        return Ok((results, more));
     }
 
     let ids: Vec<u64> = results.iter().map(|a| a.anilist_id).collect();
@@ -173,7 +189,7 @@ pub async fn search(client: &reqwest::Client, query: &str, adult: bool) -> Resul
     }
     // Stable sort, so relevance order holds within each group.
     results.sort_by_key(|a| a.entry.is_none());
-    Ok(results)
+    Ok((results, more))
 }
 
 /// Search AniList only (no SeaDex lookup). Adult anime only with `adult`.
@@ -182,6 +198,16 @@ pub async fn anilist_search(
     query: &str,
     adult: bool,
 ) -> Result<Vec<Anime>> {
+    Ok(anilist_page(client, query, adult, 1).await?.0)
+}
+
+/// Page `page` of [`anilist_search`]'s hits, and whether there are more.
+async fn anilist_page(
+    client: &reqwest::Client,
+    query: &str,
+    adult: bool,
+    page: u32,
+) -> Result<(Vec<Anime>, bool)> {
     #[derive(Deserialize)]
     struct Resp {
         data: Option<Data>,
@@ -199,7 +225,14 @@ pub async fn anilist_search(
     }
     #[derive(Deserialize)]
     struct Page {
+        #[serde(rename = "pageInfo", default)]
+        page_info: PageInfo,
         media: Vec<Media>,
+    }
+    #[derive(Deserialize, Default)]
+    struct PageInfo {
+        #[serde(rename = "hasNextPage", default)]
+        has_next_page: bool,
     }
     #[derive(Deserialize)]
     struct Media {
@@ -227,7 +260,10 @@ pub async fn anilist_search(
 
     let resp = client
         .post(anilist_url())
-        .json(&json!({ "query": search_query(adult), "variables": { "search": query } }))
+        .json(&json!({
+            "query": search_query(adult),
+            "variables": { "search": query, "page": page.max(1) },
+        }))
         .send()
         .await
         .context("could not reach AniList")?;
@@ -242,9 +278,11 @@ pub async fn anilist_search(
     if let Some(e) = body.errors.first() {
         bail!("AniList error: {}", e.message);
     }
-    let media = body.data.context("AniList returned no data")?.page.media;
+    let found = body.data.context("AniList returned no data")?.page;
+    let more = found.page_info.has_next_page;
+    let media = found.media;
 
-    Ok(media
+    let list = media
         .into_iter()
         .map(|m| {
             let romaji = m.title.romaji.filter(|s| !s.is_empty());
@@ -271,7 +309,8 @@ pub async fn anilist_search(
                 adult: m.is_adult.unwrap_or(false),
             }
         })
-        .collect())
+        .collect();
+    Ok((list, more))
 }
 
 const DETAILS_QUERY: &str = r#"

@@ -118,48 +118,67 @@ impl Gui {
             ]
             .spacing(10)
             .into(),
-            Some(Loaded::Ready(list)) if list.is_empty() => {
+            Some(Loaded::Ready(shelf)) if shelf.items.is_empty() => {
                 weak("Nothing on AniList for that.").into()
             }
-            Some(Loaded::Ready(list)) => {
-                Row::with_children(list.iter().map(|m| self.media_card(m, Origin::Discover)))
-                    .spacing(if compact() { POSTER_GAP } else { 24.0 })
-                    .wrap()
-                    .vertical_spacing(if compact() { 18 } else { 28 })
-                    .into()
+            Some(Loaded::Ready(shelf)) => {
+                let grid = Row::with_children(
+                    shelf
+                        .items
+                        .iter()
+                        .map(|m| self.media_card(m, Origin::Discover)),
+                )
+                .spacing(if compact() { POSTER_GAP } else { 24.0 })
+                .wrap()
+                .vertical_spacing(if compact() { 18 } else { 28 });
+                let end = list_end(&shelf.more, shelf.next.is_some(), act(Action::MoreDiscover));
+                column![grid].push(end).into()
             }
+        };
+        // Scrolling to its end brings the shelf's next page.
+        let more = match d.shelves.get(f).map(|(l, _)| l) {
+            Some(Loaded::Ready(shelf)) if shelf.wanted().is_some() => {
+                Some(act(Action::MoreDiscover))
+            }
+            _ => None,
         };
         // A phone's: Browse or Calendar on top, the shelves a strip to
         // scroll sideways.
         if compact() {
-            return page(column![
-                self.discover_switch(false),
-                gap(14.0),
-                iced::widget::scrollable(shelves).direction(
-                    iced::widget::scrollable::Direction::Horizontal(
-                        iced::widget::scrollable::Scrollbar::new()
-                            .width(0)
-                            .scroller_width(0)
-                    )
-                ),
-                gap(10.0),
-                filters,
-                gap(16.0),
-                body,
-            ]);
+            return endless_page(
+                column![
+                    self.discover_switch(false),
+                    gap(14.0),
+                    iced::widget::scrollable(shelves).direction(
+                        iced::widget::scrollable::Direction::Horizontal(
+                            iced::widget::scrollable::Scrollbar::new()
+                                .width(0)
+                                .scroller_width(0)
+                        )
+                    ),
+                    gap(10.0),
+                    filters,
+                    gap(16.0),
+                    body,
+                ],
+                more,
+            );
         }
-        page(column![
-            page_title(
-                "Discover",
-                "Anime on AniList: open one to see its releases, add it or download it.".into()
-            ),
-            gap(18.0),
-            shelves.wrap().vertical_spacing(8),
-            gap(12.0),
-            filters,
-            gap(24.0),
-            body,
-        ])
+        endless_page(
+            column![
+                page_title(
+                    "Discover",
+                    "Anime on AniList: open one to see its releases, add it or download it.".into()
+                ),
+                gap(18.0),
+                shelves.wrap().vertical_spacing(8),
+                gap(12.0),
+                filters,
+                gap(24.0),
+                body,
+            ],
+            more,
+        )
     }
 
     /// A poster: AniList's score, format, genres, what's airing; whether

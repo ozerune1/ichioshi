@@ -168,13 +168,18 @@ pub fn season_name((season, year): (&str, i32)) -> String {
 /// AniList's genre of 18+ anime, offered when they're shown.
 pub const ADULT_GENRE: &str = "Hentai";
 
-/// A shelf's anime (adult ones only with `adult`), most relevant first.
+/// Anime a shelf shows a page at a time.
+pub const PER_PAGE: u32 = 50;
+
+/// Page `page` (from 1) of a shelf's anime (adult ones only with `adult`),
+/// most relevant first, and whether AniList has more after it.
 pub async fn browse(
     client: &reqwest::Client,
     filter: &Filter,
     today: NaiveDate,
     adult: bool,
-) -> Result<Vec<Media>> {
+    page: u32,
+) -> Result<(Vec<Media>, bool)> {
     let now = season_of(today);
     let (sort, season) = match filter.shelf {
         Shelf::Trending => ("TRENDING_DESC", None),
@@ -186,13 +191,14 @@ pub async fn browse(
     // Left out, AniList's filter takes in adult anime too.
     let adult_filter = if adult { "" } else { "isAdult: false, " };
     let q = format!(
-        "query ($sort: [MediaSort], $season: MediaSeason, $year: Int, $genre: String, \
-         $format: MediaFormat) {{ Page(perPage: 50) {{ media(type: ANIME, {adult_filter}\
-         sort: $sort, season: $season, seasonYear: $year, genre: $genre, format: $format) \
-         {{ {MEDIA} }} }} }}"
+        "query ($page: Int, $sort: [MediaSort], $season: MediaSeason, $year: Int, \
+         $genre: String, $format: MediaFormat) {{ Page(page: $page, perPage: {PER_PAGE}) {{ \
+         pageInfo {{ hasNextPage }} media(type: ANIME, {adult_filter}sort: $sort, \
+         season: $season, seasonYear: $year, genre: $genre, format: $format) {{ {MEDIA} }} }} }}"
     );
     // Filters left out, not null: AniList takes `genre: null` as "no genre".
     let mut vars = serde_json::Map::new();
+    vars.insert("page".into(), json!(page.max(1)));
     vars.insert("sort".into(), json!([sort]));
     if let Some((s, y)) = season {
         vars.insert("season".into(), json!(s));
@@ -205,13 +211,14 @@ pub async fn browse(
         vars.insert("format".into(), json!(f));
     }
     let data = query(client, &q, Value::Object(vars)).await?;
-    Ok(data["Page"]["media"]
+    let list = data["Page"]["media"]
         .as_array()
         .into_iter()
         .flatten()
         .map(media)
         .filter(|m| adult || !m.adult)
-        .collect())
+        .collect();
+    Ok((list, data["Page"]["pageInfo"]["hasNextPage"] == true))
 }
 
 /// An episode airing.
@@ -436,9 +443,17 @@ mod tests {
                 "unset filters left out, not null"
             );
             assert!(q.contains("isAdult: false"));
+            if v["page"] == 2 {
+                return reply(
+                    200,
+                    json!({"data": {"Page": {"pageInfo": {"hasNextPage": false}, "media": [
+                        {"id": 9, "title": {"romaji": "Nine"}}]}}}),
+                );
+            }
+            assert_eq!(v["page"], 1);
             reply(
                 200,
-                json!({"data": {"Page": {"media": [
+                json!({"data": {"Page": {"pageInfo": {"hasNextPage": true}, "media": [
                     {"id": 7, "idMal": 70, "title": {"english": "Seven", "romaji": "Nana"},
                      "coverImage": {"large": "c7"}, "format": "TV", "episodes": 12,
                      "averageScore": 81, "genres": ["Drama"],
@@ -454,10 +469,15 @@ mod tests {
             format: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 11, 22).unwrap();
-        let found = rt.block_on(browse(&client, &filter, today, false));
+        let found = rt.block_on(browse(&client, &filter, today, false, 1));
+        let second = rt.block_on(browse(&client, &filter, today, false, 2));
         let airing = rt.block_on(schedule(&client, 0, 2_000_000_000, false));
         reset();
-        let found = found.unwrap();
+        let (found, more) = found.unwrap();
+        assert!(more, "AniList has a page after it");
+        let (second, more) = second.unwrap();
+        assert_eq!(second.iter().map(|m| m.id).collect::<Vec<_>>(), [9]);
+        assert!(!more);
         assert_eq!(found.len(), 1, "no adult anime");
         let m = &found[0];
         assert_eq!(

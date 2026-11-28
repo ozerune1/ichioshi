@@ -200,6 +200,8 @@ pub(super) enum Message {
     DismissNote,
     /// The window is closing: stop downloads cleanly first.
     Close(iced::window::Id),
+    /// Nothing to do (a page scrolled, but not to where it asks for more).
+    Nothing,
 }
 
 impl std::fmt::Debug for Message {
@@ -220,6 +222,7 @@ impl std::fmt::Debug for Message {
                 Message::PipScale(_) => "PipScale",
                 Message::Focused(_) => "Focused",
                 Message::DismissNote => "DismissNote",
+                Message::Nothing => "Nothing",
                 _ => "Close",
             }),
         }
@@ -334,6 +337,9 @@ impl Gui {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(message, Message::Nothing) {
+            return Task::none();
+        }
         let task = match message {
             Message::Act(action) => self.act(action),
             Message::Edit(Edit(f)) => {
@@ -425,6 +431,7 @@ impl Gui {
                 self.close();
                 return iced::exit();
             }
+            Message::Nothing => Task::none(),
         };
         self.duties();
         // The player closed: so does its picture-in-picture window.

@@ -2,6 +2,7 @@
   // Searching AniList.
   import Button from "../lib/Button.svelte";
   import Field from "../lib/Field.svelte";
+  import More from "../lib/More.svelte";
   import Poster from "../lib/Poster.svelte";
   import { press } from "../lib/api";
 
@@ -27,6 +28,7 @@
       </span>
     </button>
   {/each}
+  <More more={page.more} />
 </div>
 
 <style>

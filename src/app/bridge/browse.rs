@@ -5,7 +5,7 @@ use chrono::{Days, Local};
 use serde_json::{Value, json};
 
 use super::ui::Ui;
-use crate::app::discover_ui::{Loaded, midnight, monday_of};
+use crate::app::discover_ui::{Loaded, More, midnight, monday_of};
 use crate::app::{Action, FilesPage, Origin, Page, Picker, fmt_bytes, is_video};
 use crate::browse::{self, FORMATS, GENRES, Media, Shelf};
 use crate::tracking::{Service, Status};
@@ -117,15 +117,23 @@ pub(super) fn discover(ui: &mut Ui) -> Value {
                 "retry": ui.edit(move |app| { app.discover.shelves.remove(&app.discover.filter.clone()); }),
             }),
         ),
-        Some(Loaded::Ready(list)) if list.is_empty() => {
+        Some(Loaded::Ready(shelf)) if shelf.items.is_empty() => {
             (Vec::new(), json!({"text": "Nothing on AniList for that."}))
         }
-        Some(Loaded::Ready(list)) => (
-            list.iter()
+        Some(Loaded::Ready(shelf)) => (
+            shelf
+                .items
+                .iter()
                 .map(|m| media(ui, m, Origin::Discover))
                 .collect(),
             Value::Null,
         ),
+    };
+    let more = match d.shelves.get(&f).map(|(l, _)| l) {
+        Some(Loaded::Ready(shelf)) => {
+            list_end(ui, &shelf.more, shelf.next.is_some(), Action::MoreDiscover)
+        }
+        _ => Value::Null,
     };
     json!({
         "kind": "discover",
@@ -135,6 +143,7 @@ pub(super) fn discover(ui: &mut Ui) -> Value {
         "formats": formats,
         "list": list,
         "state": state,
+        "more": more,
         "to_calendar": ui.act(Action::GoCalendar),
     })
 }
@@ -230,6 +239,22 @@ pub(super) fn calendar(ui: &mut Ui) -> Value {
     })
 }
 
+/// The end of a list read a page at a time (null at the very end): the
+/// phone asks for the next page (`id`) when this comes into view, unless
+/// it's `loading`; after an `error`, a button asks again.
+fn list_end(ui: &mut Ui, more: &More, has_more: bool, action: Action) -> Value {
+    match more {
+        More::Idle if !has_more => Value::Null,
+        More::Loading => json!({"loading": true, "text": "Loading more…", "id": ui.act(action)}),
+        More::Failed(e) => json!({
+            "loading": false,
+            "error": format!("Couldn't load more: {e}"),
+            "id": ui.act(action),
+        }),
+        More::Idle => json!({"loading": false, "id": ui.act(action)}),
+    }
+}
+
 pub(super) fn search(ui: &mut Ui) -> Value {
     let app = ui.app;
     let note = if app.last_query.is_empty() {
@@ -289,6 +314,12 @@ pub(super) fn search(ui: &mut Ui) -> Value {
         "nothing": (!app.last_query.is_empty() && app.results.is_empty() && !app.searching)
             .then(|| format!("No anime found for “{}”.", app.last_query)),
         "results": results,
+        "more": if app.results.is_empty() {
+            Value::Null
+        } else {
+            let (more, has) = (app.results_more.clone(), app.results_next.is_some());
+            list_end(ui, &more, has, Action::MoreResults)
+        },
     })
 }
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   // Discover: AniList's shelves, or the calendar (a week, a day at a time).
   import Chips from "../lib/Chips.svelte";
+  import More from "../lib/More.svelte";
   import Poster from "../lib/Poster.svelte";
   import Select from "../lib/Select.svelte";
   import { press } from "../lib/api";
@@ -51,6 +52,7 @@
         </button>
       {/each}
     </div>
+    <More more={page.more} />
   {:else}
     <div class="week">
       <button class="arrow" onclick={() => { picked = null; press(page.previous); }}>‹</button>

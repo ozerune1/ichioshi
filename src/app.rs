@@ -6,6 +6,7 @@
 //! runtime and reports back through `Msg`s. Clicks are collected as `Action`s
 //! while drawing and handled after the frame is laid out.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -204,7 +205,10 @@ enum Msg {
     VpnFixDone(Result<(), String>),
     SearchDone {
         seq: u64,
-        result: Result<Vec<Anime>, String>,
+        /// Which page of the results (from 1).
+        page: u32,
+        /// Its hits, and whether there are more pages.
+        result: Result<(Vec<Anime>, bool), String>,
     },
     ListingDone {
         seq: u64,
@@ -320,7 +324,10 @@ enum Msg {
     },
     Discovered {
         filter: crate::browse::Filter,
-        result: Result<Vec<crate::browse::Media>, String>,
+        /// Which page (from 1).
+        page: u32,
+        /// Its anime, and whether there are more pages.
+        result: Result<(Vec<crate::browse::Media>, bool), String>,
     },
     Schedule {
         week: chrono::NaiveDate,
@@ -444,6 +451,10 @@ enum Action {
     GoDownloads,
     GoDiscover,
     GoCalendar,
+    /// Discover's shelf scrolled to its end: its next page.
+    MoreDiscover,
+    /// Search results scrolled to their end: the next page.
+    MoreResults,
     /// An anime from Discover or the calendar.
     OpenMedia(Box<crate::browse::Media>, Origin),
     /// An episode's discussion on AniList and MyAnimeList.
@@ -831,6 +842,9 @@ pub struct App {
     query: String,
     last_query: String,
     results: Vec<Anime>,
+    /// The search's next page of results, if there's more.
+    results_next: Option<u32>,
+    results_more: discover_ui::More,
     searching: bool,
     search_seq: u64,
 
@@ -938,6 +952,8 @@ impl App {
             query: String::new(),
             last_query: String::new(),
             results: Vec::new(),
+            results_next: None,
+            results_more: Default::default(),
             searching: false,
             search_seq: 0,
             page: Page::Home,
@@ -1154,14 +1170,20 @@ impl App {
             match msg {
                 Msg::Engine { seq, result } => self.handle_engine_msg(seq, result),
                 Msg::VpnFixDone(result) => self.handle_vpn_fix_done(result),
-                Msg::SearchDone { seq, result } => {
+                Msg::SearchDone { seq, page, result } => {
                     if seq != self.search_seq {
+                        continue;
+                    }
+                    if page > 1 {
+                        self.add_results(page, result);
                         continue;
                     }
                     self.searching = false;
                     match result {
-                        Ok(results) => {
+                        Ok((results, more)) => {
                             self.results = results;
+                            self.results_next = more.then_some(2);
+                            self.results_more = discover_ui::More::Idle;
                             self.cancel_listing();
                             self.page = Page::Results;
                         }
@@ -1290,7 +1312,11 @@ impl App {
                 Msg::ReleaseFiles { id, result } => self.handle_release_files(id, result),
                 Msg::Details { id, result } => self.handle_details(id, result),
                 Msg::SeriesEntry { id, result } => self.handle_series_entry(id, result),
-                Msg::Discovered { filter, result } => self.handle_discovered(filter, result),
+                Msg::Discovered {
+                    filter,
+                    page,
+                    result,
+                } => self.handle_discovered(filter, page, result),
                 Msg::Schedule { week, result } => self.handle_schedule(week, result),
                 Msg::MalEpisodes { id, result } => self.handle_mal_episodes(id, result),
                 Msg::Discussion {
@@ -1482,6 +1508,8 @@ impl App {
                 self.cancel_listing();
                 self.page = Page::Calendar;
             }
+            Action::MoreDiscover => self.discover_more(),
+            Action::MoreResults => self.search_more(),
             Action::OpenMedia(media, origin) => self.open_media(*media, origin),
             Action::OpenDiscussion { id, episode } => self.open_discussion(id, episode),
             Action::DiscussionMore => self.discussion_more(),
@@ -1654,17 +1682,53 @@ impl App {
             return;
         }
         self.search_seq += 1;
-        let seq = self.search_seq;
         self.searching = true;
         self.last_query = query.clone();
+        self.results_next = None;
+        self.results_more = discover_ui::More::Idle;
+        self.fetch_results(query, 1);
+    }
+
+    fn fetch_results(&mut self, query: String, page: u32) {
+        let seq = self.search_seq;
         let client = self.http.clone();
         let adult = self.adult_on();
         self.spawn(async move {
-            let result = seadex::search(&client, &query, adult)
+            let result = seadex::search_page(&client, &query, adult, page)
                 .await
                 .map_err(|e| format!("Search failed: {e:#}"));
-            Msg::SearchDone { seq, result }
+            Msg::SearchDone { seq, page, result }
         });
+    }
+
+    /// The search's next page of results, as you scroll to their end.
+    fn search_more(&mut self) {
+        if self.searching || self.results_more == discover_ui::More::Loading {
+            return;
+        }
+        let Some(page) = self.results_next else {
+            return;
+        };
+        self.results_more = discover_ui::More::Loading;
+        self.fetch_results(self.last_query.clone(), page);
+    }
+
+    /// A later page of results, after those shown (ones shown already
+    /// left out).
+    fn add_results(&mut self, page: u32, result: Result<(Vec<Anime>, bool), String>) {
+        if self.results_next != Some(page) {
+            return;
+        }
+        match result {
+            Ok((list, more)) => {
+                let have: HashSet<u64> = self.results.iter().map(|a| a.anilist_id).collect();
+                self.results
+                    .extend(list.into_iter().filter(|a| !have.contains(&a.anilist_id)));
+                self.results_next = more.then_some(page + 1);
+                self.results_more = discover_ui::More::Idle;
+            }
+            Err(e) => self.results_more = discover_ui::More::Failed(e),
+        }
     }
 
     /// Search Nyaa for the anime on the current page and rank what it finds.
