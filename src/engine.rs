@@ -562,6 +562,7 @@ fn build_listing<B: AsRef<[u8]>>(
 
 /// Make a torrent name safe to use as one folder name.
 pub fn sanitize_folder_name(name: &str) -> String {
+    let name = crate::fsutil::local_name(name);
     let cleaned: String = name
         .chars()
         .map(|c| {

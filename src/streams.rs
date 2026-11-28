@@ -277,10 +277,17 @@ impl Manager {
         http: reqwest::Client,
     ) -> Arc<Self> {
         let file = state_dir.join("streams.json");
-        let jobs: Vec<Job> = std::fs::read_to_string(&file)
+        let mut jobs: Vec<Job> = std::fs::read_to_string(&file)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
+        // Folders named as this system's files can't be (see
+        // `Library::fix_folder_names`, which renames them on disk).
+        if crate::fsutil::NAMES_NEED_CARE {
+            for job in &mut jobs {
+                job.folder = portable_folder(&job.folder);
+            }
+        }
         let next_id = jobs.iter().map(|j| j.id + 1).max().unwrap_or(1);
         let entries = jobs
             .into_iter()
@@ -639,9 +646,37 @@ impl Manager {
     }
 }
 
+/// `folder` with its own name made portable (its parents are the
+/// library's, which you chose).
+fn portable_folder(folder: &Path) -> PathBuf {
+    match folder.file_name().and_then(|n| n.to_str()) {
+        Some(name) => {
+            let fixed = crate::fsutil::portable_name(name);
+            if fixed.is_empty() || fixed == name {
+                folder.to_owned()
+            } else {
+                folder.with_file_name(fixed)
+            }
+        }
+        None => folder.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jobs_folders_named_portably() {
+        assert_eq!(
+            portable_folder(Path::new("/lib/Who Came Home!?")),
+            Path::new("/lib/Who Came Home!_")
+        );
+        assert_eq!(
+            portable_folder(Path::new("/lib/Plain")),
+            Path::new("/lib/Plain")
+        );
+    }
 
     #[test]
     fn names_files_like_remuxes_and_ranks_sites() {

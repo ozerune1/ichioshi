@@ -526,6 +526,7 @@ pub fn episode_titles(series_title: &str, inputs: &[PathBuf]) -> Vec<String> {
 /// A title as a file name: everything kept except path separators and
 /// control characters (titles like "Fate/Zero" become "Fate-Zero").
 pub fn sanitize_filename(title: &str) -> String {
+    let title = crate::fsutil::local_name(title);
     let cleaned: String = title
         .chars()
         .map(|c| if c == '/' || c == '\\' { '-' } else { c })

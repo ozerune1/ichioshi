@@ -1120,7 +1120,9 @@ pub(crate) async fn fetch(
     mut progress: impl FnMut(u64, f64),
 ) -> Result<()> {
     if let Some(dir) = dest.parent() {
-        tokio::fs::create_dir_all(dir).await?;
+        tokio::fs::create_dir_all(dir)
+            .await
+            .with_context(|| format!("couldn't make {}", dir.display()))?;
     }
     let part = part_path(dest);
     let mut have = tokio::fs::metadata(&part)
@@ -1159,13 +1161,16 @@ pub(crate) async fn fetch(
             .write(true)
             .truncate(false)
             .open(&part)
-            .await?;
+            .await
+            .with_context(|| format!("couldn't make {}", part.display()))?;
         if resumed {
             file.seek(std::io::SeekFrom::Start(have)).await?;
         } else {
             // A full copy (the server ignored the range, or there was none).
             have = 0;
-            file.set_len(0).await?;
+            file.set_len(0)
+                .await
+                .with_context(|| format!("couldn't write {}", part.display()))?;
         }
         let mut file = tokio::io::BufWriter::with_capacity(1 << 20, file);
         let started = Instant::now();
@@ -1184,7 +1189,9 @@ pub(crate) async fn fetch(
             if have + chunk.len() as u64 > len {
                 bail!("the server sent more than the file's {len} bytes");
             }
-            file.write_all(&chunk).await?;
+            file.write_all(&chunk)
+                .await
+                .with_context(|| format!("couldn't write {}", part.display()))?;
             have += chunk.len() as u64;
             if last.elapsed() >= Duration::from_millis(250) {
                 let elapsed = started.elapsed().as_secs_f64().max(0.001);

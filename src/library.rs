@@ -440,7 +440,44 @@ impl Library {
             tracing::warn!("ignoring unreadable {}", path.display());
             Vec::new()
         };
-        Self { path, series }
+        let mut lib = Self { path, series };
+        if crate::fsutil::NAMES_NEED_CARE && lib.fix_folder_names() {
+            lib.save_or_warn();
+        }
+        lib
+    }
+
+    /// Series folders named with what this system's file names can't hold
+    /// (0.3.9 and before kept "?" and ":", so nothing could be saved in
+    /// them on a phone or Windows): named as they're named now, the folder
+    /// renamed too if it's there (or its files moved into one already there).
+    /// Whether any changed.
+    pub fn fix_folder_names(&mut self) -> bool {
+        let mut changed = false;
+        for s in &mut self.series {
+            let Some(name) = s.folder.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let fixed = crate::fsutil::portable_name(name);
+            if fixed == name || fixed.is_empty() {
+                continue;
+            }
+            let new = s.folder.with_file_name(&fixed);
+            if s.folder.is_dir()
+                && let Err(e) = move_folder(&s.folder, &new)
+            {
+                tracing::warn!(
+                    "couldn't rename {} to {}: {e}",
+                    s.folder.display(),
+                    new.display()
+                );
+                continue;
+            }
+            tracing::info!("{} is now {}", s.folder.display(), new.display());
+            s.folder = new;
+            changed = true;
+        }
+        changed
     }
 
     fn save(&self) -> Result<()> {
@@ -647,9 +684,64 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// `from` renamed `to`; if `to` is there already, `from`'s files moved into
+/// it (those it hasn't got) and `from` removed if that empties it.
+fn move_folder(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !to.exists() {
+        return std::fs::rename(from, to);
+    }
+    for entry in std::fs::read_dir(from)?.flatten() {
+        let dest = to.join(entry.file_name());
+        if !dest.exists() {
+            std::fs::rename(entry.path(), dest)?;
+        }
+    }
+    let _ = std::fs::remove_dir(from);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renames_folders_named_as_phones_cant() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut lib = Library {
+            path: root.join("library.json"),
+            series: Vec::new(),
+        };
+        let new = |id, t: &str| NewSeries {
+            anilist_id: id,
+            romaji: Some(t.into()),
+            ..Default::default()
+        };
+        // As 0.3.9 named them ("?" and ":" kept; Linux allows them).
+        lib.add(&new(1, "Who Came Home!?"), root).folder = root.join("Who Came Home!?");
+        lib.add(&new(2, "Sample: The Show"), root).folder = root.join("Sample: The Show");
+        lib.add(&new(3, "Plain"), root).folder = root.join("Plain");
+        std::fs::create_dir_all(root.join("Who Came Home!?")).unwrap();
+        std::fs::write(root.join("Who Came Home!?/ep 01.mkv"), b"1").unwrap();
+        // The other's new name is taken already: its files go in there.
+        std::fs::create_dir_all(root.join("Sample: The Show")).unwrap();
+        std::fs::write(root.join("Sample: The Show/ep 02.mkv"), b"2").unwrap();
+        std::fs::create_dir_all(root.join("Sample - The Show")).unwrap();
+        std::fs::write(root.join("Sample - The Show/ep 01.mkv"), b"1").unwrap();
+
+        assert!(lib.fix_folder_names());
+        assert_eq!(lib.find(1).unwrap().folder, root.join("Who Came Home!_"));
+        assert!(root.join("Who Came Home!_/ep 01.mkv").exists());
+        assert!(!root.join("Who Came Home!?").exists());
+        assert_eq!(lib.find(2).unwrap().folder, root.join("Sample - The Show"));
+        assert!(root.join("Sample - The Show/ep 02.mkv").exists());
+        assert!(
+            !root.join("Sample: The Show").exists(),
+            "emptied, so removed"
+        );
+        assert_eq!(lib.find(3).unwrap().folder, root.join("Plain"));
+        assert!(!lib.fix_folder_names(), "nothing more to do");
+    }
 
     /// What names and audio tracks say about a release.
     #[test]
