@@ -3809,7 +3809,7 @@ dependencies = [
 
 [[package]]
 name = "ichioshi"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "aes",
  "anyhow",
@@ -3863,7 +3863,7 @@ dependencies = [
 
 [[package]]
 name = "ichioshi-mobile"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "ichioshi",
  "serde_json",
