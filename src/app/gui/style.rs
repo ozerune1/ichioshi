@@ -603,54 +603,42 @@ pub(super) fn poster_size(desktop: (f32, f32)) -> (f32, f32) {
 pub(super) const POSTER_GAP: f32 = 10.0;
 
 pub(super) fn page<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    endless_page(content, None)
-}
-
-/// How near its end (in pixels) an endless page asks for more.
-const NEAR_END: f32 = 900.0;
-
-/// A page whose list goes on as it's scrolled: `more` (if there's more)
-/// is sent each time it's scrolled to near its end.
-pub(super) fn endless_page<'a>(
-    content: impl Into<Element<'a, Message>>,
-    more: Option<Message>,
-) -> Element<'a, Message> {
     let margin = if compact() { [14, 16] } else { [28, 36] };
-    let mut s = scrollable(container(content).padding(margin).width(Fill))
+    scrollable(container(content).padding(margin).width(Fill))
         .height(Fill)
-        .style(scroll_style);
-    if let Some(more) = more {
-        s = s.on_scroll(move |v| {
-            let seen_to = v.absolute_offset().y + v.bounds().height;
-            if v.content_bounds().height - seen_to < NEAR_END {
-                more.clone()
-            } else {
-                Message::Nothing
-            }
-        });
-    }
-    s.into()
+        .style(scroll_style)
+        .into()
 }
 
-/// The end of a list that's read a page at a time: the next page coming,
-/// why it didn't, or (while there's more) a button for it, as a list too
-/// short to scroll never asks. None at the very end.
+/// How far ahead of the screen (in pixels) a list's end asks for its next
+/// page, so it's there before you reach it.
+const AHEAD: f32 = 900.0;
+
+/// The end of a list read a page at a time, for endless scrolling: while
+/// there's more, it asks (`ask`) for the next page as it comes within
+/// [`AHEAD`] of the screen, scrolled to or not (a list too short to scroll
+/// fills itself), and again each page (`next`) while it's still there. If
+/// a page couldn't be had, why, and a button to try again. None at the
+/// very end.
 pub(super) fn list_end<'a>(
     more: &crate::app::discover_ui::More,
-    has_more: bool,
+    next: Option<u32>,
     ask: Message,
 ) -> Option<Element<'a, Message>> {
     use crate::app::discover_ui::More;
-    let end: Element<'a, Message> = match more {
-        More::Loading => weak("Loading more…").into(),
-        More::Failed(e) => column![
+    let end: Element<'a, Message> = match (more, next) {
+        (More::Failed(e), _) => column![
             error_text(format!("Couldn't load more: {e}")),
             secondary("Try again", Some(ask)),
         ]
         .spacing(10)
         .into(),
-        More::Idle if has_more => secondary("Show more", Some(ask)),
-        More::Idle => return None,
+        (_, None) => return None,
+        (_, Some(page)) => iced::widget::sensor(weak("Loading more…"))
+            .on_show(move |_| ask.clone())
+            .anticipate(AHEAD)
+            .key(page)
+            .into(),
     };
     Some(container(end).padding([16, 0]).into())
 }

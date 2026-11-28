@@ -3393,6 +3393,104 @@ fn searches_and_downloads_live() {
     h._rt_handle().block_on(engine.stop());
 }
 
+/// Endless scrolling: a long shelf asks for its next page only once it's
+/// scrolled near its end, and then by itself (nothing to click); and the
+/// next again as that one is scrolled through.
+#[test]
+fn discover_goes_on_as_you_scroll() {
+    let _net = crate::mock_http::mocked();
+    use crate::mock_http::{mock, reply};
+    use serde_json::{Value, json};
+    use std::sync::Mutex;
+
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            *crate::seadex::ANILIST_BASE.lock().unwrap() = None;
+            *crate::seadex::SEADEX_BASE.lock().unwrap() = None;
+            *crate::seadex::KITSU_BASE.lock().unwrap() = None;
+        }
+    }
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let pages: Arc<Mutex<Vec<u64>>> = Arc::default();
+    let asked = pages.clone();
+    let server = rt.block_on(mock(move |req| {
+        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let q = body["query"].as_str().unwrap_or_default();
+        if !q.contains("media(type: ANIME") {
+            return reply(200, json!({"data": {}}));
+        }
+        // Three pages of 50.
+        let page = body["variables"]["page"].as_u64().unwrap();
+        asked.lock().unwrap().push(page);
+        let media: Vec<Value> = (0..50)
+            .map(|i| {
+                let id = page * 100 + i;
+                json!({"id": id, "title": {"english": format!("Show {id}")}, "format": "TV"})
+            })
+            .collect();
+        reply(
+            200,
+            json!({"data": {"Page": {"pageInfo": {"hasNextPage": page < 3}, "media": media}}}),
+        )
+    }));
+    *crate::seadex::ANILIST_BASE.lock().unwrap() = Some(server.clone());
+    *crate::seadex::SEADEX_BASE.lock().unwrap() = Some(format!("{server}/seadex"));
+    *crate::seadex::KITSU_BASE.lock().unwrap() = Some(format!("{server}/kitsu"));
+    let _reset = Reset;
+
+    let (base, _out) = dir("endless");
+    let mut h = app_harness(base.path());
+    set_size(1440.0, 900.0);
+    click(&mut h, "Discover");
+    let shown = |g: &Gui| match g.app.discover.shelves.get(&g.app.discover.filter) {
+        Some((crate::app::discover_ui::Loaded::Ready(p), _)) => p.items.len(),
+        _ => 0,
+    };
+    wait_until(&mut h, "the first page", |g| shown(g) == 50);
+    // Its end is far below the window: drawn, it asks for nothing.
+    redraw(&mut h);
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = h.update(Message::Tick);
+    }
+    assert_eq!(*pages.lock().unwrap(), [1], "not before it's near");
+
+    // Scrolled to the bottom (a wheel turn, then the frame it draws).
+    let scroll_down = |h: &mut Harness| {
+        let mut ui = simulator(h);
+        ui.point_at(iced::Point::new(900.0, 450.0));
+        ui.simulate([
+            iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+                delta: iced::mouse::ScrollDelta::Pixels {
+                    x: 0.0,
+                    y: -100_000.0,
+                },
+            }),
+            iced::Event::Window(iced::window::Event::RedrawRequested(
+                iced::time::Instant::now(),
+            )),
+        ]);
+        let messages: Vec<Message> = ui.into_messages().collect();
+        send(h, messages);
+    };
+    scroll_down(&mut h);
+    wait_until(&mut h, "the second page", |g| shown(g) == 100);
+    scroll_down(&mut h);
+    wait_until(&mut h, "the third page", |g| shown(g) == 150);
+    scroll_down(&mut h);
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = h.update(Message::Tick);
+    }
+    assert_eq!(
+        *pages.lock().unwrap(),
+        [1, 2, 3],
+        "each once, none past the last"
+    );
+    assert!(!shows(&h, "Loading more…"));
+}
+
 /// Discover (AniList's lists), the calendar (your lists' anime airing this
 /// week; everything when asked), and on a series page MyAnimeList's
 /// episode scores and each episode's discussion on both sites. AniList
@@ -3559,8 +3657,10 @@ fn discovers_schedules_and_discusses() {
     wait_for(&mut h, "Someone Else's");
     assert!(shows(&h, "Watching"), "your list's status on the card");
     save(&h, &out, "1-discover");
-    // Its next page, at its end (scrolling there asks the same way).
-    click(&mut h, "Show more");
+    // Its next page, by itself: its end is on screen (a frame drawn with
+    // it there asks), with nothing to click.
+    assert!(shows(&h, "Loading more…"));
+    redraw(&mut h);
     wait_for(&mut h, "Page Two Show");
     let shelf = |g: &Gui| match g.app.discover.shelves.get(&g.app.discover.filter) {
         Some((crate::app::discover_ui::Loaded::Ready(p), _)) => {
@@ -3569,7 +3669,7 @@ fn discovers_schedules_and_discusses() {
         _ => (Vec::new(), None),
     };
     assert_eq!(shelf(&h), (vec![1, 3, 4], None), "each once, and no more");
-    assert!(!shows(&h, "Show more"), "the shelf's end");
+    assert!(!shows(&h, "Loading more…"), "the shelf's end");
     click_with(&mut h, "Next season", || {
         containing("Next season · ".into())
     });
@@ -3608,12 +3708,12 @@ fn discovers_schedules_and_discusses() {
     click(&mut h, "Search");
     type_into(&mut h, "search", "Found", true);
     wait_for(&mut h, "Found Two");
-    click(&mut h, "Show more");
+    redraw(&mut h);
     wait_for(&mut h, "Found Three");
     let ids: Vec<u64> = h.app.results.iter().map(|a| a.anilist_id).collect();
     assert_eq!(ids, [10, 11, 12], "each once, in order");
     assert_eq!(h.app.results_next, None);
-    assert!(!shows(&h, "Show more"));
+    assert!(!shows(&h, "Loading more…"));
     save(&h, &out, "1b-search-more");
 
     // The calendar: your list's anime only (not the dropped one)...

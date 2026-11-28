@@ -161,6 +161,17 @@ pub(super) fn type_into(gui: &mut Gui, id: &'static str, text: &str, submit: boo
     send(gui, messages);
 }
 
+/// Draw a frame as the app does, and run what that sends (a list's end
+/// coming into view asks for more).
+pub(super) fn redraw(gui: &mut Gui) {
+    let mut ui = simulator(gui);
+    ui.simulate([iced::Event::Window(iced::window::Event::RedrawRequested(
+        iced::time::Instant::now(),
+    ))]);
+    let messages: Vec<Message> = ui.into_messages().collect();
+    send(gui, messages);
+}
+
 pub(super) fn shows(gui: &Gui, label: &str) -> bool {
     simulator(gui).find(label).is_ok()
 }

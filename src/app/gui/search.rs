@@ -60,16 +60,14 @@ impl Gui {
         for (i, anime) in a.results.iter().enumerate() {
             list = list.push(self.result_card(i, anime, dual));
         }
-        let has_more = a.results_next.is_some();
         if !a.results.is_empty() {
             list = list.push(list_end(
                 &a.results_more,
-                has_more,
+                a.results_next,
                 act(Action::MoreResults),
             ));
         }
-        let asks = has_more && a.results_more != crate::app::discover_ui::More::Loading;
-        endless_page(c.push(list), asks.then(|| act(Action::MoreResults)))
+        page(c.push(list))
     }
 
     fn result_card<'a>(&'a self, i: usize, anime: &'a Anime, dual: bool) -> Element<'a, Message> {
