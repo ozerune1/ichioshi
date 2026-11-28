@@ -94,13 +94,14 @@
             <Button b={b.delete} kind="danger" small />
           </div>
         {/if}
-        {#if b.languages}
-          <button class="check" onclick={() => press(b.languages.toggle)}>
-            <span class="tick" class:on={b.languages.own}>{b.languages.own ? "✓" : ""}</span>
-            Different languages for this series
-          </button>
-          <p class="faint small">{b.languages.summary}</p>
-        {/if}
+      {/if}
+      {#if b.languages}
+        <button class="check" onclick={() => press(b.languages.toggle)}>
+          <span class="tick" class:on={b.languages.own}>{b.languages.own ? "✓" : ""}</span>
+          Different languages for this series
+        </button>
+        <p class="faint small">{b.languages.summary}</p>
+        {#if b.languages.note}<p class="faint small">{b.languages.note}</p>{/if}
       {/if}
     </div>
   {/if}

@@ -267,8 +267,15 @@ fn library_box(ui: &mut Ui, ap: &AnimePage) -> Value {
     let anime = &ap.anime;
     let id = anime.anilist_id;
     if app.page_on_servers() {
+        // Its languages, as a library here has them: on the servers they
+        // choose what the player starts with, and dual-audio releases.
+        let langs = app.library.find(id).map(|s| languages(ui, s));
         if let Some(m) = app.manage.as_ref().filter(|m| m.anilist == id) {
-            return json!({"t": "manage", "panel": super::manage::panel(ui, m)});
+            return json!({
+                "t": "manage",
+                "panel": super::manage::panel(ui, m),
+                "languages": langs,
+            });
         }
         if let Some(r) = app.library.find(id).and_then(|s| s.remote.as_ref()) {
             let kind = match r.arr {
@@ -286,6 +293,7 @@ fn library_box(ui: &mut Ui, ap: &AnimePage) -> Value {
                 "t": "remote",
                 "title": format!("On {kind}"),
                 "note": format!("{have} of its {} episodes there", r.episodes.len()),
+                "languages": langs,
             });
         }
         let why = app.why_not_addable(id).unwrap_or_else(|| {
@@ -309,9 +317,23 @@ fn library_box(ui: &mut Ui, ap: &AnimePage) -> Value {
             "add": ui.button("+ Add to library", Some(Action::AddToLibrary)),
         });
     };
-    // Its own languages, or everyone's.
+    json!({
+        "t": "in_library",
+        "title": "In your library",
+        "note": series.folder.display().to_string(),
+        "remove": ui.button("Remove", Some(Action::RemoveSeries { id, delete_files: false })),
+        "delete": ui.button("Delete folder…", Some(Action::AskRemoveSeries(id))),
+        "languages": languages(ui, series),
+    })
+}
+
+/// A series' languages: its own, or everyone's (a switch between them).
+fn languages(ui: &mut Ui, series: &crate::library::Series) -> Value {
+    let app = ui.app;
+    let id = series.anilist_id;
     let own = series.prefs.clone();
     let everyone = app.settings.prefs.clone();
+    let on_servers = app.page_on_servers();
     let toggle = ui.act(Action::SetSeriesPrefs {
         id,
         prefs: if own.is_some() {
@@ -321,19 +343,16 @@ fn library_box(ui: &mut Ui, ap: &AnimePage) -> Value {
         },
     });
     json!({
-        "t": "in_library",
-        "title": "In your library",
-        "note": series.folder.display().to_string(),
-        "remove": ui.button("Remove", Some(Action::RemoveSeries { id, delete_files: false })),
-        "delete": ui.button("Delete folder…", Some(Action::AskRemoveSeries(id))),
-        "languages": {
-            "own": own.is_some(),
-            "toggle": toggle,
-            "summary": match &own {
-                Some(p) => p.summary(),
-                None => format!("Everyone's: {} (in Settings)", everyone.summary()),
-            },
+        "own": own.is_some(),
+        "toggle": toggle,
+        "summary": match &own {
+            Some(p) => p.summary(),
+            None => format!("Everyone's: {} (in Settings)", everyone.summary()),
         },
+        "note": on_servers.then_some(
+            "On your servers, they choose the audio and subtitles the player starts with, and \
+             (wanting a dub) dual-audio releases first."
+        ),
     })
 }
 

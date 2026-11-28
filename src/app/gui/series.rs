@@ -1263,13 +1263,29 @@ impl Gui {
     fn library_box<'a>(&'a self, ap: &'a AnimePage) -> Element<'a, Message> {
         let anime = &ap.anime;
         if self.app.page_on_servers() {
+            // Its languages, as a library here has them: on the servers they
+            // choose what the player starts with, and dual-audio releases.
+            let with_languages = |panel: Element<'a, Message>| -> Element<'a, Message> {
+                match self.app.library.find(anime.anilist_id) {
+                    Some(series) => column![
+                        panel,
+                        card(self.series_languages(series).push(weak(
+                            "On your servers, they choose the audio and subtitles the player \
+                             starts with, and (wanting a dub) dual-audio releases first."
+                        ))),
+                    ]
+                    .spacing(16)
+                    .into(),
+                    None => panel,
+                }
+            };
             if let Some(m) = self
                 .app
                 .manage
                 .as_ref()
                 .filter(|m| m.anilist == anime.anilist_id)
             {
-                return self.manage_panel(m);
+                return with_languages(self.manage_panel(m));
             }
             if let Some(r) = self
                 .app
@@ -1277,7 +1293,7 @@ impl Gui {
                 .find(anime.anilist_id)
                 .and_then(|s| s.remote.as_ref())
             {
-                return self.remote_box(anime.anilist_id, r);
+                return with_languages(self.remote_box(anime.anilist_id, r));
             }
             let why = self.app.why_not_addable(anime.anilist_id);
             return card(

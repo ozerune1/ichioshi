@@ -1752,6 +1752,20 @@ fn library_on_your_servers() {
     });
     let pushed = &sent("POST", "/sonarr/api/v3/release/push")[0];
     assert_eq!(pushed["title"], "[Group] Frieren S01");
+    // Its own languages, as on a library here (for what the player plays
+    // and dual-audio releases).
+    assert!(shows_containing(
+        &h,
+        "On your servers, they choose the audio"
+    ));
+    click(&mut h, "Use different languages for this series");
+    let id = match &h.app.page {
+        Page::Anime(ap) => ap.anime.anilist_id,
+        _ => panic!("not on its page"),
+    };
+    assert!(h.app.library.find(id).unwrap().prefs.is_some());
+    click(&mut h, "Use different languages for this series");
+    assert!(h.app.library.find(id).unwrap().prefs.is_none());
     assert_eq!(
         pushed["downloadUrl"],
         format!("{server}/download/777.torrent")
