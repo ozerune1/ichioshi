@@ -5,9 +5,9 @@ use chrono::{Days, Local};
 use serde_json::{Value, json};
 
 use super::ui::Ui;
-use crate::app::discover_ui::{Loaded, More, midnight, monday_of};
-use crate::app::{Action, FilesPage, Origin, Page, Picker, fmt_bytes, is_video};
-use crate::browse::{self, FORMATS, GENRES, Media, Shelf};
+use crate::app::discover_ui::{LIST_CHOICES, Loaded, More, list_choice_name, midnight, monday_of};
+use crate::app::{Action, App, FilesPage, Origin, Page, Picker, fmt_bytes, is_video};
+use crate::browse::{self, Choice, FORMATS, Filter, GENRES, Media, Season, Shelf, Sort};
 use crate::tracking::{Service, Status};
 
 /// A list's status for an anime (AniList's, else MyAnimeList's).
@@ -56,6 +56,22 @@ fn media(ui: &mut Ui, m: &Media, origin: Origin) -> Value {
     })
 }
 
+/// A three-way chip: off, wanted ("in"), not wanted ("out").
+fn tri(ui: &mut Ui, label: &str, state: Option<Choice>, f: impl Fn(&mut App) + 'static) -> Value {
+    json!({
+        "label": label,
+        "state": match state {
+            None => Value::Null,
+            Some(Choice::Include) => json!("in"),
+            Some(Choice::Exclude) => json!("out"),
+        },
+        "id": ui.edit(f),
+    })
+}
+
+/// The earliest year Discover offers.
+const FIRST_YEAR: i32 = 1960;
+
 pub(super) fn discover(ui: &mut Ui) -> Value {
     let app = ui.app;
     let d = &app.discover;
@@ -75,24 +91,43 @@ pub(super) fn discover(ui: &mut Ui) -> Value {
             };
             json!({
                 "label": label,
-                "on": f.shelf == shelf,
-                "id": ui.edit(move |app| app.discover.filter.shelf = shelf),
+                "on": shelf.is(&f, today),
+                "id": ui.edit(move |app| app.discover.show(shelf)),
             })
         })
         .collect();
-    let mut genres = vec![json!({
-        "label": "Any genre",
-        "on": f.genre.is_none(),
-        "id": ui.edit(|app| app.discover.filter.genre = None),
-    })];
-    for g in GENRES
+    let sorts: Vec<Value> = Sort::ALL
         .into_iter()
-        .chain(app.adult_on().then_some(browse::ADULT_GENRE))
-    {
-        genres.push(json!({
-            "label": g,
-            "on": f.genre.as_deref() == Some(g),
-            "id": ui.edit(move |app| app.discover.filter.genre = Some(g.to_owned())),
+        .map(|s| {
+            json!({
+                "label": s.name(),
+                "on": f.sort == s,
+                "id": ui.edit(move |app| app.discover.set_sort(s)),
+            })
+        })
+        .collect();
+    let mut seasons = vec![json!({
+        "label": "Any season",
+        "on": f.season.is_none(),
+        "id": ui.edit(|app| app.discover.filter.season = None),
+    })];
+    for s in Season::ALL {
+        seasons.push(json!({
+            "label": s.name(),
+            "on": f.season == Some(s),
+            "id": ui.edit(move |app| app.discover.filter.season = Some(s)),
+        }));
+    }
+    let mut years = vec![json!({
+        "label": "Any year",
+        "on": f.year.is_none(),
+        "id": ui.edit(|app| app.discover.filter.year = None),
+    })];
+    for y in (FIRST_YEAR..=season.1 + 1).rev() {
+        years.push(json!({
+            "label": y.to_string(),
+            "on": f.year == Some(y),
+            "id": ui.edit(move |app| app.discover.filter.year = Some(y)),
         }));
     }
     let mut formats = vec![json!({
@@ -107,6 +142,53 @@ pub(super) fn discover(ui: &mut Ui) -> Value {
             "id": ui.edit(move |app| app.discover.filter.format = Some(value.to_owned())),
         }));
     }
+    let adult = app.adult_on();
+    let genres: Vec<Value> = GENRES
+        .into_iter()
+        .chain(adult.then_some(browse::ADULT_GENRE))
+        .map(|g| {
+            tri(ui, g, f.tags.get(g).copied(), move |app| {
+                app.discover.cycle_tag(g)
+            })
+        })
+        .collect();
+    let chosen_tags: Vec<Value> = f
+        .tags
+        .iter()
+        .filter(|(n, _)| !Filter::is_genre(n))
+        .map(|(name, choice)| {
+            let n = name.clone();
+            tri(ui, name, Some(*choice), move |app| {
+                app.discover.cycle_tag(&n)
+            })
+        })
+        .collect();
+    let found_tags: Vec<Value> = d
+        .tag_matches(adult)
+        .into_iter()
+        .map(|t| {
+            let n = t.name.clone();
+            tri(ui, &t.name, None, move |app| {
+                app.discover.cycle_tag(&n);
+                app.discover.tag_query.clear();
+            })
+        })
+        .collect();
+    let tag_note = match &d.tags {
+        Some((Loaded::Failed(e), _)) => Some(format!("Couldn't read AniList's tags: {e}")),
+        _ if !d.tag_query.trim().is_empty() && found_tags.is_empty() => {
+            Some("No tag by that name.".to_owned())
+        }
+        _ => None,
+    };
+    let lists: Vec<Value> = LIST_CHOICES
+        .into_iter()
+        .map(|s| {
+            tri(ui, list_choice_name(s), d.list_choice(s), move |app| {
+                app.discover.cycle_list(s)
+            })
+        })
+        .collect();
     let (list, state) = match d.shelves.get(&f).map(|(l, _)| l) {
         None | Some(Loaded::Loading) => (Vec::new(), json!({"text": "Asking AniList…"})),
         Some(Loaded::Failed(e)) => (
@@ -139,8 +221,20 @@ pub(super) fn discover(ui: &mut Ui) -> Value {
         "kind": "discover",
         "calendar": false,
         "shelves": shelves,
-        "genres": genres,
+        "sorts": sorts,
+        "seasons": seasons,
+        "years": years,
         "formats": formats,
+        "shuffle": (f.sort == Sort::Random).then(|| ui.edit(|app| app.discover.reshuffle())),
+        "genres": genres,
+        "tags": chosen_tags,
+        "tag_query": ui.field(&app.discover.tag_query, |app, q| app.discover.tag_query = q),
+        "found_tags": found_tags,
+        "tag_note": tag_note,
+        "lists": lists,
+        "lists_note": (!app.tracking.any())
+            .then_some("Sign in to AniList or MyAnimeList (More › Lists) to choose by your lists."),
+        "clear": app.discover.narrowed().then(|| ui.edit(|app| app.discover.clear_choices())),
         "list": list,
         "state": state,
         "more": more,

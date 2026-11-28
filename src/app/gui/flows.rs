@@ -3565,6 +3565,15 @@ fn discovers_schedules_and_discusses() {
                     {"airingAt": at + 120, "episode": 1, "media": show(3, "Someone Else's")}]}}}),
             );
         }
+        if q.contains("MediaTagCollection") {
+            return reply(
+                200,
+                json!({"data": {"MediaTagCollection": [
+                    {"name": "Time Skip", "category": "Theme", "isAdult": false},
+                    {"name": "Twins", "category": "Cast", "isAdult": false},
+                    {"name": "Timid Tag", "category": "Cast", "isAdult": true}]}}),
+            );
+        }
         if q.contains("media(search: $search") {
             assert_eq!(v["search"], "Found");
             let (hits, more) = if v["page"] == 2 {
@@ -3688,6 +3697,36 @@ fn discovers_schedules_and_discusses() {
             .any(|v| v["sort"] == json!(["POPULARITY_DESC"]) && v["season"].is_string()),
         "a season asked for"
     );
+    // A tag found by typing, a genre not wanted, a list's status: what
+    // AniList is asked for (your Watching list: Show One, id 1).
+    type_into(&mut h, "discover-tags", "ti", false);
+    wait_for(&mut h, "Time Skip");
+    assert!(!shows(&h, "Timid Tag"), "no adult tags without 18+ anime");
+    click(&mut h, "Time Skip");
+    click(&mut h, "Drama");
+    click(&mut h, "+ Drama");
+    click(&mut h, "Watching");
+    wait(&mut h, "the narrowed list", |g| {
+        matches!(
+            g.app.discover.shelves.get(&g.app.discover.filter),
+            Some((crate::app::discover_ui::Loaded::Ready(_), _))
+        )
+    });
+    assert!(shows(&h, "+ Time Skip") && shows(&h, "− Drama") && shows(&h, "+ Watching"));
+    let narrowed = asked
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|v| v.get("tagIn").is_some())
+        .cloned()
+        .expect("asked with the tag");
+    assert_eq!(narrowed["tagIn"], json!(["Time Skip"]));
+    assert_eq!(narrowed["genreNotIn"], json!(["Drama"]));
+    assert_eq!(narrowed["idIn"], json!([1]), "your Watching list's");
+    save(&h, &out, "1c-discover-narrowed");
+    click(&mut h, "Clear choices");
+    assert!(!h.app.discover.narrowed());
     // An anime from it: its page, and Back to Discover.
     click(&mut h, "Someone Else's");
     wait_until(

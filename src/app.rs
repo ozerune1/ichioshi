@@ -327,8 +327,10 @@ enum Msg {
         /// Which page (from 1).
         page: u32,
         /// Its anime, and whether there are more pages.
-        result: Result<(Vec<crate::browse::Media>, bool), String>,
+        result: Result<crate::browse::Found, String>,
     },
+    /// AniList's tags, for Discover's filter.
+    DiscoverTags(Result<Vec<crate::browse::Tag>, String>),
     Schedule {
         week: chrono::NaiveDate,
         result: Result<Vec<crate::browse::Airing>, String>,
@@ -1317,6 +1319,7 @@ impl App {
                     page,
                     result,
                 } => self.handle_discovered(filter, page, result),
+                Msg::DiscoverTags(result) => self.handle_discover_tags(result),
                 Msg::Schedule { week, result } => self.handle_schedule(week, result),
                 Msg::MalEpisodes { id, result } => self.handle_mal_episodes(id, result),
                 Msg::Discussion {
@@ -1638,8 +1641,20 @@ impl App {
         self.settings.adult = on;
         self.discover.shelves.clear();
         self.calendar.weeks.clear();
-        if !on && self.discover.filter.genre.as_deref() == Some(crate::browse::ADULT_GENRE) {
-            self.discover.filter.genre = None;
+        if !on {
+            // Adult genres and tags aren't offered without 18+ anime.
+            let adult_tags: Vec<String> = match &self.discover.tags {
+                Some((discover_ui::Loaded::Ready(tags), _)) => tags
+                    .iter()
+                    .filter(|t| t.adult)
+                    .map(|t| t.name.clone())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            self.discover
+                .filter
+                .tags
+                .retain(|t, _| t != crate::browse::ADULT_GENRE && !adult_tags.contains(t));
         }
     }
 

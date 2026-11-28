@@ -1,12 +1,22 @@
 <script lang="ts">
   // Discover: AniList's shelves, or the calendar (a week, a day at a time).
   import Chips from "../lib/Chips.svelte";
+  import Field from "../lib/Field.svelte";
   import More from "../lib/More.svelte";
+  import TriChips from "../lib/TriChips.svelte";
   import Poster from "../lib/Poster.svelte";
   import Select from "../lib/Select.svelte";
   import { press } from "../lib/api";
 
   let { page }: { page: any } = $props();
+
+  // Genres, tags and lists: folded away until opened.
+  let choosing = $state(false);
+  let chosen = $derived(
+    page.calendar
+      ? 0
+      : [...page.genres, ...page.tags, ...page.lists].filter((c: any) => c.state).length,
+  );
 
   // The calendar's day (today, or the week's first).
   let picked = $state<string | null>(null);
@@ -28,9 +38,33 @@
   {#if !page.calendar}
     <Chips options={page.shelves} scroll />
     <div class="filters">
-      <Select options={page.genres} />
-      <Select options={page.formats} />
+      <Select options={page.sorts} label="Sort" />
+      <Select options={page.formats} label="Format" />
+      <Select options={page.seasons} label="Season" />
+      <Select options={page.years} label="Year" />
     </div>
+    {#if page.shuffle}<button class="link" onclick={() => press(page.shuffle)}>Shuffle again</button>{/if}
+    <button class="choose" class:open={choosing} onclick={() => (choosing = !choosing)}>
+      <span>Genres, tags &amp; your lists</span>
+      {#if chosen}<span class="count">{chosen}</span>{/if}
+      <span class="caret">{choosing ? "▴" : "▾"}</span>
+    </button>
+    {#if choosing}
+      <div class="choices">
+        <p class="label">Genres</p>
+        <TriChips options={page.genres} />
+        <p class="label">Tags</p>
+        {#if page.tags.length}<TriChips options={page.tags} />{/if}
+        <Field f={page.tag_query} hint="Find a tag (e.g. Time Skip)" />
+        {#if page.found_tags.length}<TriChips options={page.found_tags} />{/if}
+        {#if page.tag_note}<p class="faint small">{page.tag_note}</p>{/if}
+        <p class="label">Your lists</p>
+        <TriChips options={page.lists} />
+        {#if page.lists_note}<p class="faint small">{page.lists_note}</p>{/if}
+        <p class="faint small">Tap a choice to want it, again for anime without it, again to let it go.</p>
+        {#if page.clear}<button class="link" onclick={() => press(page.clear)}>Clear choices</button>{/if}
+      </div>
+    {/if}
     {#if page.state}
       <p class="state" class:error={page.state.error}>{page.state.text}</p>
       {#if page.state.retry}<button class="link" onclick={() => press(page.state.retry)}>Try again</button>{/if}
@@ -102,6 +136,13 @@
   .switch button { flex: 1; padding: 8px; border: none; border-radius: 9px; background: none; color: var(--muted); font: inherit; font-weight: 600; }
   .switch button.on { background: rgba(139, 124, 255, 0.22); color: var(--text); }
   .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .choose { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; font-size: 14px; }
+  .choose span:first-child { flex: 1; text-align: left; }
+  .count { font-size: 12px; font-weight: 600; color: white; background: var(--accent-gradient); border-radius: 999px; padding: 1px 8px; }
+  .caret { color: var(--muted); }
+  .choices { display: flex; flex-direction: column; gap: 8px; }
+  .label { margin: 6px 0 0; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+  .small { font-size: 12px; margin: 0; }
   .state { color: var(--muted); }
   .state.error { color: var(--red); }
   .link { align-self: flex-start; background: none; border: none; color: var(--accent); font: inherit; padding: 0; }

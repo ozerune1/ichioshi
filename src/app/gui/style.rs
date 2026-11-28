@@ -317,6 +317,48 @@ pub(super) fn link<'a>(
 }
 
 /// A selectable chip (filters, choices).
+/// A chip tapped round three ways: off, wanted ("+", the accent), not
+/// wanted ("−", red).
+pub(super) fn tri_chip<'a>(
+    label: &str,
+    state: Option<crate::browse::Choice>,
+    on_press: Message,
+) -> Element<'a, Message> {
+    use crate::browse::Choice;
+    let shown = match state {
+        None => label.to_owned(),
+        Some(Choice::Include) => format!("+ {label}"),
+        Some(Choice::Exclude) => format!("− {label}"),
+    };
+    button(text(shown).size(13).font(MEDIUM).color(match state {
+        None => MUTED,
+        Some(Choice::Include) => Color::WHITE,
+        Some(Choice::Exclude) => RED,
+    }))
+    .padding([7, 14])
+    .on_press(on_press)
+    .style(move |_, status| button::Style {
+        background: Some(match state {
+            Some(Choice::Include) => accent_gradient(),
+            Some(Choice::Exclude) => fill_color(RED.scale_alpha(0.12)),
+            None if status == button::Status::Hovered => fill_color(SURFACE2),
+            None => fill_color(SURFACE),
+        }),
+        border: Border {
+            color: match state {
+                Some(Choice::Include) => Color::TRANSPARENT,
+                Some(Choice::Exclude) => RED.scale_alpha(0.6),
+                None => LINE,
+            },
+            width: 1.0,
+            radius: 999.0.into(),
+        },
+        text_color: TEXT,
+        ..button::Style::default()
+    })
+    .into()
+}
+
 pub(super) fn chip<'a>(
     label: impl text::IntoFragment<'a>,
     on: bool,

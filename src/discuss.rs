@@ -716,14 +716,18 @@ pub(crate) mod tests {
             assert_eq!(topic.posts.len(), 50);
             let today = chrono::Local::now().date_naive();
             for shelf in crate::browse::Shelf::ALL {
-                let filter = crate::browse::Filter {
-                    shelf,
-                    genre: None,
-                    format: None,
-                };
-                let (list, _) = crate::browse::browse(&client, &filter, today, false, 1)
-                    .await
-                    .unwrap();
+                let filter = shelf.apply(&crate::browse::Filter::default(), today);
+                let list = crate::browse::browse(
+                    &client,
+                    &filter,
+                    &crate::browse::ListIds::Any,
+                    false,
+                    1,
+                    None,
+                )
+                .await
+                .unwrap()
+                .items;
                 println!(
                     "{}: {} anime, first {:?}",
                     shelf.name(),
@@ -732,19 +736,48 @@ pub(crate) mod tests {
                 );
                 assert!(!list.is_empty());
             }
-            let filter = crate::browse::Filter {
-                shelf: crate::browse::Shelf::Popular,
-                genre: Some("Mecha".into()),
-                format: Some("MOVIE".into()),
-            };
-            let (list, _) = crate::browse::browse(&client, &filter, today, false, 1)
-                .await
-                .unwrap();
+            let mut filter = crate::browse::Shelf::Popular.apply(&Default::default(), today);
+            filter
+                .tags
+                .insert("Mecha".into(), crate::browse::Choice::Include);
+            filter
+                .tags
+                .insert("Time Skip".into(), crate::browse::Choice::Exclude);
+            filter.format = Some("MOVIE".into());
+            let list = crate::browse::browse(
+                &client,
+                &filter,
+                &crate::browse::ListIds::Any,
+                false,
+                1,
+                None,
+            )
+            .await
+            .unwrap()
+            .items;
             println!(
                 "Mecha movies: {} first {:?}",
                 list.len(),
                 list.first().map(|m| m.title())
             );
+            filter.sort = crate::browse::Sort::Random;
+            filter.shuffle = 12345;
+            let random = crate::browse::browse(
+                &client,
+                &filter,
+                &crate::browse::ListIds::Any,
+                false,
+                1,
+                None,
+            )
+            .await
+            .unwrap();
+            println!(
+                "random: {} anime of {:?} pages",
+                random.items.len(),
+                random.last_page
+            );
+            assert!(!random.items.is_empty());
             let now = chrono::Utc::now().timestamp();
             let week = crate::browse::schedule(&client, now - 3 * 86_400, now + 4 * 86_400, false)
                 .await

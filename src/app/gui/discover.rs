@@ -1,13 +1,13 @@
 //! Discover: AniList's trending, seasonal, popular and top-rated anime,
 //! narrowed by genre and format.
 
-use iced::widget::{Column, Row, column, container, mouse_area, row, space, stack, text};
+use iced::widget::{Column, Row, column, container, mouse_area, space, stack, text};
 use iced::{Color, Element};
 
 use super::{Gui, Message, act, edit};
-use crate::app::discover_ui::Loaded;
+use crate::app::discover_ui::{LIST_CHOICES, Loaded, list_choice_name};
 use crate::app::{Action, Origin};
-use crate::browse::{self, FORMATS, GENRES, Media, Shelf};
+use crate::browse::{self, FORMATS, Filter, GENRES, Media, Season, Shelf, Sort};
 use crate::tracking::{Service, Status};
 
 use super::style::*;
@@ -24,6 +24,9 @@ impl std::fmt::Display for Pick {
         f.write_str(&self.label)
     }
 }
+
+/// The earliest year Discover offers.
+const FIRST_YEAR: i32 = 1960;
 
 /// When an episode airs, here: "Fri 23:30".
 pub(super) fn when(at: i64, format: &str) -> String {
@@ -48,6 +51,9 @@ impl Gui {
         let f = &d.filter;
         let today = chrono::Local::now().date_naive();
         let season = browse::season_of(today);
+        let small = compact();
+
+        // Ready-made views: a sort and a season.
         let mut shelves = Row::new().spacing(8);
         for shelf in Shelf::ALL {
             let label = match shelf {
@@ -60,25 +66,47 @@ impl Gui {
             };
             shelves = shelves.push(chip(
                 label,
-                f.shelf == shelf,
-                Some(edit(move |g| g.app.discover.filter.shelf = shelf)),
+                shelf.is(f, today),
+                Some(edit(move |g| g.app.discover.show(shelf))),
             ));
         }
-        let mut genres = vec![Pick {
+
+        // Sort, season, year, format.
+        let sorts: Vec<Pick> = Sort::ALL
+            .iter()
+            .map(|s| Pick {
+                value: Some(format!("{s:?}")),
+                label: s.name().to_owned(),
+            })
+            .collect();
+        let sort_now = sorts
+            .iter()
+            .find(|p| p.value.as_deref() == Some(&format!("{:?}", f.sort)))
+            .cloned();
+        let mut seasons = vec![Pick {
             value: None,
-            label: "Any genre".into(),
+            label: "Any season".into(),
         }];
-        genres.extend(
-            GENRES
-                .iter()
-                .copied()
-                .chain(self.app.adult_on().then_some(browse::ADULT_GENRE))
-                .map(|g| Pick {
-                    value: Some(g.to_owned()),
-                    label: g.to_owned(),
-                }),
-        );
-        let genre_now = genres.iter().find(|p| p.value == f.genre).cloned();
+        seasons.extend(Season::ALL.iter().map(|s| Pick {
+            value: Some(s.anilist().to_owned()),
+            label: s.name().to_owned(),
+        }));
+        let season_now = seasons
+            .iter()
+            .find(|p| p.value.as_deref() == f.season.map(Season::anilist))
+            .cloned();
+        let mut years = vec![Pick {
+            value: None,
+            label: "Any year".into(),
+        }];
+        years.extend((FIRST_YEAR..=season.1 + 1).rev().map(|y| Pick {
+            value: Some(y.to_string()),
+            label: y.to_string(),
+        }));
+        let year_now = years
+            .iter()
+            .find(|p| p.value == f.year.map(|y| y.to_string()))
+            .cloned();
         let mut formats = vec![Pick {
             value: None,
             label: "Any format".into(),
@@ -88,21 +116,131 @@ impl Gui {
             label: (*label).to_owned(),
         }));
         let format_now = formats.iter().find(|p| p.value == f.format).cloned();
-        let filters = row![
-            dropdown(genres, genre_now, |p: Pick| edit(move |g| g
-                .app
-                .discover
-                .filter
-                .genre =
-                p.value.clone())),
-            dropdown(formats, format_now, |p: Pick| edit(move |g| g
-                .app
-                .discover
-                .filter
-                .format =
-                p.value.clone())),
+        let mut controls = Row::new()
+            .spacing(10)
+            .push(dropdown(sorts, sort_now, |p: Pick| {
+                edit(move |g| {
+                    if let Some(sort) = Sort::ALL
+                        .into_iter()
+                        .find(|s| p.value.as_deref() == Some(&format!("{s:?}")))
+                    {
+                        g.app.discover.set_sort(sort);
+                    }
+                })
+            }))
+            .push(dropdown(seasons, season_now, |p: Pick| {
+                edit(move |g| {
+                    g.app.discover.filter.season = p.value.as_deref().map(Season::from_anilist)
+                })
+            }))
+            .push(dropdown(years, year_now, |p: Pick| {
+                edit(move |g| {
+                    g.app.discover.filter.year = p.value.as_deref().and_then(|y| y.parse().ok())
+                })
+            }))
+            .push(dropdown(formats, format_now, |p: Pick| {
+                edit(move |g| g.app.discover.filter.format = p.value.clone())
+            }));
+        if f.sort == Sort::Random {
+            controls = controls.push(secondary(
+                "Shuffle again",
+                Some(edit(|g| g.app.discover.reshuffle())),
+            ));
+        }
+
+        // Genres (all of them), tags (chosen, then found by typing), your
+        // lists' statuses: each tapped to want it, again to not, again off.
+        let adult = self.app.adult_on();
+        let mut genres = Row::new().spacing(8);
+        for g in GENRES
+            .iter()
+            .copied()
+            .chain(adult.then_some(browse::ADULT_GENRE))
+        {
+            genres = genres.push(tri_chip(
+                g,
+                f.tags.get(g).copied(),
+                edit(move |gui| gui.app.discover.cycle_tag(g)),
+            ));
+        }
+        let mut tags = Row::new().spacing(8).align_y(iced::Alignment::Center);
+        for (name, choice) in f.tags.iter().filter(|(n, _)| !Filter::is_genre(n)) {
+            let n = name.clone();
+            tags = tags.push(tri_chip(
+                name,
+                Some(*choice),
+                edit(move |g| g.app.discover.cycle_tag(&n)),
+            ));
+        }
+        tags = tags.push(
+            field("Find a tag (e.g. Time Skip)…", &d.tag_query)
+                .id("discover-tags")
+                .on_input(|q| edit(move |g| g.app.discover.tag_query = q.clone()))
+                .width(if small { 200 } else { 260 }),
+        );
+        let mut found = Row::new().spacing(8);
+        let matches = d.tag_matches(adult);
+        for t in &matches {
+            let n = t.name.clone();
+            found = found.push(tri_chip(
+                &t.name,
+                None,
+                edit(move |g| {
+                    g.app.discover.cycle_tag(&n);
+                    g.app.discover.tag_query.clear();
+                }),
+            ));
+        }
+        let tag_note: Option<Element<'_, Message>> = match &d.tags {
+            Some((Loaded::Failed(e), _)) => {
+                Some(error_text(format!("Couldn't read AniList's tags: {e}")).into())
+            }
+            _ if !d.tag_query.trim().is_empty() && matches.is_empty() => {
+                Some(weak("No tag by that name.").into())
+            }
+            _ => None,
+        };
+        let mut lists = Row::new().spacing(8);
+        for status in LIST_CHOICES {
+            lists = lists.push(tri_chip(
+                list_choice_name(status),
+                d.list_choice(status),
+                edit(move |g| g.app.discover.cycle_list(status)),
+            ));
+        }
+        let lists_note = (!self.app.tracking.any())
+            .then(|| weak("Sign in to AniList or MyAnimeList (Settings) to choose by your lists."));
+
+        let mut choices = column![
+            label("Genres"),
+            genres.wrap().vertical_spacing(8),
+            gap(6.0),
+            label("Tags"),
+            tags.wrap().vertical_spacing(8),
         ]
-        .spacing(10);
+        .spacing(8);
+        if !matches.is_empty() {
+            choices = choices.push(found.wrap().vertical_spacing(8));
+        }
+        if let Some(note) = tag_note {
+            choices = choices.push(note);
+        }
+        choices = choices
+            .push(gap(6.0))
+            .push(label("Your lists"))
+            .push(lists.wrap().vertical_spacing(8));
+        if let Some(note) = lists_note {
+            choices = choices.push(note);
+        }
+        choices = choices.push(weak(
+            "Tap a choice to want it, again for anime without it, again to let it go.",
+        ));
+        if d.narrowed() {
+            choices = choices.push(secondary(
+                "Clear choices",
+                Some(edit(|g| g.app.discover.clear_choices())),
+            ));
+        }
 
         let body: Element<'_, Message> = match d.shelves.get(f).map(|(l, _)| l) {
             None | Some(Loaded::Loading) => weak("Asking AniList…").into(),
@@ -128,16 +266,16 @@ impl Gui {
                         .iter()
                         .map(|m| self.media_card(m, Origin::Discover)),
                 )
-                .spacing(if compact() { POSTER_GAP } else { 24.0 })
+                .spacing(if small { POSTER_GAP } else { 24.0 })
                 .wrap()
-                .vertical_spacing(if compact() { 18 } else { 28 });
+                .vertical_spacing(if small { 18 } else { 28 });
                 let end = list_end(&shelf.more, shelf.next, act(Action::MoreDiscover));
                 column![grid].push(end).into()
             }
         };
         // A phone's: Browse or Calendar on top, the shelves a strip to
         // scroll sideways.
-        if compact() {
+        if small {
             return page(column![
                 self.discover_switch(false),
                 gap(14.0),
@@ -149,7 +287,9 @@ impl Gui {
                     )
                 ),
                 gap(10.0),
-                filters,
+                controls.wrap().vertical_spacing(8),
+                gap(12.0),
+                choices,
                 gap(16.0),
                 body,
             ]);
@@ -162,7 +302,9 @@ impl Gui {
             gap(18.0),
             shelves.wrap().vertical_spacing(8),
             gap(12.0),
-            filters,
+            controls.wrap().vertical_spacing(8),
+            gap(16.0),
+            choices,
             gap(24.0),
             body,
         ])
