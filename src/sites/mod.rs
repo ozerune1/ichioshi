@@ -28,6 +28,8 @@ pub mod web;
 
 /// Searches at most per show and site (each site is asked politely).
 const MAX_SEARCHES: usize = 4;
+/// Shows of the same name read at most, for one split over a few pages.
+const MAX_PARTS: usize = 3;
 
 /// An episode a site lists for a show.
 #[derive(Debug, Clone, PartialEq)]
@@ -152,11 +154,21 @@ async fn find_show(s: &Session, site: StreamSite, names: &[String]) -> Result<Ve
             }
         };
         answered = true;
-        if let Some(card) = cards.iter().find(|c| named(&c.titles))
-            && let Some(show) = show(s, site, &card.slug).await?
-            && !show.episodes.is_empty()
-        {
-            return Ok(show.episodes);
+        // Every show named like it: a site may split one over a few pages
+        // (hanime.red has some with episode 8 on one, 1–7 on another).
+        let mut merged: Vec<Episode> = Vec::new();
+        for card in cards.iter().filter(|c| named(&c.titles)).take(MAX_PARTS) {
+            if let Some(show) = show(s, site, &card.slug).await? {
+                for e in show.episodes {
+                    if !merged.iter().any(|m| m.episode == e.episode) {
+                        merged.push(e);
+                    }
+                }
+            }
+        }
+        if !merged.is_empty() {
+            merged.sort_by_key(|e| e.episode);
+            return Ok(merged);
         }
         for c in cards {
             if !candidates.contains(&c.slug) {

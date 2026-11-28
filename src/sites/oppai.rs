@@ -17,7 +17,7 @@
 
 use std::sync::LazyLock;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use reqwest::header::{ACCEPT, REFERER as REFERER_HEADER};
 use url::Url;
@@ -332,6 +332,9 @@ impl Player {
 
 pub(super) async fn resolve(s: &Session, url: &str) -> Result<Resolved> {
     let page = s.need(url).await?;
+    if page.contains("<title>Log in to watch") {
+        bail!("oppai.stream only shows this episode to signed-in accounts");
+    }
     let p = player(&page).context("oppai.stream's episode page sets up no player")?;
     Ok(Resolved {
         title: episode_title(&page),

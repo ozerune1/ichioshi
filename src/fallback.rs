@@ -580,13 +580,19 @@ fn rank_with(
 
     if plan.adult {
         // 18+ anime: the highest resolution wins, wherever it's from; then
-        // torrents before streaming sites, and the usual order. (Release-
-        // group tiers say little here.)
+        // one known to have every episode there is (AniList often doesn't
+        // say how many: a streaming site's list does) before one that
+        // doesn't say; then torrents before streaming sites, and the usual
+        // order. (Release-group tiers say little here.)
+        let known_whole = |r: &NyaaRelease| {
+            most_episodes > 0 && r.episode_count().is_some_and(|n| n >= most_episodes)
+        };
         releases.sort_by_key(|r| {
             std::cmp::Reverse((
                 r.usable(),
                 !r.incomplete,
                 r.resolution.unwrap_or(0),
+                known_whole(r),
                 r.source_preference(),
                 prefer_dual_audio && r.dual_audio,
                 r.rank.score,
@@ -717,6 +723,57 @@ mod tests {
         let releases = rank_items(items, &plan, false);
         let res: Vec<_> = releases.iter().map(|r| r.resolution).collect();
         assert_eq!(res, [Some(2160), Some(1080), Some(720)]);
+
+        // Half the episodes (its range written plainly) loses to all of them
+        // on a streaming site; one that doesn't say how many, at the same
+        // resolution, too.
+        let items = vec![
+            item(
+                4,
+                "[LR] Overflow (オーバーフロー) 01-04 [1080p] [WEBRip]",
+                50,
+            ),
+            item(5, "[HENTAI] Overflow 1080p", 40),
+        ];
+        let site = |site: crate::streams::StreamSite, n: u32| NyaaRelease {
+            group: site.name().to_owned(),
+            rank: crate::tiers::Rank {
+                score: 0,
+                label: String::new(),
+            },
+            resolution: Some(1080),
+            source: Source::Web,
+            dual_audio: false,
+            size: 0,
+            min_seeders: 0,
+            max_seeders: 0,
+            remake: false,
+            trusted: false,
+            incomplete: false,
+            kind: ReleaseKind::Stream {
+                site,
+                episodes: (1..=n)
+                    .map(|e| crate::streams::StreamEpisode {
+                        site,
+                        episode: e,
+                        url: format!("https://x/{e}"),
+                        title: format!("Overflow - Episode {e}"),
+                    })
+                    .collect(),
+            },
+        };
+        let streams = vec![
+            site(crate::streams::StreamSite::Hentaimama, 8),
+            site(crate::streams::StreamSite::HentaiHaven, 8),
+        ];
+        let ranked = rank_with(items, streams, &plan, false);
+        let order: Vec<&str> = ranked.iter().map(|r| r.group.as_str()).collect();
+        assert_eq!(
+            order,
+            ["hentaihaven.com", "hentaimama.io", "HENTAI", "LR"],
+            "{ranked:#?}"
+        );
+        assert!(ranked[3].incomplete);
 
         // A custom search on its page still goes to Sukebei.
         let custom = SearchPlan {

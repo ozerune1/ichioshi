@@ -79,6 +79,17 @@ re!(
     r"\s-\s(\d{1,4})\s*[-~]\s*(\d{1,4})(?:\s|$|[(\[])"
 );
 re!(EP_SINGLE_DASH, r"\s-\s(\d{1,4})(?:v\d)?(?:\s|$|[(\[])");
+// "Ep.1-4", "Episodes 01~12", "(ep. 1-3 of 3)".
+re!(
+    EP_RANGE_WORD,
+    r"(?i)\b(?:eps?|episodes?)\.?\s*(\d{1,4})\s*[-~]\s*(\d{1,4})\b"
+);
+// "Show 01-04 [1080p]": a range on its own after the name (at most three
+// digits each, so "2016-2018" is a year's, not episodes).
+re!(
+    EP_RANGE_BARE,
+    r"\s(\d{1,3})\s*[-~]\s*(\d{1,3})(?:\s|$|[(\[])"
+);
 re!(EP_WORD, r"(?i)\b(?:(?:EP|Episode)\s?|E)(\d{1,4})\b");
 re!(RESOLUTION, r"(?i)(2160|1080|720|576|480)[pi]\b");
 re!(UHD, r"(?i)\b(4K|UHD)\b");
@@ -141,18 +152,30 @@ pub fn parse(title: &str) -> ParsedTitle {
             });
     }
     if episodes.is_none() {
-        episodes = [&*EP_RANGE_PAREN, &*EP_RANGE_DASH]
-            .iter()
-            .find_map(|re| re.captures(title))
-            .map(|c| (c[1].parse().unwrap_or(0), c[2].parse().unwrap_or(0)))
-            .filter(|(a, b)| a < b)
-            .or_else(|| {
-                [&*EP_SINGLE_DASH, &*EP_WORD]
-                    .iter()
-                    .find_map(|re| re.captures(title))
-                    .and_then(|c| c[1].parse().ok())
-                    .map(|n| (n, n))
-            });
+        episodes = [
+            &*EP_RANGE_PAREN,
+            &*EP_RANGE_DASH,
+            &*EP_RANGE_WORD,
+            &*EP_RANGE_BARE,
+        ]
+        .iter()
+        // A pattern whose match isn't a range of episodes (a span of years,
+        // "(2016-2018)") lets the next one look.
+        .find_map(|re| {
+            re.captures_iter(title)
+                .map(|c| {
+                    let n = |i: usize| c[i].parse::<u32>().unwrap_or(0);
+                    (n(1), n(2))
+                })
+                .find(|&(a, b)| a < b && !(1900..=2100).contains(&a))
+        })
+        .or_else(|| {
+            [&*EP_SINGLE_DASH, &*EP_WORD]
+                .iter()
+                .find_map(|re| re.captures(title))
+                .and_then(|c| c[1].parse().ok())
+                .map(|n| (n, n))
+        });
     }
 
     let resolution = RESOLUTION
@@ -272,6 +295,28 @@ pub fn split_season(title: &str) -> (String, Option<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_ranges_written_plainly() {
+        let eps = |t: &str| parse(t).episodes;
+        assert_eq!(
+            eps("[Group] Sample Show (見本) 01-04 [1080p] [WEBRip] [Multi-Subs]"),
+            Some((1, 4))
+        );
+        assert_eq!(
+            eps("見本 / Sample Show [Ep.1-4] [JAP,RUS,ENG] [720p] (2016-2018, DVDRip)"),
+            Some((1, 4))
+        );
+        assert_eq!(
+            eps("[HD] 見本 / Sample Show (ep. 1-3 of 3) [eng subs]"),
+            Some((1, 3))
+        );
+        assert_eq!(eps("Show Episodes 01~12 [1080p]"), Some((1, 12)));
+        // Not ranges: a year's span, a resolution, one episode.
+        assert_eq!(eps("Show (2016-2018) [DVDRip]"), None);
+        assert_eq!(eps("Show 1920x1080 [x264]"), None);
+        assert_eq!(eps("[Group] Show S2 - 03 [1080p]"), Some((3, 3)));
+    }
 
     #[test]
     fn subsplease_batch() {

@@ -286,12 +286,17 @@ async fn hanime_red_does_the_players_challenge() {
     let asked: Arc<Mutex<Option<std::collections::HashMap<String, String>>>> = Arc::default();
     let query = asked.clone();
     let base = server(move |req, base| match path(req) {
+        // One show over two pages of the same name, as hanime.red has some.
         "/search" => page(
-            r#"<a class="chip" href="/serie/sister-breeder"> <!-- -->Sister Breeder<!-- --> <span class="tnum">2</span></a>"#,
+            r#"<a class="chip" href="/serie/sister-breeder"> <!-- -->Sister Breeder<!-- --> <span class="tnum">1</span></a><a class="chip" href="/serie/sister-breeder-new"> <!-- -->Sister Breeder<!-- --> <span class="tnum">2</span></a><a class="chip" href="/serie/sister-other"> <!-- -->Sister Other<!-- --></a>"#,
             base,
         ),
         "/serie/sister-breeder" => page(
-            r#"<h1 class="display">Sister Breeder</h1><div class="grid-wide"><a class="card group block " title="Sister Breeder Episode 1" href="/sister-breeder-episode-1"></a><a class="card group block " title="Sister Breeder Episode 2" href="/sister-breeder-episode-2"></a></div>"#,
+            r#"<h1 class="display">Sister Breeder</h1><div class="grid-wide"><a class="card group block " title="Sister Breeder Episode 3" href="/sister-breeder-episode-3"></a></div>"#,
+            base,
+        ),
+        "/serie/sister-breeder-new" => page(
+            r#"<h1 class="display">Sister Breeder</h1><div class="grid-wide"><a class="card group block " title="Sister Breeder Episode 1" href="/sister-breeder-episode-1"></a><a class="card group block " title="Sister Breeder Episode 2" href="/sister-breeder-ep-2"></a></div>"#,
             base,
         ),
         "/sister-breeder-episode-1" => page(
@@ -326,7 +331,12 @@ async fn hanime_red_does_the_players_challenge() {
     let eps = episodes(&c, StreamSite::HanimeRed, &["Sister Breeder".into()])
         .await
         .unwrap();
-    assert_eq!(eps.iter().map(|e| e.episode).collect::<Vec<_>>(), [1, 2]);
+    assert_eq!(
+        eps.iter().map(|e| e.episode).collect::<Vec<_>>(),
+        [1, 2, 3],
+        "both pages' episodes"
+    );
+    assert_eq!(eps[1].url, format!("{base}/sister-breeder-ep-2"));
     let s = Session::new(&c, "hanime.red");
     let r = resolve(&s, StreamSite::HanimeRed, &eps[0].url)
         .await
