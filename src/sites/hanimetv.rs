@@ -1,9 +1,12 @@
 //! hanime.tv.
 //!
-//! Its search goes through its pages' script, which nothing here reads, so
-//! a show's episodes are looked for where its name says they'd be:
-//! `/videos/hentai/<slug>-<n>`, from 1 up until one isn't there. Each
-//! page's heading ("Overflow 1") has to name the show.
+//! Its search, like its own search page's, loads the site's search
+//! database (every video's name, slug and other titles, as JSON, from the
+//! address its pages name as `search_hvs_url`) and looks for the show in
+//! it; an episode is at `/videos/hentai/<slug>`. If the database can't be
+//! had, episodes are looked for where the show's name says they'd be
+//! (`/videos/hentai/<slug>-<n>`, from 1 up until one isn't there), each
+//! page's heading ("Overflow 1") naming the show.
 //!
 //! An episode's streams come from the player's handshake
 //! (`auth.hanime.tv/api/v11/handshake`): a token (JSON, AES-256-GCM with the
@@ -12,7 +15,8 @@
 //! sealed the same way, lists HLS playlists; only the free ("normal") ones
 //! are used.
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine as _;
@@ -29,6 +33,10 @@ use super::{Episode, Media, Resolved, Stream};
 
 const SITE: &str = "https://hanime.tv";
 const AUTH: &str = "https://auth.hanime.tv";
+/// The search database, unless the site's pages name another.
+const SEARCH_DB: &str = "https://guest.freeanimehentai.net/api/v11/search_hvs";
+/// How long the search database is kept before it's fetched again.
+const KEEP_DB: Duration = Duration::from_secs(3600);
 /// The player's key and associated data for its tokens.
 const KEY: [u8; 32] = [
     0x5d, 0x65, 0x7a, 0x4d, 0xcb, 0x0b, 0xad, 0x1c, 0x63, 0x7f, 0xf2, 0xe2, 0x21, 0x05, 0x9b, 0x10,
@@ -40,9 +48,155 @@ const MAX_EPISODES: u32 = 24;
 /// Names tried at most.
 const MAX_NAMES: usize = 3;
 
-/// The show's episodes, at the addresses its names would have.
+/// A video in the search database.
+#[derive(Debug, Clone, PartialEq)]
+struct Doc {
+    /// e.g. "Overflow 1".
+    name: String,
+    slug: String,
+    /// Its other titles.
+    titles: Vec<String>,
+}
+
+/// The show's episodes, from the search database (or, without it, at the
+/// addresses its names would have).
 pub(super) async fn episodes(s: &Session, names: &[String]) -> Result<Vec<Episode>> {
     let wanted = wanted(names);
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    match database(s).await {
+        Ok(db) => return Ok(in_database(&db, &wanted)),
+        Err(e) if e.is::<web::Challenge>() => return Err(e),
+        Err(e) => tracing::warn!("hanime.tv's search database: {e:#}; guessing addresses"),
+    }
+    guessed(s, names, &wanted).await
+}
+
+/// The show's episodes in the database: videos named it (with a number),
+/// else ones with it among their other titles.
+fn in_database(db: &[Doc], wanted: &[String]) -> Vec<Episode> {
+    let named = |t: &str| {
+        matches(wanted, &normalize(&web::without_episode(t))) || matches(wanted, &normalize(t))
+    };
+    let mut found: Vec<&Doc> = db
+        .iter()
+        .filter(|d| matches(wanted, &normalize(&web::without_episode(&d.name))))
+        .collect();
+    if found.is_empty() {
+        found = db
+            .iter()
+            .filter(|d| d.titles.iter().any(|t| named(t)))
+            .collect();
+    }
+    let site = base(SITE);
+    let mut out: Vec<Episode> = Vec::new();
+    for d in found {
+        let n = web::episode_number(&d.name)
+            .or_else(|| web::episode_number(&d.slug))
+            .unwrap_or(1);
+        if out.iter().any(|e| e.episode == n) || d.slug.is_empty() {
+            continue;
+        }
+        out.push(Episode {
+            episode: n,
+            url: format!("{site}/videos/hentai/{}", d.slug),
+            title: super::episode_title(&web::without_episode(&d.name), n),
+        });
+    }
+    out.sort_by_key(|e| e.episode);
+    out
+}
+
+/// The search database as fetched: when, from where.
+struct Kept {
+    at: Instant,
+    url: String,
+    db: Arc<Vec<Doc>>,
+}
+
+/// The search database, fetched at most once an hour.
+async fn database(s: &Session) -> Result<Arc<Vec<Doc>>> {
+    static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+    let url = database_url(s).await;
+    if let Some(k) = KEPT.lock().unwrap().as_ref()
+        && k.url == url
+        && k.at.elapsed() < KEEP_DB
+    {
+        return Ok(k.db.clone());
+    }
+    let body = s
+        .text(
+            s.client
+                .get(&url)
+                .header(ACCEPT, "application/json")
+                .header(ORIGIN, "https://hanime.tv")
+                .header(REFERER, "https://hanime.tv/"),
+        )
+        .await?
+        .context("hanime.tv's search database isn't there")?;
+    let db = Arc::new(parse_database(&body)?);
+    *KEPT.lock().unwrap() = Some(Kept {
+        at: Instant::now(),
+        url,
+        db: db.clone(),
+    });
+    Ok(db)
+}
+
+/// Where the search database is: as the search page names it, else the
+/// address it's had.
+async fn database_url(s: &Session) -> String {
+    let named = match s.page(&format!("{}/search", base(SITE))).await {
+        Ok(Some(page)) => database_url_in(&page),
+        _ => None,
+    };
+    named.unwrap_or_else(|| base(SEARCH_DB))
+}
+
+fn database_url_in(page: &str) -> Option<String> {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""search_hvs_url"\s*:\s*"([^"]+)""#).unwrap());
+    let url = RE.captures(page)?[1].replace("\\/", "/");
+    Url::parse(&url).ok().map(|_| url)
+}
+
+/// The search database's videos: a list, or one under `data` or `hits`.
+fn parse_database(json: &str) -> Result<Vec<Doc>> {
+    let v: Value = serde_json::from_str(json).context("hanime.tv's search database isn't JSON")?;
+    let list = v
+        .as_array()
+        .or_else(|| v.get("data").and_then(Value::as_array))
+        .or_else(|| v.get("hits").and_then(Value::as_array))
+        .context("hanime.tv's search database lists no videos")?;
+    let text = |d: &Value, k: &str| {
+        d.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
+    Ok(list
+        .iter()
+        .map(|d| Doc {
+            name: text(d, "name"),
+            slug: text(d, "slug"),
+            titles: match d.get("search_titles") {
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+                Some(Value::String(t)) => vec![t.clone()],
+                _ => Vec::new(),
+            },
+        })
+        .filter(|d| !d.name.is_empty() && !d.slug.is_empty())
+        .collect())
+}
+
+/// The show's episodes at the addresses its names would have.
+async fn guessed(s: &Session, names: &[String], wanted: &[String]) -> Result<Vec<Episode>> {
     let mut slugs: Vec<String> = Vec::new();
     for n in names.iter().map(|n| slug(n)) {
         if !n.is_empty() && !slugs.contains(&n) {
@@ -71,7 +225,7 @@ pub(super) async fn episodes(s: &Session, names: &[String]) -> Result<Vec<Episod
             let Some(title) = heading(&page) else {
                 break;
             };
-            if !matches(&wanted, &normalize(&web::without_episode(&title))) {
+            if !matches(wanted, &normalize(&web::without_episode(&title))) {
                 break;
             }
             found.push(Episode {

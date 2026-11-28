@@ -100,9 +100,7 @@ pub async fn episodes(
     let s = Session::new(client, site_name(site));
     let mut eps = match site {
         StreamSite::HanimeTv => hanimetv::episodes(&s, names).await?,
-        // Its search answers only its own page's script (nothing here
-        // reads that), so shows can't be found on it yet.
-        StreamSite::OppaiStream => Vec::new(),
+        StreamSite::OppaiStream => oppai::episodes(&s, names).await?,
         _ => find_show(&s, site, names).await?,
     };
     eps.sort_by_key(|e| e.episode);

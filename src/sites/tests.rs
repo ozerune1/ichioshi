@@ -350,7 +350,33 @@ async fn hanime_red_does_the_players_challenge() {
 
 #[tokio::test]
 async fn hanime_tv_finds_episodes_by_name_and_shakes_hands() {
+    // Which search database the search page names: one that's there, or not.
+    let db_there = Arc::new(AtomicBool::new(true));
+    let there = db_there.clone();
     let base = server(move |req, base| match path(req) {
+        "/search" => {
+            let db = if there.load(Ordering::SeqCst) { "db" } else { "gone" };
+            page(
+                &format!(
+                    r#"<script>window.AppConfig = {{"api_url":"x","search_hvs_url":"{}\/api\/{db}"}};</script>"#,
+                    base.replace('/', "\\/")
+                ),
+                base,
+            )
+        }
+        "/api/db" => Resp {
+            status: 200,
+            headers: vec![],
+            body: json!([
+                {"id": 1, "name": "Overflow 2", "slug": "overflow-2", "search_titles": ["おーばーふろぉ"]},
+                {"id": 2, "name": "Overflow 1", "slug": "overflow-1", "search_titles": "Overflow"},
+                {"id": 3, "name": "Overflow Season 2 1", "slug": "overflow-season-2-1"},
+                {"id": 4, "name": "Kunoichi 1", "slug": "kunoichi-1", "search_titles": ["Shinobi Girls"]},
+                {"id": 5, "name": "Broken", "slug": ""},
+            ])
+            .to_string()
+            .into_bytes(),
+        },
         "/videos/hentai/underflow-1" => page(r#"<h1 class="tv-title">Something Else 1</h1>"#, base),
         "/videos/hentai/overflow-1" | "/videos/hentai/overflow-2" => {
             let n = req.target.rsplit('-').next().unwrap().to_owned();
@@ -398,11 +424,44 @@ async fn hanime_tv_finds_episodes_by_name_and_shakes_hands() {
     )
     .await
     .unwrap();
+    // From the search database (not "Overflow Season 2").
     assert_eq!(
         eps.iter()
-            .map(|e| (e.episode, e.title.as_str()))
+            .map(|e| (e.episode, e.title.as_str(), e.url.clone()))
             .collect::<Vec<_>>(),
-        [(1, "Overflow - Episode 1"), (2, "Overflow - Episode 2")]
+        [
+            (
+                1,
+                "Overflow - Episode 1",
+                format!("{base}/videos/hentai/overflow-1")
+            ),
+            (
+                2,
+                "Overflow - Episode 2",
+                format!("{base}/videos/hentai/overflow-2")
+            ),
+        ]
+    );
+    // By another of its titles; and a show it hasn't got.
+    let by_other = episodes(&c, StreamSite::HanimeTv, &["Shinobi Girls".into()])
+        .await
+        .unwrap();
+    assert_eq!(by_other.len(), 1);
+    assert!(by_other[0].url.ends_with("/videos/hentai/kunoichi-1"));
+    assert!(
+        episodes(&c, StreamSite::HanimeTv, &["Not There".into()])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // Without the database: looked for where its name says.
+    db_there.store(false, Ordering::SeqCst);
+    let guessed = episodes(&c, StreamSite::HanimeTv, &["Overflow".into()])
+        .await
+        .unwrap();
+    assert_eq!(
+        guessed.iter().map(|e| e.episode).collect::<Vec<_>>(),
+        [1, 2]
     );
     // A page under the name that's another show's isn't taken.
     assert!(
@@ -468,6 +527,19 @@ async fn oppai_stream_joins_its_dash_with_the_sites_referer() {
     let referers = Arc::new(AtomicUsize::new(0));
     let counted = referers.clone();
     let base = server(move |req, base| match path(req) {
+        "/api/search.php" => {
+            let form = req.form();
+            assert_eq!(form["text"], "Overflow");
+            assert_eq!((form["order"].as_str(), form["page"].as_str()), ("recent", "1"));
+            page(
+                r#"<div class='results-num' style='display: none;'>2</div>
+                <a href="{base}/watch/Overflow-1/from/search" class="episode " epid="1"><p class="s4 white bold episode-title">Overflow</p></a>
+                <a href="{base}/watch/Overflow-Season-2-1/from/search" class="episode " epid="1"><p class="episode-title">Overflow Season 2</p></a>"#,
+                base,
+            )
+        }
+        // Not at its new address: its old one.
+        "/watch/Overflow-1" => missing(),
         "/watch" => page(
             r#"<h1 class="title line-2">Overflow 1</h1><script>src = '{base}/v/over-1/'+startsource+'/manifest.mpd';</script>"#,
             base,
@@ -486,7 +558,13 @@ async fn oppai_stream_joins_its_dash_with_the_sites_referer() {
     .await;
     let _net = crate::mock_http::mocked();
     let c = client();
-    let url = format!("{base}/watch?e=Overflow-1");
+    let _bases = Bases::set(&[("https://oppai.stream", &base)]);
+    let eps = episodes(&c, StreamSite::OppaiStream, &["Overflow".into()])
+        .await
+        .unwrap();
+    assert_eq!(eps.len(), 1, "not Season 2's");
+    assert_eq!(eps[0].url, format!("{base}/watch/Overflow-1"));
+    let url = eps[0].url.clone();
     assert_eq!(
         resolution(&c, StreamSite::OppaiStream, &url).await.unwrap(),
         Some(240)
@@ -535,12 +613,18 @@ async fn live_finds_shows_and_streams() {
         .unwrap();
     let names = ["Overflow".to_owned()];
     let mut failed = Vec::new();
+    // `LIVE_SITES=oppai.stream,hanime.red`: only those.
+    let only = std::env::var("LIVE_SITES").unwrap_or_default();
     for site in [
         StreamSite::HentaiHaven,
         StreamSite::Hentaimama,
         StreamSite::HanimeRed,
         StreamSite::HanimeTv,
+        StreamSite::OppaiStream,
     ] {
+        if !only.is_empty() && !only.split(',').any(|n| n.trim() == site.name()) {
+            continue;
+        }
         let eps = match episodes(&c, site, &names).await {
             Ok(eps) if !eps.is_empty() => eps,
             Ok(_) => {
@@ -573,7 +657,8 @@ async fn live_finds_shows_and_streams() {
                             .await?;
                     anyhow::ensure!(len.is_some(), "the video's server doesn't say its size");
                 }
-                Media::Dash(_) => {}
+                // Its MPDs: whether one is there is the resolution above.
+                Media::Dash(_) => anyhow::ensure!(res.is_some(), "no MPD of it is there"),
             }
             anyhow::Ok((r.title, stream.label, res))
         }
