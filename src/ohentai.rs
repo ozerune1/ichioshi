@@ -242,10 +242,10 @@ fn tags_resolution(tags: &str) -> Option<u32> {
 
 /// A video file the player lists.
 #[derive(Debug, Clone, PartialEq)]
-struct Source {
-    file: String,
-    resolution: Option<u32>,
-    mp4: bool,
+pub(crate) struct Source {
+    pub file: String,
+    pub resolution: Option<u32>,
+    pub mp4: bool,
 }
 
 /// The video (highest resolution, MP4s first) and subtitle file the page's
@@ -305,7 +305,7 @@ fn setup_objects(html: &str) -> Vec<&str> {
 /// A JavaScript object literal as JSON: keys quoted, single-quoted strings
 /// double-quoted, comments and trailing commas dropped, other names
 /// (variables) null.
-fn js_to_json(js: &str) -> String {
+pub(crate) fn js_to_json(js: &str) -> String {
     let b: Vec<char> = js.chars().collect();
     let mut out = String::with_capacity(js.len() + 64);
     let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
@@ -399,7 +399,7 @@ fn js_to_json(js: &str) -> String {
 }
 
 /// A JW Player setup's video files and its first subtitle file.
-fn media(config: &Value) -> (Vec<Source>, Option<String>) {
+pub(crate) fn media(config: &Value) -> (Vec<Source>, Option<String>) {
     let item = match config.get("playlist").and_then(Value::as_array) {
         Some(list) if !list.is_empty() => &list[0],
         _ => config,
@@ -461,7 +461,7 @@ fn media(config: &Value) -> (Vec<Source>, Option<String>) {
 }
 
 /// "720p", "1080P HD", "4K", "x_1080p.mp4" -> the resolution.
-fn label_resolution(label: &str) -> Option<u32> {
+pub(crate) fn label_resolution(label: &str) -> Option<u32> {
     static RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)(?:^|[^0-9a-z])(?:(\d{3,4})p|(4k|2160))(?:$|[^0-9a-z])").unwrap()
     });
@@ -473,7 +473,7 @@ fn label_resolution(label: &str) -> Option<u32> {
 }
 
 /// 1280×720 -> 720; 1920×800 -> 1080; 1080×1920 -> 1080.
-fn resolution(w: u32, h: u32) -> u32 {
+pub(crate) fn resolution(w: u32, h: u32) -> u32 {
     let (long, short) = (w.max(h), w.min(h));
     short.max(long * 9 / 16)
 }
@@ -486,8 +486,20 @@ const MAX_READS: usize = 6;
 
 /// An MP4's size (from its first bytes' Content-Range) and the picture size
 /// of its video track (its `tkhd`), read with a few small Range requests.
-async fn probe(client: &reqwest::Client, url: &str) -> Result<(Option<u64>, Option<(u32, u32)>)> {
-    let (total, first) = read_range(client, url, 0, FIRST_READ).await?;
+pub(crate) async fn probe(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<(Option<u64>, Option<(u32, u32)>)> {
+    probe_with(client, url, Some(REFERER)).await
+}
+
+/// [`probe`], sending `referer` (if any) as the Referer.
+pub(crate) async fn probe_with(
+    client: &reqwest::Client,
+    url: &str,
+    referer: Option<&str>,
+) -> Result<(Option<u64>, Option<(u32, u32)>)> {
+    let (total, first) = read_range(client, url, referer, 0, FIRST_READ).await?;
     let Some(mut buf) = first else {
         return Ok((total, None));
     };
@@ -503,7 +515,7 @@ async fn probe(client: &reqwest::Client, url: &str) -> Result<(Option<u64>, Opti
                     return Ok((total, None));
                 }
                 reads += 1;
-                let (_, data) = read_range(client, url, at, LATER_READ).await?;
+                let (_, data) = read_range(client, url, referer, at, LATER_READ).await?;
                 let Some(data) = data else {
                     return Ok((total, None));
                 };
@@ -518,18 +530,22 @@ async fn probe(client: &reqwest::Client, url: &str) -> Result<(Option<u64>, Opti
 async fn read_range(
     client: &reqwest::Client,
     url: &str,
+    referer: Option<&str>,
     start: u64,
     len: usize,
 ) -> Result<(Option<u64>, Option<Vec<u8>>)> {
     use reqwest::StatusCode;
     use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
-    let mut resp = client
+    let mut req = client
         .get(url)
-        .header(reqwest::header::REFERER, REFERER)
-        .header(RANGE, format!("bytes={start}-{}", start + len as u64 - 1))
+        .header(RANGE, format!("bytes={start}-{}", start + len as u64 - 1));
+    if let Some(r) = referer {
+        req = req.header(reqwest::header::REFERER, r);
+    }
+    let mut resp = req
         .send()
         .await
-        .context("could not reach ohentai's video server")?;
+        .context("could not reach the video server")?;
     let status = resp.status();
     let header = |name| {
         resp.headers()

@@ -30,6 +30,8 @@ mod fsutil;
 mod gdrive;
 #[cfg(all(feature = "gui", not(target_os = "android")))]
 mod gst_video;
+/// HLS streams downloaded into one file (MPEG-TS remuxed into MP4).
+mod hls;
 /// hstream.moe: 18+ anime as DASH video and audio, joined into one file.
 mod hstream;
 mod library;
@@ -53,8 +55,12 @@ mod seadex;
 mod servers;
 /// Subtitle files beside a video, read as tracks.
 mod sidecar;
+/// More 18+ streaming sites: hanime.tv, oppai.stream, hentaihaven.com,
+/// hentaimama.io, hanime.red (as the hanime-plugin for yt-dlp reads them).
+mod sites;
 mod storage;
-/// Downloading 18+ anime from streaming sites (hstream.moe, ohentai.org).
+/// Downloading 18+ anime from streaming sites (hstream.moe, ohentai.org, and
+/// [`sites`]).
 mod streams;
 mod subs;
 #[cfg(test)]

@@ -40,8 +40,9 @@ fn group<'a>(
 
 /// What 18+ anime do, when they're on.
 pub(crate) const ADULT_TIP: &str = "They show up in search, Discover and the calendar. \
-    Releases come from Sukebei and TokyoTosho, then hstream.moe and ohentai.org; the highest \
-    resolution wins, wherever it's from. They're always kept on this device, even when your \
+    Releases come from Sukebei and TokyoTosho, then streaming sites (hstream.moe, \
+    oppai.stream, hentaihaven.com, hanime.tv, hanime.red, hentaimama.io, ohentai.org); the \
+    highest resolution wins, wherever it's from. They're always kept on this device, even when your \
     library is on your servers: never sent to Sonarr, Radarr or Jellyfin.";
 
 impl Gui {

@@ -1,10 +1,12 @@
 //! 18+ anime from streaming sites, after the trackers: hstream.moe (its
-//! video and audio joined into one file) and ohentai.org (one MP4). A show's
-//! episodes are found on them by its names, and each episode is a job that
-//! downloads into the show's folder here, as "<Show> - 01.mp4".
+//! video and audio joined into one file), ohentai.org (one MP4), and the
+//! sites in [`crate::sites`] (hanime.tv, oppai.stream, hentaihaven.com,
+//! hentaimama.io, hanime.red). A show's episodes are found on them by its
+//! names, and each episode is a job that downloads into the show's folder
+//! here, as "<Show> - 01.mp4".
 //!
-//! Only what the sites' own players read is used: nothing that gets past a
-//! captcha or a bot check.
+//! Only what the sites' own players do is done: a Cloudflare check or a
+//! captcha isn't got past.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,25 +21,43 @@ use serde::{Deserialize, Serialize};
 pub enum StreamSite {
     Hstream,
     Ohentai,
+    HanimeTv,
+    OppaiStream,
+    HentaiHaven,
+    Hentaimama,
+    HanimeRed,
 }
 
 impl StreamSite {
-    pub const ALL: [StreamSite; 2] = [StreamSite::Hstream, StreamSite::Ohentai];
+    pub const ALL: [StreamSite; 7] = [
+        StreamSite::Hstream,
+        StreamSite::OppaiStream,
+        StreamSite::HentaiHaven,
+        StreamSite::HanimeTv,
+        StreamSite::HanimeRed,
+        StreamSite::Hentaimama,
+        StreamSite::Ohentai,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             StreamSite::Hstream => "hstream.moe",
             StreamSite::Ohentai => "ohentai.org",
+            StreamSite::HanimeTv => "hanime.tv",
+            StreamSite::OppaiStream => "oppai.stream",
+            StreamSite::HentaiHaven => "hentaihaven.com",
+            StreamSite::Hentaimama => "hentaimama.io",
+            StreamSite::HanimeRed => "hanime.red",
         }
     }
 
     /// Ties between releases of the same resolution go to the trackers,
-    /// then hstream.moe, then ohentai.org (higher wins).
+    /// then the sites in [`StreamSite::ALL`]'s order (higher wins):
+    /// separate subtitles and DASH first, a single MP4 with its subtitles
+    /// burnt in last.
     pub fn preference(self) -> u8 {
-        match self {
-            StreamSite::Hstream => 2,
-            StreamSite::Ohentai => 1,
-        }
+        let at = Self::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        (Self::ALL.len() - at) as u8
     }
 }
 
@@ -65,6 +85,23 @@ pub async fn find(
     names: &[String],
 ) -> Result<Option<Found>> {
     let (episodes, mut resolution) = match site {
+        StreamSite::HanimeTv
+        | StreamSite::OppaiStream
+        | StreamSite::HentaiHaven
+        | StreamSite::Hentaimama
+        | StreamSite::HanimeRed => {
+            let eps: Vec<StreamEpisode> = crate::sites::episodes(client, site, names)
+                .await?
+                .into_iter()
+                .map(|e| StreamEpisode {
+                    site,
+                    episode: e.episode,
+                    url: e.url,
+                    title: e.title,
+                })
+                .collect();
+            (eps, None)
+        }
         StreamSite::Ohentai => {
             let eps = crate::ohentai::episodes(client, names).await?;
             let res = eps.iter().filter_map(|e| e.resolution).max();
@@ -103,6 +140,17 @@ pub async fn find(
         && let Ok(v) = crate::ohentai::video(client, &episodes[0].url).await
     {
         resolution = v.resolution;
+    }
+    // The others' players say: ask the first episode's. One that can't be
+    // read (the site changed, say) has nothing to download: not offered.
+    if resolution.is_none() && !matches!(site, StreamSite::Ohentai | StreamSite::Hstream) {
+        match crate::sites::resolution(client, site, &episodes[0].url).await {
+            Ok(r) => resolution = r,
+            Err(e) => {
+                tracing::warn!("{}: its player can't be read: {e:#}", site.name());
+                return Ok(None);
+            }
+        }
     }
     Ok(Some(Found {
         site,
@@ -536,6 +584,25 @@ impl Manager {
                 }
                 Ok(dest)
             }
+            StreamSite::HanimeTv
+            | StreamSite::OppaiStream
+            | StreamSite::HentaiHaven
+            | StreamSite::Hentaimama
+            | StreamSite::HanimeRed => {
+                let started = std::time::Instant::now();
+                crate::sites::download(
+                    &self.http,
+                    job.episode.site,
+                    &job.episode.url,
+                    &job.folder.join(&stem),
+                    cancel,
+                    |done, total| {
+                        let secs = started.elapsed().as_secs_f64().max(0.5);
+                        progress(done, total, done as f64 / secs)
+                    },
+                )
+                .await
+            }
             StreamSite::Hstream => {
                 let dest = job
                     .folder
@@ -599,5 +666,10 @@ mod tests {
             Some(3)
         );
         assert!(StreamSite::Hstream.preference() > StreamSite::Ohentai.preference());
+        assert!(StreamSite::OppaiStream.preference() > StreamSite::Hentaimama.preference());
+        let mut prefs: Vec<u8> = StreamSite::ALL.iter().map(|s| s.preference()).collect();
+        prefs.dedup();
+        assert_eq!(prefs.len(), StreamSite::ALL.len());
+        assert!(StreamSite::ALL.iter().all(|s| s.preference() > 0));
     }
 }

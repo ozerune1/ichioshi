@@ -156,9 +156,9 @@ impl NyaaRelease {
     }
 
     /// Between releases of one resolution: torrents (Sukebei, TokyoTosho),
-    /// then hstream.moe, then ohentai.org.
+    /// then the streaming sites in their order ([`StreamSite::preference`]).
     fn source_preference(&self) -> u8 {
-        self.stream_site().map_or(3, StreamSite::preference)
+        self.stream_site().map_or(u8::MAX, StreamSite::preference)
     }
 
     /// Unknown counts are assumed to be whole-season batches.

@@ -188,8 +188,9 @@ fn library(ui: &mut Ui) -> Vec<Value> {
 
 /// Adult anime, said the phone's way.
 const ADULT_TIP: &str = "They show up in search, Discover and the calendar. Releases come \
-    from Sukebei and TokyoTosho, then hstream.moe and ohentai.org; the highest resolution \
-    wins, wherever it's from. They're always kept on this phone, even when your library is on \
+    from Sukebei and TokyoTosho, then streaming sites (hstream.moe, oppai.stream, \
+    hentaihaven.com, hanime.tv, hanime.red, hentaimama.io, ohentai.org); the highest \
+    resolution wins, wherever it's from. They're always kept on this phone, even when your library is on \
     your servers: never sent to Sonarr, Radarr or Jellyfin.";
 
 fn library_items(ui: &mut Ui) -> Vec<Value> {

@@ -3811,6 +3811,7 @@ dependencies = [
 name = "ichioshi"
 version = "0.3.7"
 dependencies = [
+ "aes",
  "anyhow",
  "base64 0.23.1",
  "chrono",

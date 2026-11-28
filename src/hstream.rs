@@ -34,6 +34,10 @@ use url::Url;
 
 use super::dash::{self, Kind, Representation};
 use super::fmp4::{self, Init, Muxer, Track};
+use crate::sites::web::{
+    Challenge, looks_like_challenge, matches, normalize, percent_decode, queries, slug, text,
+    unescape,
+};
 
 const SITE: &str = "https://hstream.moe";
 /// What a downloaded episode is.
@@ -61,21 +65,6 @@ pub struct Episode {
     /// The best resolution the site lists for it (2160, 1080 or 720).
     pub resolution: Option<u32>,
 }
-
-/// The site answered with a Cloudflare check (a browser challenge), which
-/// isn't something to get past.
-#[derive(Debug)]
-pub struct Challenge;
-
-impl std::fmt::Display for Challenge {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            "hstream.moe is showing a Cloudflare check (a browser challenge); try again later",
-        )
-    }
-}
-
-impl std::error::Error for Challenge {}
 
 /// The download was cancelled (its partial file is removed).
 #[derive(Debug)]
@@ -184,58 +173,11 @@ async fn list(client: &reqwest::Client, slug: &str, title: Option<String>) -> Re
     Ok(show.episodes)
 }
 
-/// What to search for: each name, then without punctuation (the site
-/// drops apostrophes: "Hon'i" is "Honi"), then each name's first words.
-fn queries(names: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut push = |q: String| {
-        let q = q.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !q.is_empty() && !out.contains(&q) {
-            out.push(q);
-        }
-    };
-    for name in names {
-        push(name.clone());
-        push(plain(name));
-    }
-    for name in names {
-        let plain = plain(name);
-        let words: Vec<&str> = plain.split_whitespace().collect();
-        if words.len() > 3 {
-            push(words[..3].join(" "));
-        }
-    }
-    out
-}
-
-/// `s` with only letters, digits, spaces and hyphens; apostrophes dropped,
-/// other punctuation made spaces.
-fn plain(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, '\'' | '’' | '`'))
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect()
-}
-
 /// Where a show called `name` would be: `/hentai/<slug>`.
 fn slug_guesses(names: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for name in names {
-        let mut slug = String::new();
-        for c in name.chars().flat_map(char::to_lowercase) {
-            if c.is_ascii_alphanumeric() {
-                slug.push(c);
-            } else if !matches!(c, '\'' | '’' | '`') && !slug.is_empty() && !slug.ends_with('-') {
-                slug.push('-');
-            }
-        }
-        let slug = slug.trim_end_matches('-').to_owned();
+        let slug = slug(name);
         if slug.is_empty() {
             continue;
         }
@@ -251,26 +193,6 @@ fn slug_guesses(names: &[String]) -> Vec<String> {
     }
     out.truncate(4);
     out
-}
-
-/// Lowercase letters and digits only.
-fn normalize(s: &str) -> String {
-    unescape(s)
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-/// Whether `found` (normalized) is one of `wanted` (normalized), give or
-/// take a closing "The Animation".
-fn matches(wanted: &[String], found: &str) -> bool {
-    if found.is_empty() {
-        return false;
-    }
-    let bare = |s: &str| s.strip_suffix("theanimation").unwrap_or(s).to_owned();
-    let found = bare(found);
-    wanted.iter().any(|w| !w.is_empty() && bare(w) == found)
 }
 
 /// An episode card on a search or show page.
@@ -414,44 +336,6 @@ fn show_page(html: &str, slug: &str) -> Show {
     }
 }
 
-/// An HTML fragment's text, entities decoded and spaces collapsed.
-fn text(html: &str) -> String {
-    static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<[^>]*>").unwrap());
-    unescape(&TAG.replace_all(html, " "))
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn unescape(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_owned();
-    }
-    static ENTITY: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);").unwrap());
-    ENTITY
-        .replace_all(s, |c: &regex::Captures| {
-            let e = &c[1];
-            let ch = if let Some(hex) = e.strip_prefix("#x").or_else(|| e.strip_prefix("#X")) {
-                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
-            } else if let Some(dec) = e.strip_prefix('#') {
-                dec.parse().ok().and_then(char::from_u32)
-            } else {
-                match e {
-                    "amp" => Some('&'),
-                    "lt" => Some('<'),
-                    "gt" => Some('>'),
-                    "quot" => Some('"'),
-                    "apos" => Some('\''),
-                    "nbsp" => Some(' '),
-                    _ => None,
-                }
-            };
-            ch.map_or_else(|| c[0].to_owned(), String::from)
-        })
-        .into_owned()
-}
-
 struct Page {
     body: String,
     cookies: Vec<(String, String)>,
@@ -473,7 +357,7 @@ async fn get_html(client: &reqwest::Client, url: &str) -> Result<Option<Page>> {
         .await
         .with_context(|| format!("reading {url}"))?;
     if challenged || (matches!(status.as_u16(), 403 | 429 | 503) && looks_like_challenge(&body)) {
-        return Err(Challenge.into());
+        return Err(Challenge("hstream.moe").into());
     }
     if status == StatusCode::NOT_FOUND {
         return Ok(None);
@@ -483,12 +367,6 @@ async fn get_html(client: &reqwest::Client, url: &str) -> Result<Option<Page>> {
         "hstream.moe answered {status} for {url}"
     );
     Ok(Some(Page { body, cookies }))
-}
-
-fn looks_like_challenge(body: &str) -> bool {
-    body.contains("challenge-platform")
-        || body.contains("<title>Just a moment")
-        || body.contains("cf-turnstile")
 }
 
 /// The cookies a response sets, as (name, value).
@@ -503,27 +381,6 @@ fn cookies(headers: &HeaderMap) -> Vec<(String, String)> {
             Some((name.trim().to_owned(), value.trim().to_owned()))
         })
         .collect()
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Some(b) = std::str::from_utf8(&bytes[i + 1..i + 3])
-                .ok()
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(b);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +449,10 @@ struct Mirrors {
     /// e.g. `https://imoto-str.ane-h.xyz`, without a trailing slash.
     domains: Vec<String>,
     preferred: AtomicUsize,
+    /// Sent as the Referer with each request.
+    referer: String,
+    /// The site's name, for messages.
+    site: &'static str,
 }
 
 /// A file on the mirrors: a path (from `/`) any of them serves, or (if an
@@ -603,7 +464,7 @@ enum Target {
 }
 
 impl Mirrors {
-    fn new(domains: Vec<String>) -> Result<Self> {
+    fn new(site: &'static str, domains: Vec<String>, referer: String) -> Result<Self> {
         let mut out: Vec<String> = Vec::new();
         for d in domains {
             let d = d.trim().trim_end_matches('/').to_owned();
@@ -613,10 +474,12 @@ impl Mirrors {
                 out.push(d);
             }
         }
-        ensure!(!out.is_empty(), "hstream.moe named no stream servers");
+        ensure!(!out.is_empty(), "{site} named no stream servers");
         Ok(Mirrors {
             domains: out,
             preferred: AtomicUsize::new(0),
+            referer,
+            site,
         })
     }
 
@@ -648,10 +511,15 @@ enum Fetched {
 }
 
 /// One GET of a file on the CDN.
-async fn get_bytes(client: &reqwest::Client, url: &str, timeout: Duration) -> Result<Fetched> {
+async fn get_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    mirrors: &Mirrors,
+    timeout: Duration,
+) -> Result<Fetched> {
     let resp = client
         .get(url)
-        .header(REFERER, format!("{SITE}/"))
+        .header(REFERER, &mirrors.referer)
         .timeout(timeout)
         .send()
         .await
@@ -661,7 +529,7 @@ async fn get_bytes(client: &reqwest::Client, url: &str, timeout: Duration) -> Re
         return Ok(Fetched::Missing);
     }
     if resp.headers().get("cf-mitigated").is_some() {
-        return Err(Challenge.into());
+        return Err(Challenge(mirrors.site).into());
     }
     ensure!(status.is_success(), "{url} answered {status}");
     let body = resp
@@ -692,7 +560,7 @@ async fn fetch_from(
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_millis(700 * u64::from(attempt))).await;
             }
-            match get_bytes(client, &url, timeout).await {
+            match get_bytes(client, &url, mirrors, timeout).await {
                 Ok(Fetched::Bytes(body)) => match check(&body) {
                     Ok(()) => {
                         mirrors.preferred.store(mirror, Ordering::Relaxed);
@@ -805,7 +673,7 @@ async fn stream(client: &reqwest::Client, page: &Url) -> Result<Stream> {
         .await
         .context("reading hstream.moe's player's answer")?;
     if challenged || (matches!(status.as_u16(), 403 | 429 | 503) && looks_like_challenge(&body)) {
-        return Err(Challenge.into());
+        return Err(Challenge("hstream.moe").into());
     }
     ensure!(
         status.is_success(),
@@ -878,24 +746,27 @@ impl Drop for Queue {
 }
 
 /// Picks the best presentation: the highest resolution there is (at most
-/// `max_height`), its best video and audio.
+/// `max_height`), its best video and (if it has one apart) audio.
 async fn presentation(
     client: &reqwest::Client,
     mirrors: &Mirrors,
-    path: &str,
+    mpds: &[(u32, String)],
     max_height: Option<u32>,
-) -> Result<(u32, Representation, Representation)> {
+) -> Result<(u32, Representation, Option<Representation>)> {
     let mut failures = Vec::new();
-    for res in RESOLUTIONS
-        .into_iter()
-        .filter(|&r| max_height.is_none_or(|m| r <= m))
-    {
-        let target = Target::Path(format!("{path}{res}/manifest.mpd"));
+    let mut mpds: Vec<&(u32, String)> = mpds
+        .iter()
+        .filter(|(r, _)| max_height.is_none_or(|m| *r <= m))
+        .collect();
+    mpds.sort_by_key(|(r, _)| std::cmp::Reverse(*r));
+    for (res, path) in mpds {
+        let res = *res;
+        let target = Target::Path(path.clone());
         let xml =
             match fetch_from(client, mirrors, &target, Duration::from_secs(30), any_bytes).await {
                 Ok(Some(xml)) => xml,
                 Ok(None) => {
-                    tracing::debug!("hstream: no {res}p");
+                    tracing::debug!("{}: no {res}p", mirrors.site);
                     continue;
                 }
                 Err(e) if e.is::<Challenge>() => return Err(e),
@@ -920,18 +791,106 @@ async fn presentation(
                 .max_by_key(|r| (r.height.unwrap_or(0), r.bandwidth))
                 .cloned()
         };
-        match (best(Kind::Video), best(Kind::Audio)) {
-            (Some(v), Some(a)) => return Ok((res, v, a)),
-            _ => failures.push(format!("{res}p: no video and audio in its MPD")),
+        match best(Kind::Video) {
+            Some(v) => return Ok((res, v, best(Kind::Audio))),
+            None => failures.push(format!("{res}p: no video in its MPD")),
         }
     }
     if failures.is_empty() {
-        bail!("hstream.moe has no stream for this episode");
+        bail!("{} has no stream for this episode", mirrors.site);
     }
     bail!(
         "couldn't get the episode's stream ({})",
         failures.join("; ")
     )
+}
+
+/// A DASH stream to download: the mirrors serving it, its MPD for each
+/// resolution it may come in (paths from `/`, any mirror serving them), and
+/// where English subtitles would be.
+#[derive(Debug, Clone)]
+pub(crate) struct Dash {
+    /// The site's name, for messages.
+    pub site: &'static str,
+    /// e.g. `https://imoto-str.ane-h.xyz` (no trailing slash).
+    pub mirrors: Vec<String>,
+    /// Sent as the Referer with each request.
+    pub referer: String,
+    /// (resolution, its MPD's path), e.g. `(1080, "/x/1080/manifest.mpd")`.
+    pub mpds: Vec<(u32, String)>,
+    /// The path of ASS subtitles, if they'd be anywhere.
+    pub subtitles: Option<String>,
+    /// For the log.
+    pub title: Option<String>,
+}
+
+impl Dash {
+    /// A stream whose MPDs are at `urls` (resolution, URL), all on one
+    /// server.
+    pub fn at(site: &'static str, referer: &str, urls: &[(u32, Url)]) -> Result<Self> {
+        let origin = |u: &Url| u.origin().ascii_serialization();
+        let first = urls.first().context("no MPDs")?;
+        let server = origin(&first.1);
+        let mut mpds = Vec::new();
+        for (res, url) in urls {
+            ensure!(
+                origin(url) == server,
+                "{site}'s MPDs are on different servers"
+            );
+            let mut path = url.path().to_owned();
+            if let Some(q) = url.query() {
+                path.push('?');
+                path.push_str(q);
+            }
+            mpds.push((*res, path));
+        }
+        Ok(Dash {
+            site,
+            mirrors: vec![server],
+            referer: referer.to_owned(),
+            mpds,
+            subtitles: None,
+            title: None,
+        })
+    }
+}
+
+/// The best resolution `dash` comes in: the highest whose MPD has video.
+pub(crate) async fn dash_resolution(client: &reqwest::Client, dash: &Dash) -> Result<u32> {
+    let mirrors = Mirrors::new(dash.site, dash.mirrors.clone(), dash.referer.clone())?;
+    let (res, video, _) = presentation(client, &mirrors, &dash.mpds, None).await?;
+    // 1920×800 is 1080p; 1080×1920 too.
+    Ok(video.width.zip(video.height).map_or(res, |(w, h)| {
+        let (long, short) = (w.max(h), w.min(h));
+        short.max(long * 9 / 16)
+    }))
+}
+
+/// Downloads `dash`: the best video (highest resolution, at most
+/// `options.max_height`) and its audio, joined into one MP4 at `dest`, and
+/// its subtitles beside it, as [`download`] does. `limit`: at most this many
+/// segments of each track (tests).
+pub(crate) async fn download_dash(
+    client: &reqwest::Client,
+    dash: &Dash,
+    dest: &Path,
+    options: &Options,
+    limit: Option<usize>,
+    cancel: &AtomicBool,
+    progress: impl FnMut(u64, Option<u64>) + Send,
+) -> Result<PathBuf> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(Cancelled.into());
+    }
+    let mirrors = Arc::new(Mirrors::new(
+        dash.site,
+        dash.mirrors.clone(),
+        dash.referer.clone(),
+    )?);
+    join(
+        client, dash, mirrors, dest, options, limit, cancel, progress,
+    )
+    .await
 }
 
 async fn fetch(
@@ -941,39 +900,72 @@ async fn fetch(
     options: &Options,
     limit: Option<usize>,
     cancel: &AtomicBool,
-    mut progress: impl FnMut(u64, Option<u64>) + Send,
+    progress: impl FnMut(u64, Option<u64>) + Send,
 ) -> Result<PathBuf> {
     let page = episode_page(episode_url)?;
-    let (file, part, subs) = output_paths(dest)?;
     if cancel.load(Ordering::Relaxed) {
         return Err(Cancelled.into());
     }
     let info = stream(client, &page).await?;
     let mut domains = info.stream_domains.clone();
     domains.extend(info.asia_stream_domains.iter().cloned());
-    let mirrors = Arc::new(Mirrors::new(domains)?);
     let path = stream_path(&info.stream_url);
+    let dash = Dash {
+        site: "hstream.moe",
+        mirrors: domains,
+        referer: format!("{SITE}/"),
+        mpds: RESOLUTIONS
+            .into_iter()
+            .map(|r| (r, format!("{path}{r}/manifest.mpd")))
+            .collect(),
+        subtitles: Some(format!("{path}eng.ass")),
+        title: Some(info.title.clone().unwrap_or_else(|| page.to_string())),
+    };
+    download_dash(client, &dash, dest, options, limit, cancel, progress).await
+}
+
+/// [`download_dash`] once the mirrors are known.
+#[allow(clippy::too_many_arguments)]
+async fn join(
+    client: &reqwest::Client,
+    dash: &Dash,
+    mirrors: Arc<Mirrors>,
+    dest: &Path,
+    options: &Options,
+    limit: Option<usize>,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64, Option<u64>) + Send,
+) -> Result<PathBuf> {
+    let (file, part, subs) = output_paths(dest)?;
     let (res, mut video, mut audio) =
-        presentation(client, &mirrors, &path, options.max_height).await?;
+        presentation(client, &mirrors, &dash.mpds, options.max_height).await?;
     tracing::info!(
-        "hstream: {} at {res}p: video {} {}x{} {} kb/s, audio {} {} kb/s",
-        info.title.as_deref().unwrap_or(page.as_str()),
+        "{}: {} at {res}p: video {} {}x{} {} kb/s, audio {}",
+        dash.site,
+        dash.title.as_deref().unwrap_or_default(),
         video.codecs,
         video.width.unwrap_or(0),
         video.height.unwrap_or(0),
         video.bandwidth / 1000,
-        audio.codecs,
-        audio.bandwidth / 1000,
+        audio
+            .as_ref()
+            .map_or("in the video".to_owned(), |a| format!(
+                "{} {} kb/s",
+                a.codecs,
+                a.bandwidth / 1000
+            )),
     );
     if let Some(n) = limit {
         video.segments.truncate(n);
-        audio.segments.truncate(n);
+        if let Some(a) = &mut audio {
+            a.segments.truncate(n);
+        }
     }
-    let reps = [&video, &audio];
+    let reps: Vec<&Representation> = std::iter::once(&video).chain(audio.as_ref()).collect();
     let mirror = mirrors.preferred.load(Ordering::Relaxed);
 
     let mut tracks = Vec::new();
-    for rep in reps {
+    for rep in &reps {
         let target = mirrors.target(mirror, rep.init.as_ref().unwrap());
         let bytes = fetch_from(client, &mirrors, &target, SEGMENT_TIMEOUT, init_segment)
             .await?
@@ -990,7 +982,7 @@ async fn fetch(
         "the video track isn't video"
     );
     ensure!(
-        tracks[1].init.handler() == *b"soun",
+        tracks.get(1).is_none_or(|t| t.init.handler() == *b"soun"),
         "the audio track isn't audio"
     );
     let (mut muxer, header) = Muxer::new(&tracks)?;
@@ -1011,8 +1003,8 @@ async fn fetch(
         .zip(&seconds)
         .map(|(r, s)| r.bandwidth as f64 / 8.0 * s)
         .collect();
-    let mut got_bytes = [0u64; 2];
-    let mut got_seconds = [0f64; 2];
+    let mut got_bytes = vec![0u64; reps.len()];
+    let mut got_seconds = vec![0f64; reps.len()];
 
     if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
         tokio::fs::create_dir_all(dir)
@@ -1080,7 +1072,10 @@ async fn fetch(
 
     // Subtitles: their absence (or a failure to get them) isn't the
     // download's.
-    let target = Target::Path(format!("{path}eng.ass"));
+    let Some(path) = &dash.subtitles else {
+        return Ok(file);
+    };
+    let target = Target::Path(path.clone());
     match fetch_from(
         client,
         &mirrors,
@@ -1102,13 +1097,14 @@ async fn fetch(
             if let Err(e) = saved {
                 let _ = tokio::fs::remove_file(&tmp).await;
                 tracing::warn!(
-                    "hstream: couldn't save the subtitles to {}: {e}",
+                    "{}: couldn't save the subtitles to {}: {e}",
+                    dash.site,
                     subs.display()
                 );
             }
         }
-        Ok(None) => tracing::info!("hstream: no English subtitles"),
-        Err(e) => tracing::warn!("hstream: couldn't get the subtitles: {e:#}"),
+        Ok(None) => tracing::info!("{}: no English subtitles", dash.site),
+        Err(e) => tracing::warn!("{}: couldn't get the subtitles: {e:#}", dash.site),
     }
     Ok(file)
 }
@@ -1348,7 +1344,7 @@ mod tests {
         domains.extend(s.asia_stream_domains);
         domains.push("javascript:alert(1)".into());
         domains.push("https://chibi-str.imoto-h.xyz/".into());
-        let m = Mirrors::new(domains).unwrap();
+        let m = Mirrors::new("hstream.moe", domains, String::new()).unwrap();
         assert_eq!(
             m.domains,
             [
@@ -1372,7 +1368,7 @@ mod tests {
             m.url(1, &m.target(0, &elsewhere)),
             "https://other.example/a.mp4"
         );
-        assert!(Mirrors::new(vec![]).is_err());
+        assert!(Mirrors::new("hstream.moe", vec![], String::new()).is_err());
     }
 
     #[test]
