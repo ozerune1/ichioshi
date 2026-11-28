@@ -3408,6 +3408,45 @@ fn searches_and_downloads_live() {
     h._rt_handle().block_on(engine.stop());
 }
 
+/// The library's tabs: 18+ series kept off your lists have one of their
+/// own; and a type shows only that type.
+#[test]
+fn library_has_an_adult_tab_and_types() {
+    let (base, _out) = dir("library-tabs");
+    let mut h = app_harness(base.path());
+    set_size(1440.0, 1600.0);
+    let root = base.path().join("downloads");
+    let new = |id, t: &str, format: &str, adult| crate::library::NewSeries {
+        anilist_id: id,
+        romaji: Some(t.into()),
+        format: Some(format.into()),
+        adult,
+        ..Default::default()
+    };
+    for s in [
+        new(1, "Plain Show", "TV", false),
+        new(2, "Plain Film", "MOVIE", false),
+        new(3, "Grown Show", "OVA", true),
+    ] {
+        h.app.library.add(&s, &root);
+    }
+    // 18+ anime shown, but kept off your lists: their own tab.
+    h.app.settings.adult = true;
+    h.app.settings.adult_lists = false;
+    h.app.page = Page::Home;
+    assert!(shows(&h, "Hentai  1"), "a tab for them");
+    assert!(shows(&h, "All  3"));
+    click(&mut h, "Hentai  1");
+    assert!(shows(&h, "Grown Show") && !shows(&h, "Plain Show"));
+    // On your lists, they're among the rest: no tab.
+    h.app.settings.adult_lists = true;
+    assert!(!shows(&h, "Hentai  1"));
+    assert!(shows(&h, "Plain Show"), "back to all");
+    // A type.
+    send(&mut h, [edit(|g| g.lib_type = Some("MOVIE".into()))]);
+    assert!(shows(&h, "Plain Film") && !shows(&h, "Plain Show") && !shows(&h, "Grown Show"));
+}
+
 /// Endless scrolling: a long shelf asks for its next page only once it's
 /// scrolled near its end, and then by itself (nothing to click); and the
 /// next again as that one is scrolled through.

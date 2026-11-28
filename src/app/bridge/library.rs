@@ -104,8 +104,11 @@ pub(super) fn page(ui: &mut Ui) -> Value {
     }
 
     let cards: Vec<Value> = order.iter().map(|s| card(ui, s)).collect();
+    // 18+ series kept off your lists have a tab of their own.
+    let adult_tab = app.adult_on() && !app.settings.adult_lists && order.iter().any(|s| s.adult);
     json!({
         "kind": "library",
+        "adult_tab": adult_tab,
         "summary": summary,
         "about": about,
         "lists": app.tracking.any(),
@@ -151,6 +154,12 @@ fn card(ui: &mut Ui, s: &Series) -> Value {
         },
         "airing": details.and_then(crate::app::library_ui::airing_line),
         "status": status.map(|s| json!({"name": s.name(), "key": format!("{s:?}").to_lowercase()})),
+        "adult": s.adult,
+        "type": s
+            .format
+            .clone()
+            .or_else(|| details.and_then(|d| d.format.clone()))
+            .map(|t| crate::browse::format_name(&t)),
         "watched": watched.min(1.0),
         "downloading": downloading,
         "open": ui.act(Action::OpenSeries(id)),

@@ -55,6 +55,19 @@ pub(super) fn on_disk(gui: &Gui, id: u64) -> BTreeSet<u32> {
     gui.app.on_disk(id)
 }
 
+/// A type to show in the library (or all), as its menu lists it.
+#[derive(Debug, Clone, PartialEq)]
+struct TypePick {
+    value: Option<String>,
+    label: String,
+}
+
+impl std::fmt::Display for TypePick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
 impl Gui {
     // ── Sidebar ───────────────────────────────────────────────────────
 
@@ -418,16 +431,49 @@ impl Gui {
         let mut order: Vec<&Series> = a.library.series.iter().collect();
         order.sort_by(|x, y| y.added.cmp(&x.added).then(x.title().cmp(y.title())));
 
-        // Filters by list status, when there are lists.
-        let mut chips = Row::new().spacing(8);
-        if a.tracking.any() {
-            let status_of = |s: &Series| a.tracking.shown(s.anilist_id).map(|e| e.status);
-            let filter = self.filter;
+        // Filters by list status, when there are lists; 18+ series, when
+        // they're kept off them; and by type.
+        let adult_tab = a.adult_on() && !a.settings.adult_lists && order.iter().any(|s| s.adult);
+        let filter = match self.filter {
+            Filter::Adult if !adult_tab => Filter::All,
+            Filter::Only(_) if !a.tracking.any() => Filter::All,
+            f => f,
+        };
+        let type_of = |s: &Series| {
+            s.format
+                .clone()
+                .or_else(|| s.details.as_ref().and_then(|d| d.format.clone()))
+        };
+        let mut types: Vec<(String, usize)> = Vec::new();
+        for s in &order {
+            if let Some(t) = type_of(s) {
+                match types.iter_mut().find(|(x, _)| *x == t) {
+                    Some((_, n)) => *n += 1,
+                    None => types.push((t, 1)),
+                }
+            }
+        }
+        let at = |t: &str| {
+            crate::browse::FORMATS
+                .iter()
+                .position(|(_, f)| *f == t)
+                .unwrap_or(usize::MAX)
+        };
+        types.sort_by_key(|(t, _)| at(t));
+        let lib_type = self
+            .lib_type
+            .clone()
+            .filter(|t| types.iter().any(|(x, _)| x == t));
+        let mut chips = Row::new().spacing(8).align_y(Alignment::Center);
+        if a.tracking.any() || adult_tab {
             chips = chips.push(chip(
                 format!("All  {}", order.len()),
                 filter == Filter::All,
                 Some(edit(|g| g.filter = Filter::All)),
             ));
+        }
+        if a.tracking.any() {
+            let status_of = |s: &Series| a.tracking.shown(s.anilist_id).map(|e| e.status);
             for st in [
                 Status::Watching,
                 Status::Completed,
@@ -445,6 +491,29 @@ impl Gui {
                     Some(edit(move |g| g.filter = Filter::Only(st))),
                 ));
             }
+        }
+        if adult_tab {
+            let n = order.iter().filter(|s| s.adult).count();
+            chips = chips.push(chip(
+                format!("Hentai  {n}"),
+                filter == Filter::Adult,
+                Some(edit(|g| g.filter = Filter::Adult)),
+            ));
+        }
+        let typed = types.len() > 1;
+        if typed {
+            let mut picks = vec![TypePick {
+                value: None,
+                label: "All types".into(),
+            }];
+            picks.extend(types.iter().map(|(t, n)| TypePick {
+                value: Some(t.clone()),
+                label: format!("{}  {n}", crate::browse::format_name(t)),
+            }));
+            let now = picks.iter().find(|p| p.value == lib_type).cloned();
+            chips = chips.push(dropdown(picks, now, |p: TypePick| {
+                edit(move |g| g.lib_type = p.value.clone())
+            }));
         }
 
         // Continue watching: series being watched, with what's next.
@@ -469,10 +538,12 @@ impl Gui {
         let search = self.lib_search.to_lowercase();
         let cards = order
             .into_iter()
-            .filter(|s| match self.filter {
+            .filter(|s| match filter {
                 Filter::All => true,
                 Filter::Only(st) => a.tracking.shown(s.anilist_id).map(|e| e.status) == Some(st),
+                Filter::Adult => s.adult,
             })
+            .filter(|s| lib_type.is_none() || type_of(s) == lib_type)
             .filter(|s| search.is_empty() || s.title().to_lowercase().contains(&search))
             .map(|s| self.cover_card(s));
         let grid = Row::with_children(cards)
@@ -491,7 +562,7 @@ impl Gui {
                 );
             body = body.push(gap(26.0));
         }
-        if a.tracking.any() {
+        if a.tracking.any() || adult_tab || typed {
             body = body.push(chips.wrap().vertical_spacing(8)).push(gap(18.0));
         }
         page(body.push(grid))

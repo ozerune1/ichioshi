@@ -31,14 +31,28 @@
     app.section = { key: "lists", name: "Lists" };
     goTab("more");
   }
-  let filtering = $derived(page.lists && !!only);
-
   const statuses = ["watching", "completed", "planning", "paused", "dropped"];
+  // A status (with lists), or "hentai" (18+ series kept off them).
+  let filtering = $derived(
+    (page.lists && !!only && statuses.includes(only)) || (page.adult_tab && only === "hentai"),
+  );
+  let tabs = $derived(page.lists || page.adult_tab);
+  // The type shown ("Movie"), or all; the types the library has, by count.
+  let type = $state<string | null>(null);
+  let types = $derived(
+    Object.entries(
+      page.series.reduce((n: Record<string, number>, s: any) => {
+        if (s.type) n[s.type] = (n[s.type] ?? 0) + 1;
+        return n;
+      }, {}),
+    ) as [string, number][],
+  );
   let shown = $derived(
     page.series.filter(
       (s: any) =>
         (!search || s.title.toLowerCase().includes(search.toLowerCase())) &&
-        (!filtering || s.status?.key === only),
+        (!filtering || (only === "hentai" ? s.adult : s.status?.key === only)) &&
+        (!type || s.type === type),
     ),
   );
   let counts = $derived(
@@ -92,17 +106,34 @@
       </div>
     {/if}
 
-    {#if page.lists}
+    {#if tabs || types.length > 1}
       <div class="chips">
-        <button class="chip" class:on={!only} onclick={() => filter(null)}>All {page.series.length}</button>
-        {#each statuses as k}
-          {#if counts[k] || k !== "dropped"}
-            <button class="chip" class:on={only === k} onclick={() => filter(k)}>
-              {k[0].toUpperCase() + k.slice(1)} {counts[k]}
-            </button>
-          {/if}
-        {/each}
+        {#if tabs}
+          <button class="chip" class:on={!filtering} onclick={() => filter(null)}>All {page.series.length}</button>
+        {/if}
+        {#if page.lists}
+          {#each statuses as k}
+            {#if counts[k] || k !== "dropped"}
+              <button class="chip" class:on={only === k} onclick={() => filter(k)}>
+                {k[0].toUpperCase() + k.slice(1)} {counts[k]}
+              </button>
+            {/if}
+          {/each}
+        {/if}
+        {#if page.adult_tab}
+          <button class="chip" class:on={only === "hentai"} onclick={() => filter("hentai")}>
+            Hentai {page.series.filter((s: any) => s.adult).length}
+          </button>
+        {/if}
+        {#if types.length > 1}
+          <select class="types" onchange={(e) => (type = (e.target as HTMLSelectElement).value || null)}>
+            <option value="" selected={!type}>All types</option>
+            {#each types as [t, n]}<option value={t} selected={type === t}>{t} {n}</option>{/each}
+          </select>
+        {/if}
       </div>
+    {/if}
+    {#if page.lists}
       {#if filtering && !shown.length}
         <p class="muted small none">
           {page.listsLoading ? "Reading your lists…" : search ? "Nothing matches." : "Nothing with this status."}
@@ -134,6 +165,7 @@
 </div>
 
 <style>
+  .types { flex: none; font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
   .page { padding: 14px 16px 24px; }
   p { margin: 0 0 6px; }
   .about { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

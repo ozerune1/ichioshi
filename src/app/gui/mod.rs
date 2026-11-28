@@ -248,6 +248,8 @@ pub(super) fn act(a: Action) -> Message {
 pub(super) enum Filter {
     All,
     Only(crate::tracking::Status),
+    /// 18+ series, kept off your lists (their own tab, then).
+    Adult,
 }
 
 pub(super) struct Gui {
@@ -271,6 +273,8 @@ pub(super) struct Gui {
     /// The library page's search and filter.
     lib_search: String,
     filter: Filter,
+    /// The library's type shown (AniList's: "MOVIE"), or all.
+    lib_type: Option<String>,
     /// The series whose release choice is open (to change it).
     release_open: Option<u64>,
     /// Downloads whose files are shown.
@@ -320,6 +324,7 @@ impl Gui {
             cal_day: None,
             lib_search: String::new(),
             filter: Filter::All,
+            lib_type: None,
             release_open: None,
             expanded: Default::default(),
             picked: Default::default(),
