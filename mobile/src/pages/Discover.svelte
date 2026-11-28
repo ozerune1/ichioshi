@@ -15,7 +15,7 @@
   let chosen = $derived(
     page.calendar
       ? 0
-      : [...page.genres, ...page.tags, ...page.lists].filter((c: any) => c.state).length,
+      : [...page.formats, ...page.genres, ...page.tags, ...page.lists].filter((c: any) => c.state).length,
   );
 
   // The calendar's day (today, or the week's first).
@@ -39,18 +39,19 @@
     <Chips options={page.shelves} scroll />
     <div class="filters">
       <Select options={page.sorts} label="Sort" />
-      <Select options={page.formats} label="Format" />
       <Select options={page.seasons} label="Season" />
       <Select options={page.years} label="Year" />
     </div>
     {#if page.shuffle}<button class="link" onclick={() => press(page.shuffle)}>Shuffle again</button>{/if}
     <button class="choose" class:open={choosing} onclick={() => (choosing = !choosing)}>
-      <span>Genres, tags &amp; your lists</span>
+      <span>Types, genres, tags &amp; your lists</span>
       {#if chosen}<span class="count">{chosen}</span>{/if}
       <span class="caret">{choosing ? "▴" : "▾"}</span>
     </button>
     {#if choosing}
       <div class="choices">
+        <p class="label">Types</p>
+        <TriChips options={page.formats} />
         <p class="label">Genres</p>
         <TriChips options={page.genres} />
         <p class="label">Tags</p>

@@ -250,8 +250,8 @@ pub struct Filter {
     pub sort: Sort,
     pub season: Option<Season>,
     pub year: Option<i32>,
-    /// AniList's name ("TV").
-    pub format: Option<String>,
+    /// Types (AniList's names: "TV", "MOVIE"), each wanted or not.
+    pub formats: BTreeMap<String, Choice>,
     /// Genres and tags (AniList's names), each wanted or not.
     pub tags: BTreeMap<String, Choice>,
     /// Your lists' statuses (None: on neither list), each wanted or not,
@@ -282,7 +282,7 @@ impl Default for Filter {
             sort: Sort::Trending,
             season: None,
             year: None,
-            format: None,
+            formats: BTreeMap::new(),
             tags: BTreeMap::new(),
             lists: Vec::new(),
             shuffle: 0,
@@ -334,14 +334,24 @@ pub const GENRES: [&str; 18] = [
     "Thriller",
 ];
 
-/// Formats to pick from: what they're called, and AniList's name.
-pub const FORMATS: [(&str, &str); 5] = [
+/// Types to pick from: what they're called, and AniList's name.
+pub const FORMATS: [(&str, &str); 7] = [
     ("TV", "TV"),
-    ("Movie", "MOVIE"),
-    ("ONA", "ONA"),
-    ("OVA", "OVA"),
     ("TV short", "TV_SHORT"),
+    ("Movie", "MOVIE"),
+    ("Special", "SPECIAL"),
+    ("OVA", "OVA"),
+    ("ONA", "ONA"),
+    ("Music", "MUSIC"),
 ];
+
+/// What a type is called ("MOVIE" is "Movie").
+pub fn format_name(format: &str) -> String {
+    FORMATS
+        .iter()
+        .find(|(_, f)| *f == format)
+        .map_or_else(|| format.replace('_', " "), |(name, _)| (*name).to_owned())
+}
 
 /// The anime season a day is in (WINTER is January–March), and its year.
 pub fn season_of(day: NaiveDate) -> (&'static str, i32) {
@@ -501,11 +511,13 @@ async fn browse_page(
     let q = format!(
         "query ($page: Int, $sort: [MediaSort], $season: MediaSeason, $year: Int, \
          $genreIn: [String], $genreNotIn: [String], $tagIn: [String], $tagNotIn: [String], \
-         $format: MediaFormat, $idIn: [Int], $idNotIn: [Int], $idMalIn: [Int], \
+         $formatIn: [MediaFormat], $formatNotIn: [MediaFormat], $idIn: [Int], $idNotIn: [Int], \
+         $idMalIn: [Int], \
          $idMalNotIn: [Int]) {{ Page(page: $page, perPage: {PER_PAGE}) {{ \
          pageInfo {{ hasNextPage lastPage }} media(type: ANIME, {adult_filter}sort: $sort, \
          season: $season, seasonYear: $year, genre_in: $genreIn, genre_not_in: $genreNotIn, \
-         tag_in: $tagIn, tag_not_in: $tagNotIn, format: $format, id_in: $idIn, \
+         tag_in: $tagIn, tag_not_in: $tagNotIn, format_in: $formatIn, \
+         format_not_in: $formatNotIn, id_in: $idIn, \
          id_not_in: $idNotIn, idMal_in: $idMalIn, idMal_not_in: $idMalNotIn) {{ {fields} }} }} }}"
     );
     // Filters left out, not null: AniList takes `genre: null` as "no genre".
@@ -524,8 +536,19 @@ async fn browse_page(
             vars.insert(name.into(), json!(list));
         }
     }
-    if let Some(f) = &filter.format {
-        vars.insert("format".into(), json!(f));
+    for (name, choice) in [
+        ("formatIn", Choice::Include),
+        ("formatNotIn", Choice::Exclude),
+    ] {
+        let list: Vec<&String> = filter
+            .formats
+            .iter()
+            .filter(|(_, c)| **c == choice)
+            .map(|(f, _)| f)
+            .collect();
+        if !list.is_empty() {
+            vars.insert(name.into(), json!(list));
+        }
     }
     if let ListIds::Ids { ids, not, mal } = ids {
         let name = match (mal, not) {
@@ -903,8 +926,10 @@ mod tests {
             assert_eq!(v["genreIn"], json!(["Drama"]));
             assert_eq!(v["genreNotIn"], json!(["Ecchi"]));
             assert_eq!(v["tagIn"], json!(["Time Skip", "Twins"]));
+            assert_eq!(v["formatIn"], json!(["MOVIE", "OVA"]));
+            assert_eq!(v["formatNotIn"], json!(["SPECIAL"]));
             assert!(
-                v.get("format").is_none() && v.get("tagNotIn").is_none(),
+                v.get("tagNotIn").is_none() && v.get("idIn").is_none(),
                 "unset filters left out, not null"
             );
             assert!(q.contains("isAdult: false"));
@@ -939,6 +964,13 @@ mod tests {
             ("Twins", Choice::Include),
         ] {
             filter.tags.insert(tag.into(), choice);
+        }
+        for (format, choice) in [
+            ("MOVIE", Choice::Include),
+            ("OVA", Choice::Include),
+            ("SPECIAL", Choice::Exclude),
+        ] {
+            filter.formats.insert(format.into(), choice);
         }
         let found = rt.block_on(browse(&client, &filter, &ListIds::Any, false, 1, None));
         let second = rt.block_on(browse(&client, &filter, &ListIds::Any, false, 2, None));

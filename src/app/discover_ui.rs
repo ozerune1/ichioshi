@@ -125,6 +125,15 @@ impl DiscoverState {
         lists.sort_by_key(|(s, _)| at(s));
     }
 
+    /// A type ("MOVIE") chosen the next way round (off, wanted, not wanted).
+    pub(crate) fn cycle_format(&mut self, format: &str) {
+        let next = Choice::cycle(self.filter.formats.get(format).copied());
+        match next {
+            Some(c) => self.filter.formats.insert(format.to_owned(), c),
+            None => self.filter.formats.remove(format),
+        };
+    }
+
     /// A genre or tag chosen the next way round (off, wanted, not wanted).
     pub(crate) fn cycle_tag(&mut self, name: &str) {
         let next = Choice::cycle(self.filter.tags.get(name).copied());
@@ -159,13 +168,13 @@ impl DiscoverState {
     pub(crate) fn narrowed(&self) -> bool {
         !self.filter.tags.is_empty()
             || !self.filter.lists.is_empty()
-            || self.filter.format.is_some()
+            || !self.filter.formats.is_empty()
     }
 
     /// Genres, tags, list statuses and format all unchosen.
     pub(crate) fn clear_choices(&mut self) {
         self.filter.tags.clear();
-        self.filter.format = None;
+        self.filter.formats.clear();
         self.filter.lists.clear();
     }
 

@@ -743,7 +743,12 @@ pub(crate) mod tests {
             filter
                 .tags
                 .insert("Time Skip".into(), crate::browse::Choice::Exclude);
-            filter.format = Some("MOVIE".into());
+            filter
+                .formats
+                .insert("MOVIE".into(), crate::browse::Choice::Include);
+            filter
+                .formats
+                .insert("SPECIAL".into(), crate::browse::Choice::Exclude);
             let list = crate::browse::browse(
                 &client,
                 &filter,

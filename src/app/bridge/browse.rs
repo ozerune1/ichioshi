@@ -135,18 +135,14 @@ pub(super) fn discover(ui: &mut Ui) -> Value {
             "id": ui.edit(move |app| app.discover.filter.year = Some(y)),
         }));
     }
-    let mut formats = vec![json!({
-        "label": "Any format",
-        "on": f.format.is_none(),
-        "id": ui.edit(|app| app.discover.filter.format = None),
-    })];
-    for (label, value) in FORMATS {
-        formats.push(json!({
-            "label": label,
-            "on": f.format.as_deref() == Some(value),
-            "id": ui.edit(move |app| app.discover.filter.format = Some(value.to_owned())),
-        }));
-    }
+    let formats: Vec<Value> = FORMATS
+        .into_iter()
+        .map(|(name, format)| {
+            tri(ui, name, f.formats.get(format).copied(), move |app| {
+                app.discover.cycle_format(format)
+            })
+        })
+        .collect();
     let adult = app.adult_on();
     let genres: Vec<Value> = GENRES
         .into_iter()

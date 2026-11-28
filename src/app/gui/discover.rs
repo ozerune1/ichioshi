@@ -107,15 +107,6 @@ impl Gui {
             .iter()
             .find(|p| p.value == f.year.map(|y| y.to_string()))
             .cloned();
-        let mut formats = vec![Pick {
-            value: None,
-            label: "Any format".into(),
-        }];
-        formats.extend(FORMATS.iter().map(|(label, value)| Pick {
-            value: Some((*value).to_owned()),
-            label: (*label).to_owned(),
-        }));
-        let format_now = formats.iter().find(|p| p.value == f.format).cloned();
         let mut controls = Row::new()
             .spacing(10)
             .push(dropdown(sorts, sort_now, |p: Pick| {
@@ -137,9 +128,6 @@ impl Gui {
                 edit(move |g| {
                     g.app.discover.filter.year = p.value.as_deref().and_then(|y| y.parse().ok())
                 })
-            }))
-            .push(dropdown(formats, format_now, |p: Pick| {
-                edit(move |g| g.app.discover.filter.format = p.value.clone())
             }));
         if f.sort == Sort::Random {
             controls = controls.push(secondary(
@@ -151,6 +139,14 @@ impl Gui {
         // Genres (all of them), tags (chosen, then found by typing), your
         // lists' statuses: each tapped to want it, again to not, again off.
         let adult = self.app.adult_on();
+        let mut types = Row::new().spacing(8);
+        for (name, format) in FORMATS {
+            types = types.push(tri_chip(
+                name,
+                f.formats.get(format).copied(),
+                edit(move |g| g.app.discover.cycle_format(format)),
+            ));
+        }
         let mut genres = Row::new().spacing(8);
         for g in GENRES
             .iter()
@@ -212,6 +208,9 @@ impl Gui {
             .then(|| weak("Sign in to AniList or MyAnimeList (Settings) to choose by your lists."));
 
         let mut choices = column![
+            label("Types"),
+            types.wrap().vertical_spacing(8),
+            gap(6.0),
             label("Genres"),
             genres.wrap().vertical_spacing(8),
             gap(6.0),
