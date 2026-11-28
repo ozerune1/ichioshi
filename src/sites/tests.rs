@@ -7,6 +7,8 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use std::path::Path;
+
 use serde_json::{Value, json};
 
 use super::*;
@@ -101,7 +103,7 @@ async fn hentaimama_finds_a_show_and_its_mp4() {
     let posted: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     let seen = posted.clone();
     let base = server(move |req, base| match path(req) {
-        "/" => {
+        "/" if req.query().contains_key("s") => {
             assert_eq!(req.query()["s"], "Overflow");
             page(super::hentaimama::SEARCH, base)
         }
@@ -112,23 +114,28 @@ async fn hentaimama_finds_a_show_and_its_mp4() {
             base,
         ),
         "/episodes/overflow-episode-1/" => page(
-            r#"<input type="hidden" name="title" value="Overflow Episode 1">
-            <script>var data = {action: 'get_player_contents', a: '7353'};</script>"#,
+            r##"<input type="hidden" name="title" value="Overflow Episode 1">
+            <a href="#option-2">mi-1</a> <a href="#option-1">mi-2</a>
+            <script>function dtLoadOption(n) {$.post("{base}/wp-admin/admin-ajax.php", {action: 'get_player_contents',a: '7353',i: n}, function(r) {});}</script>"##,
             base,
         ),
         "/wp-admin/admin-ajax.php" => {
             assert_eq!(req.method, "POST");
-            *seen.lock().unwrap() = req.form().into_iter().collect();
+            let form = req.form();
+            seen.lock().unwrap().push((form["a"].clone(), form["i"].clone()));
+            // Mirror n's player at n - 1; mirror 1's is gone.
+            let list = match form["i"].as_str() {
+                "2" => json!(["", format!(r#"<iframe src="{base}/?dt_embed=r2-mp4&#038;p=x" frameborder="0"></iframe>"#)]),
+                _ => json!(["", ""]),
+            };
             Resp {
                 status: 200,
                 headers: vec![],
-                body: json!([format!(r#"<iframe src="{base}/player/7353" frameborder="0"></iframe>"#)])
-                    .to_string()
-                    .into_bytes(),
+                body: list.to_string().into_bytes(),
             }
         }
-        "/player/7353" => page(
-            r#"<script>jwplayer('vplayer').setup({sources: [{file: "/files/ep1.mp4", label: "720p", type: "video/mp4"}]});</script>"#,
+        "/" if req.query().contains_key("dt_embed") => page(
+            r#"<script>var jwp = jwplayer('playercizEiGhEYxCW').setup({sources: [{"file":"\/files\/ep1.mp4","label":"720p","type":"mp4","default":true},{"file":"\/files\/ep1-480.mp4","label":"480p","type":"mp4"}],advertising: {client:"vast",skipoffset:5},image: "x.jpg"});</script>"#,
             base,
         ),
         "/files/ep1.mp4" => ranged(&served, req),
@@ -156,14 +163,13 @@ async fn hentaimama_finds_a_show_and_its_mp4() {
             .unwrap(),
         Some(720)
     );
-    let mut form = posted.lock().unwrap().clone();
-    form.sort();
     assert_eq!(
-        form,
+        *posted.lock().unwrap(),
         [
-            ("a".to_owned(), "7353".to_owned()),
-            ("action".to_owned(), "get_player_contents".to_owned())
-        ]
+            ("7353".to_owned(), "2".to_owned()),
+            ("7353".to_owned(), "1".to_owned())
+        ],
+        "each mirror, in the page's order"
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -483,21 +489,29 @@ async fn hanime_tv_finds_episodes_by_name_and_shakes_hands() {
     assert_eq!(r.streams[0].resolution, Some(720));
 }
 
-/// An ffmpeg-made DASH presentation (H.264 + AAC, 2 s segments) in a new
-/// folder; None without ffmpeg.
-fn dash_fixture() -> Option<tempfile::TempDir> {
+/// An ffmpeg-made DASH presentation of 5 s of H.264 at `size`, with AAC
+/// audio in MP4, or (`opus`) Opus in WebM as oppai.stream's 4K has, in a
+/// new folder; None without ffmpeg.
+fn dash_fixture(size: &str, opus: bool) -> Option<tempfile::TempDir> {
     let dir = tempfile::tempdir().unwrap();
+    let audio: &[&str] = if opus {
+        &[
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "64k",
+            "-dash_segment_type",
+            "auto",
+        ]
+    } else {
+        &["-c:a", "aac", "-b:a", "64k"]
+    };
     let ok = std::process::Command::new("ffmpeg")
-        .args([
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=320x240:rate=24:duration=5",
-        ])
+        .args(["-v", "error", "-f", "lavfi", "-i"])
+        .arg(format!("testsrc2=size={size}:rate=24:duration=5"))
         .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=5"])
-        .args(["-c:v", "libx264", "-g", "48", "-c:a", "aac", "-b:a", "64k"])
+        .args(["-c:v", "libx264", "-g", "48"])
+        .args(audio)
         .args([
             "-f",
             "dash",
@@ -520,40 +534,56 @@ fn dash_fixture() -> Option<tempfile::TempDir> {
 
 #[tokio::test]
 async fn oppai_stream_joins_its_dash_with_the_sites_referer() {
-    let Some(fixture) = dash_fixture() else {
+    let (Some(uhd), Some(fhd)) = (
+        dash_fixture("640x360", true),
+        dash_fixture("320x240", false),
+    ) else {
         return;
     };
-    let files = fixture.path().to_owned();
+    let (uhd_files, fhd_files) = (uhd.path().to_owned(), fhd.path().to_owned());
     let referers = Arc::new(AtomicUsize::new(0));
     let counted = referers.clone();
-    let base = server(move |req, base| match path(req) {
-        "/api/search.php" => {
-            let form = req.form();
-            assert_eq!(form["text"], "Overflow");
-            assert_eq!((form["order"].as_str(), form["page"].as_str()), ("recent", "1"));
-            page(
-                r#"<div class='results-num' style='display: none;'>2</div>
-                <a href="{base}/watch/Overflow-1/from/search" class="episode " epid="1"><p class="s4 white bold episode-title">Overflow</p></a>
-                <a href="{base}/watch/Overflow-Season-2-1/from/search" class="episode " epid="1"><p class="episode-title">Overflow Season 2</p></a>"#,
+    let base = server(move |req, base| {
+        let p = path(req);
+        if req.headers.get("referer").map(String::as_str) == Some("https://oppai.stream/") {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }
+        let file = |dir: &Path, prefix: &str| match std::fs::read(dir.join(p.trim_start_matches(prefix))) {
+            Ok(bytes) => Resp::binary(200, bytes),
+            Err(_) => missing(),
+        };
+        match p {
+            "/api/search.php" => {
+                let form = req.form();
+                assert_eq!(form["text"], "Overflow");
+                assert_eq!((form["order"].as_str(), form["page"].as_str()), ("recent", "1"));
+                page(
+                    r#"<div class='results-num' style='display: none;'>2</div>
+                    <a href="{base}/watch/Overflow-1/from/search" class="episode " epid="1"><div class="episode-title-wrap"><p class="s4 white bold episode-title">Overflow</p></div></a>
+                    <a href="{base}/watch/Overflow-Season-2-1/from/search" class="episode " epid="1"><p class="episode-title">Overflow Season 2</p></a>"#,
+                    base,
+                )
+            }
+            "/watch/Overflow-1" => page(
+                &format!(
+                    r#"<h1 id="episode-title" class="white bebas">Overflow Episode 1</h1>
+                    <script>var folder = "studio\/overflow"; var storageBase = "{}";
+                    var layout = 2;
+                    var resList = ["4k","1080"];
+                    var ep = "1";
+                    var res = "1080-1,4k-1";</script>"#,
+                    base.replace('/', "\\/")
+                ),
                 base,
-            )
-        }
-        // Not at its new address: its old one.
-        "/watch/Overflow-1" => missing(),
-        "/watch" => page(
-            r#"<h1 class="title line-2">Overflow 1</h1><script>src = '{base}/v/over-1/'+startsource+'/manifest.mpd';</script>"#,
-            base,
-        ),
-        p if p.starts_with("/v/over-1/1080/") => {
-            if req.headers.get("referer").map(String::as_str) == Some("https://oppai.stream/") {
-                counted.fetch_add(1, Ordering::SeqCst);
+            ),
+            p if p.starts_with("/studio/overflow/4K/dash01/") => {
+                file(&uhd_files, "/studio/overflow/4K/dash01/")
             }
-            match std::fs::read(files.join(p.trim_start_matches("/v/over-1/1080/"))) {
-                Ok(bytes) => Resp::binary(200, bytes),
-                Err(_) => missing(),
+            p if p.starts_with("/studio/overflow/1080p/dash01/") => {
+                file(&fhd_files, "/studio/overflow/1080p/dash01/")
             }
+            _ => missing(),
         }
-        _ => missing(),
     })
     .await;
     let _net = crate::mock_http::mocked();
@@ -567,7 +597,8 @@ async fn oppai_stream_joins_its_dash_with_the_sites_referer() {
     let url = eps[0].url.clone();
     assert_eq!(
         resolution(&c, StreamSite::OppaiStream, &url).await.unwrap(),
-        Some(240)
+        Some(2160),
+        "as the site names it"
     );
     let dir = tempfile::tempdir().unwrap();
     let file = download(
@@ -587,14 +618,16 @@ async fn oppai_stream_joins_its_dash_with_the_sites_referer() {
             "-v",
             "error",
             "-show_entries",
-            "stream=codec_name:format=duration",
+            "stream=codec_name,width:format=duration",
         ])
         .args(["-of", "compact=p=0:nk=1"])
         .arg(&file)
         .output()
         .unwrap();
     let out = String::from_utf8_lossy(&probe.stdout);
-    assert!(out.contains("h264") && out.contains("aac"), "{out}");
+    // The 4K's video (640 wide here), the 1080p's AAC (not the 4K's Opus).
+    assert!(out.contains("h264|640") && out.contains("aac"), "{out}");
+    assert!(!out.contains("opus"), "{out}");
     let duration: f64 = out.lines().last().unwrap().trim().parse().unwrap();
     assert!((duration - 5.0).abs() < 0.3, "{out}");
 }
@@ -611,7 +644,18 @@ async fn live_finds_shows_and_streams() {
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .unwrap();
-    let names = ["Overflow".to_owned()];
+    // A show each site has in episodes (hanime.tv has Overflow as one
+    // video, a whole season).
+    let names_for = |site: StreamSite| {
+        vec![
+            if site == StreamSite::HanimeTv {
+                "Sister Breeder"
+            } else {
+                "Overflow"
+            }
+            .to_owned(),
+        ]
+    };
     let mut failed = Vec::new();
     // `LIVE_SITES=oppai.stream,hanime.red`: only those.
     let only = std::env::var("LIVE_SITES").unwrap_or_default();
@@ -625,6 +669,7 @@ async fn live_finds_shows_and_streams() {
         if !only.is_empty() && !only.split(',').any(|n| n.trim() == site.name()) {
             continue;
         }
+        let names = names_for(site);
         let eps = match episodes(&c, site, &names).await {
             Ok(eps) if !eps.is_empty() => eps,
             Ok(_) => {
@@ -678,4 +723,51 @@ async fn live_finds_shows_and_streams() {
         }
     }
     assert!(failed.is_empty(), "failed: {failed:?}");
+}
+
+/// oppai.stream's newer episodes for real: their DASH (4K AV1, its audio
+/// taken from the 1080p presentation, Opus in WebM being 4K's) joins. Two
+/// segments are downloaded, said only by ffprobe's codecs, then deleted.
+#[tokio::test]
+#[ignore = "reaches the real site"]
+async fn live_oppai_dash_sample() {
+    let _net = crate::mock_http::real();
+    let c = reqwest::Client::new();
+    let eps = episodes(
+        &c,
+        StreamSite::OppaiStream,
+        &["Harem-tou e Youkoso!".into()],
+    )
+    .await
+    .unwrap();
+    assert!(!eps.is_empty());
+    let s = Session::new(&c, "oppai.stream");
+    let r = resolve(&s, StreamSite::OppaiStream, &eps[0].url)
+        .await
+        .unwrap();
+    let Media::Dash(mpds) = &r.streams[0].media else {
+        panic!("not DASH: {}", r.streams[0].label)
+    };
+    let dash = crate::hstream::Dash::at("oppai.stream", "https://oppai.stream/", mpds).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = crate::hstream::download_dash(
+        &web::client_like_yt_dlp(None).unwrap(),
+        &dash,
+        &dir.path().join("sample.mp4"),
+        &Default::default(),
+        Some(2),
+        &AtomicBool::new(false),
+        |_, _| {},
+    )
+    .await
+    .unwrap();
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_name,height"])
+        .args(["-of", "compact=p=0:nk=1"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&probe.stdout).replace('\n', " ");
+    println!("oppai.stream DASH sample: {out}");
+    assert!(out.contains("aac"), "{out}");
 }

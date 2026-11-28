@@ -103,33 +103,100 @@ fn show_page(html: &str, url: &str, slug: &str) -> Show {
 pub(super) async fn resolve(s: &Session, url: &str) -> Result<Resolved> {
     let page = s.need(url).await?;
     let title = episode_title(&page);
-    let data = ajax_data(&page).context("hentaimama's episode page")?;
+    let post = post_id(&page).context("hentaimama's episode page")?;
+    let mut streams = Vec::new();
+    let mut failure = None;
+    // Each of its player's mirrors, in the page's order.
+    for n in options(&page) {
+        match option_streams(s, url, &post, n).await {
+            Ok(found) => streams.extend(found),
+            Err(e) if e.is::<web::Challenge>() => return Err(e),
+            Err(e) => {
+                tracing::debug!("hentaimama mirror {n}: {e:#}");
+                failure = Some(e);
+            }
+        }
+    }
+    if streams.is_empty() {
+        return Err(failure.unwrap_or_else(|| anyhow!("hentaimama's player has no video")));
+    }
+    Ok(Resolved { title, streams })
+}
+
+/// The episode's post ID, which its player's mirrors are asked by: the
+/// page's `{action: 'get_player_contents', a: '<id>', i: n}` (or, as the
+/// plugin read it, `var data = {…}`'s `a`).
+fn post_id(page: &str) -> Result<String> {
+    static INLINE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"get_player_contents['"]?\s*,\s*a\s*:\s*['"]?(\d+)"#).unwrap()
+    });
+    if let Some(c) = INLINE.captures(page) {
+        return Ok(c[1].to_owned());
+    }
+    let data = ajax_data(page)?;
+    data.into_iter()
+        .find(|(k, _)| k == "a")
+        .map(|(_, v)| v)
+        .context("the player's data has no post")
+}
+
+/// The player's mirrors (`#option-<n>`), in the page's order; the first if
+/// it lists none.
+fn options(page: &str) -> Vec<u32> {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r##"href=['"]#option-(\d+)['"]"##).unwrap());
+    let mut out: Vec<u32> = Vec::new();
+    for c in RE.captures_iter(page) {
+        if let Ok(n) = c[1].parse::<u32>()
+            && n > 0
+            && !out.contains(&n)
+        {
+            out.push(n);
+        }
+    }
+    if out.is_empty() {
+        out.push(1);
+    }
+    out
+}
+
+/// Mirror `n`'s video: the player page its answer embeds, and the JW
+/// Player there.
+async fn option_streams(s: &Session, page_url: &str, post: &str, n: u32) -> Result<Vec<Stream>> {
+    let i = n.to_string();
     let answer: Value = serde_json::from_str(
         &s.text(
             s.client
                 .post(format!("{}/wp-admin/admin-ajax.php", base(SITE)))
                 .header(ACCEPT, "application/json, text/javascript, */*")
-                .header(REFERER, url)
-                .form(&data),
+                .header(REFERER, page_url)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .form(&[("action", "get_player_contents"), ("a", post), ("i", &i)]),
         )
         .await?
         .context("hentaimama's player isn't there")?,
     )
     .context("hentaimama's player answered something else")?;
-    let embed = answer
-        .get(0)
+    // A list with mirror n's at n - 1 (the plugin's answer had it first).
+    let list = answer.as_array().cloned().unwrap_or_default();
+    let html = list
+        .get(n as usize - 1)
         .and_then(Value::as_str)
-        .and_then(|html| {
-            static SRC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"src="([^"]+)""#).unwrap());
-            SRC.captures(html).map(|c| c[1].to_owned())
+        .filter(|h| !h.is_empty())
+        .or_else(|| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .find(|h| !h.is_empty())
         })
-        .context("hentaimama's player named no player page")?;
-    let player_url = absolute(url, &embed)?;
+        .context("the mirror sent no player")?;
+    static SRC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"src=["']([^"']+)["']"#).unwrap());
+    let embed = SRC
+        .captures(html)
+        .map(|c| c[1].to_owned())
+        .context("the mirror named no player page")?;
+    let player_url = absolute(page_url, &embed)?;
     let player = s.need(player_url.as_str()).await?;
-    Ok(Resolved {
-        title,
-        streams: jw_streams(&player, player_url.as_str())?,
-    })
+    jw_streams(&player, player_url.as_str())
 }
 
 /// The episode's title (the page's hidden `title` field).
@@ -267,6 +334,19 @@ mod tests {
             ]
         );
         assert_eq!(show.episodes[0].title, "Overflow - Episode 1");
+    }
+
+    #[test]
+    fn reads_the_players_mirrors() {
+        let page = r##"<ul><li><a href="#option-5"><b class="icon-play_arrow"></b> mi-1</a></li>
+        <li><a href="#option-3">mi-2</a></li><li><a href="#option-1">mi-3</a></li></ul>
+        <script>function dtLoadOption(n) {$.post("https://hentaimama.io/wp-admin/admin-ajax.php", {action: 'get_player_contents',a: '7360',i: n}, function(response) {});}</script>"##;
+        assert_eq!(post_id(page).unwrap(), "7360");
+        assert_eq!(options(page), [5, 3, 1]);
+        assert_eq!(options("<p>none</p>"), [1]);
+        let old = "<script>var data = { action: 'get_player_contents', a: '42' };</script>";
+        assert_eq!(post_id(old).unwrap(), "42");
+        assert!(post_id("<p>nothing</p>").is_err());
     }
 
     #[test]

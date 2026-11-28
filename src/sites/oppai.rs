@@ -1,9 +1,14 @@
 //! oppai.stream.
 //!
-//! An episode's page (`/watch?e=…`) builds its stream's address in its
-//! script: `'<base>'+startsource+'/<manifest>'`, where `startsource` is a
-//! resolution (`720`, `1080` or `4k`). Each is a DASH presentation, fetched
-//! with the site as the Referer.
+//! An episode's page (`/watch/<Show>-<n>`) sets its player up with
+//! variables: the storage server, the episode's folder on it, its layout
+//! and resolutions. Its player (`watch.js`) then plays, as layout 2 (newer
+//! episodes), a DASH presentation per resolution,
+//! `<server>/<folder>/<4K|1080p|720p>/dash<nn>/manifest.mpd` (HLS beside it,
+//! `master.m3u8`, below 4K); as layout 1, `<server>/<folder>/ep.webm` (or
+//! `.mp4`), its DASH being WebM, which isn't joined here. All are fetched
+//! with the site as the Referer. (The hanime-plugin's way, a
+//! `'+startsource+'` address in the page, is gone.)
 //!
 //! A show is found with the site's search (`/api/search.php`, a form, as
 //! its search page's script sends it), which answers with episode cards:
@@ -12,7 +17,7 @@
 
 use std::sync::LazyLock;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use regex::Regex;
 use reqwest::header::{ACCEPT, REFERER as REFERER_HEADER};
 use url::Url;
@@ -168,116 +173,176 @@ fn total(html: &str) -> Option<usize> {
         LazyLock::new(|| Regex::new(r#"results-num'?"?[^>]*>\s*(\d+)"#).unwrap());
     RE.captures(html)?[1].parse().ok()
 }
-/// The resolutions the player picks from, as its addresses name them.
-const RESOLUTIONS: [(u32, &str); 3] = [(720, "720"), (1080, "1080"), (2160, "4k")];
+/// What an episode's page sets its player up with.
+#[derive(Debug, Clone, PartialEq)]
+struct Player {
+    /// e.g. `https://s2.myspacecat.pictures`.
+    storage: String,
+    /// e.g. `collaboration-works/harem-tou-e-youkoso` or `Overflow-1`.
+    folder: String,
+    /// 2 for newer episodes.
+    layout: u32,
+    /// Best first: "4k", "1080", "720".
+    resolutions: Vec<String>,
+    /// Each resolution's file format ("4k-2": 4K as WebM).
+    formats: Vec<(String, String)>,
+    episode: u32,
+}
 
-pub(super) async fn resolve(s: &Session, url: &str) -> Result<Resolved> {
-    // Its pages have been `/watch?e=<id>` (as the plugin reads them) and
-    // `/watch/<id>`: the other if this one isn't there or has no stream.
-    let first = s.page(url).await?;
-    let page = match first {
-        Some(p) if stream_base(&p).is_some() => p,
-        first => {
-            let other = match other_address(url) {
-                Some(o) => s.page(&o).await.ok().flatten(),
-                None => None,
-            };
-            match (other, first) {
-                (Some(p), _) if stream_base(&p).is_some() => p,
-                (_, Some(p)) | (Some(p), None) => p,
-                (None, None) => bail!("oppai.stream has no page at {url}"),
-            }
-        }
-    };
-    let (stream_base, manifest) = stream_base(&page).with_context(|| {
-        format!(
-            "no stream on oppai.stream's episode page (it has {})",
-            clues(&page)
-        )
-    })?;
-    let mut mpds = Vec::new();
-    for (res, name) in RESOLUTIONS {
-        mpds.push((res, join_path(&stream_base, name, &manifest)?));
+/// A variable the page's script sets (`var name = <JSON>;`).
+fn variable(page: &str, name: &str) -> Option<serde_json::Value> {
+    let re = Regex::new(&format!(r"\bvar\s+{}\s*=\s*([^;\n]+)", regex::escape(name))).ok()?;
+    serde_json::from_str(re.captures(page)?[1].trim()).ok()
+}
+
+fn player(page: &str) -> Option<Player> {
+    let text = |n: &str| variable(page, n).and_then(|v| v.as_str().map(str::to_owned));
+    let folder = text("folder").filter(|f| !f.is_empty())?;
+    let storage = text("storageBase")
+        .filter(|b| b.starts_with("http"))
+        .unwrap_or_else(|| "https://s1.myspacecat.pictures".to_owned());
+    let layout = variable(page, "layout")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as u32;
+    // "720-1,1080-1,4k-2": each resolution and its format (1 MP4, 2 WebM).
+    let formats: Vec<(String, String)> = text("res")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|part| {
+            let (res, f) = part.trim().split_once('-').unwrap_or((part.trim(), "1"));
+            (!res.is_empty()).then(|| {
+                let f = if f.trim() == "2" { "webm" } else { "mp4" };
+                (res.to_owned(), f.to_owned())
+            })
+        })
+        .collect();
+    let mut resolutions: Vec<String> = variable(page, "resList")
+        .and_then(|v| v.as_array().cloned())
+        .map(|l| {
+            l.iter()
+                .filter_map(|r| {
+                    r.as_str()
+                        .map(str::to_owned)
+                        .or_else(|| r.as_u64().map(|n| n.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if resolutions.is_empty() {
+        resolutions = formats.iter().map(|(r, _)| r.clone()).collect();
     }
-    Ok(Resolved {
-        title: episode_title(&page),
-        streams: vec![Stream {
-            media: Media::Dash(mpds),
-            referer: Some(REFERER.to_owned()),
-            resolution: None,
-            label: "DASH".into(),
-        }],
+    resolutions.sort_by_key(|r| std::cmp::Reverse(height(r)));
+    let episode = text("ep")
+        .and_then(|e| e.trim().parse().ok())
+        .or_else(|| {
+            variable(page, "ep")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32)
+        })
+        .unwrap_or(1);
+    Some(Player {
+        storage: storage.trim_end_matches('/').to_owned(),
+        folder,
+        layout,
+        resolutions,
+        formats,
+        episode,
     })
 }
 
-/// The stream's base address and its manifest's name.
-fn stream_base(page: &str) -> Option<(String, String)> {
-    static RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"'(https?://[^']+)'\s*\+\s*startsource\s*\+\s*'/([^']+)'").unwrap()
-    });
-    let c = RE.captures(page)?;
-    Some((c[1].to_owned(), c[2].to_owned()))
-}
-
-/// What of the stream's makings a page has, for the error when its
-/// address can't be read (its text isn't shown).
-fn clues(page: &str) -> String {
-    let has = |t: &str| page.contains(t);
-    let mut found: Vec<&str> = [
-        ("startsource", "startsource"),
-        (".mpd", ".mpd"),
-        (".m3u8", ".m3u8"),
-        ("myspacecat", "its stream server's name"),
-    ]
-    .into_iter()
-    .filter(|(t, _)| has(t))
-    .map(|(_, say)| say)
-    .collect();
-    for (joined, say) in [
-        ("'+startsource+'", "'+startsource+'"),
-        ("\"+startsource+\"", "\"+startsource+\""),
-        ("${startsource}", "${startsource}"),
-    ] {
-        if has(joined) {
-            found.push(say);
-        }
-    }
-    if found.is_empty() {
-        "none of startsource, .mpd, .m3u8 or its stream server's name".into()
+/// "4k" is 2160; "1080" is 1080.
+fn height(res: &str) -> u32 {
+    if res.eq_ignore_ascii_case("4k") {
+        2160
     } else {
-        found.join(", ")
+        res.trim_end_matches(['p', 'P']).parse().unwrap_or(0)
     }
 }
 
-/// An episode's page's other address: `/watch?e=<id>` for `/watch/<id>`
-/// and the other way round.
-fn other_address(url: &str) -> Option<String> {
-    let mut u = Url::parse(url).ok()?;
-    if let Some(id) = u.path().strip_prefix("/watch/").map(str::to_owned) {
-        u.set_path("/watch");
-        u.set_query(Some(&format!("e={id}")));
-        return Some(u.to_string());
+impl Player {
+    /// `<server>/<folder>/<rest…>`, each part of the folder escaped.
+    fn address(&self, rest: &[&str]) -> Result<Url> {
+        let mut u = Url::parse(&self.storage)
+            .with_context(|| format!("not an address: {}", self.storage))?;
+        u.path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("not a web address: {}", self.storage))?
+            .pop_if_empty()
+            .extend(self.folder.split('/'))
+            .extend(rest);
+        Ok(u)
     }
-    let id = u.query_pairs().find(|(k, _)| k == "e")?.1.into_owned();
-    u.set_query(None);
-    u.set_path(&format!("/watch/{id}"));
-    Some(u.to_string())
+
+    /// What its player would play, best first.
+    fn streams(&self) -> Result<Vec<Stream>> {
+        let stream = |media, resolution, label: String| Stream {
+            media,
+            referer: Some(REFERER.to_owned()),
+            resolution,
+            label,
+        };
+        if self.layout == 2 {
+            let nn = format!("dash{:02}", self.episode);
+            let folder = |r: &str| {
+                if r.eq_ignore_ascii_case("4k") {
+                    "4K".to_owned()
+                } else {
+                    format!("{r}p")
+                }
+            };
+            let mut mpds = Vec::new();
+            let mut out = Vec::new();
+            for r in &self.resolutions {
+                mpds.push((height(r), self.address(&[&folder(r), &nn, "manifest.mpd"])?));
+            }
+            out.push(stream(Media::Dash(mpds), None, "DASH".into()));
+            // HLS, as its player falls back to (none for 4K).
+            for r in self.resolutions.iter().filter(|r| height(r) < 2160) {
+                out.push(stream(
+                    Media::Hls(self.address(&[&folder(r), &nn, "master.m3u8"])?),
+                    Some(height(r)),
+                    format!("HLS {r}"),
+                ));
+            }
+            return Ok(out);
+        }
+        // Its file: MP4 if its 4K one is, else WebM (as its player says).
+        let format = |r: &str| {
+            self.formats
+                .iter()
+                .find(|(x, _)| x == r)
+                .map(|(_, f)| f.as_str())
+        };
+        let ext = if format("4k") == Some("mp4") {
+            "mp4"
+        } else {
+            "webm"
+        };
+        let best = self
+            .resolutions
+            .first()
+            .map(|r| height(r))
+            .filter(|h| *h > 0);
+        Ok(vec![stream(
+            Media::File(self.address(&[&format!("ep.{ext}")])?),
+            best,
+            format!("file ({ext})"),
+        )])
+    }
 }
 
-/// `base` with `res` and `manifest` added to its path (yarl's `joinpath`).
-fn join_path(base: &str, res: &str, manifest: &str) -> Result<Url> {
-    let mut u = Url::parse(base).with_context(|| format!("not an address: {base}"))?;
-    let path = format!(
-        "{}/{res}/{}",
-        u.path().trim_end_matches('/'),
-        manifest.trim_start_matches('/')
-    );
-    u.set_path(&path);
-    Ok(u)
+pub(super) async fn resolve(s: &Session, url: &str) -> Result<Resolved> {
+    let page = s.need(url).await?;
+    let p = player(&page).context("oppai.stream's episode page sets up no player")?;
+    Ok(Resolved {
+        title: episode_title(&page),
+        streams: p.streams()?,
+    })
 }
 
 fn episode_title(page: &str) -> Option<String> {
-    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"<h1.*line-2">(.*)</h1>"#).unwrap());
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?s)<h1\b[^>]*\bid="episode-title"[^>]*>(.*?)</h1>"#).unwrap()
+    });
     Some(text(&RE.captures(page)?[1])).filter(|t| !t.is_empty())
 }
 
@@ -286,30 +351,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_the_episode_page() {
-        let page = r#"<h1 class="title line-2">Overflow 1</h1>
-        <script>var startsource = '1080'; player.src('https://s2.myspacecat.pictures/v/over-1/'+startsource+'/manifest.mpd');</script>"#;
-        let (b, m) = stream_base(page).unwrap();
-        assert_eq!(b, "https://s2.myspacecat.pictures/v/over-1/");
-        assert_eq!(m, "manifest.mpd");
+    fn reads_the_episode_pages_player() {
+        let new = r#"<h1 id="episode-title" class="white bebas extra-title center">Harem-tou e Youkoso! Episode 1</h1>
+        <script>var folder = "collaboration-works\/harem-tou-e-youkoso"; var storageBase = "https:\/\/s2.myspacecat.pictures";
+        var layout = 2;
+        var resList = ["4k","1080","720"];
+        var ep = "1";
+        var res = "720-1,1080-1,4k-1";</script>"#;
+        let p = player(new).unwrap();
+        assert_eq!(p.layout, 2);
+        assert_eq!(p.resolutions, ["4k", "1080", "720"]);
+        let streams = p.streams().unwrap();
+        let base = "https://s2.myspacecat.pictures/collaboration-works/harem-tou-e-youkoso";
         assert_eq!(
-            join_path(&b, "4k", &m).unwrap().as_str(),
-            "https://s2.myspacecat.pictures/v/over-1/4k/manifest.mpd"
+            streams[0].media,
+            Media::Dash(vec![
+                (
+                    2160,
+                    format!("{base}/4K/dash01/manifest.mpd").parse().unwrap()
+                ),
+                (
+                    1080,
+                    format!("{base}/1080p/dash01/manifest.mpd").parse().unwrap()
+                ),
+                (
+                    720,
+                    format!("{base}/720p/dash01/manifest.mpd").parse().unwrap()
+                ),
+            ])
         );
         assert_eq!(
-            join_path("https://h/x", "720", "/m.mpd").unwrap().as_str(),
-            "https://h/x/720/m.mpd"
+            streams[1].media,
+            Media::Hls(format!("{base}/1080p/dash01/master.m3u8").parse().unwrap()),
+            "HLS below 4K"
         );
-        assert_eq!(episode_title(page).as_deref(), Some("Overflow 1"));
-        assert!(stream_base("<p>nothing</p>").is_none());
+        assert_eq!(streams.len(), 3);
+        assert!(
+            streams
+                .iter()
+                .all(|s| s.referer.as_deref() == Some(REFERER))
+        );
         assert_eq!(
-            other_address("https://oppai.stream/watch/Overflow-2").as_deref(),
-            Some("https://oppai.stream/watch?e=Overflow-2")
+            episode_title(new).as_deref(),
+            Some("Harem-tou e Youkoso! Episode 1")
         );
+
+        let old = r#"<script>var storageBase = "https:\/\/s1.myspacecat.pictures"
+        var folder = "Overflow-1"
+        var layout = 1
+        var resList = ["4k"]
+        var res = "4k-2"
+        var ep = "1"</script>"#;
+        let streams = player(old).unwrap().streams().unwrap();
         assert_eq!(
-            other_address("https://oppai.stream/watch?e=Overflow-2").as_deref(),
-            Some("https://oppai.stream/watch/Overflow-2")
+            streams,
+            [Stream {
+                media: Media::File(
+                    "https://s1.myspacecat.pictures/Overflow-1/ep.webm"
+                        .parse()
+                        .unwrap()
+                ),
+                referer: Some(REFERER.into()),
+                resolution: Some(2160),
+                label: "file (webm)".into(),
+            }]
         );
+        let mp4 = old.replace("4k-2", "4k-1");
+        assert!(matches!(
+            &player(&mp4).unwrap().streams().unwrap()[0].media,
+            Media::File(u) if u.path().ends_with("/ep.mp4")
+        ));
+        assert!(player("<p>nothing</p>").is_none());
     }
 
     pub(crate) const RESULTS: &str = r#"<div class='results-num' style='display: none;'>3</div>

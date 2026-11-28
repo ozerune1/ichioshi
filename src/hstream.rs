@@ -745,8 +745,37 @@ impl Drop for Queue {
     }
 }
 
+/// The MPD at `path`, read; None if the mirrors haven't got it.
+async fn read_mpd(
+    client: &reqwest::Client,
+    mirrors: &Mirrors,
+    path: &str,
+) -> Result<Option<dash::Mpd>> {
+    let target = Target::Path(path.to_owned());
+    let Some(xml) =
+        fetch_from(client, mirrors, &target, Duration::from_secs(30), any_bytes).await?
+    else {
+        return Ok(None);
+    };
+    let mirror = mirrors.preferred.load(Ordering::Relaxed);
+    let mpd_url = Url::parse(&mirrors.url(mirror, &target))?;
+    dash::parse(&String::from_utf8_lossy(&xml), &mpd_url).map(Some)
+}
+
+/// The best representation of `kind` in `mpd` that's MP4 (only those are
+/// joined here: not WebM).
+fn best_mp4(mpd: &dash::Mpd, kind: Kind) -> Option<Representation> {
+    mpd.representations
+        .iter()
+        .filter(|r| r.kind == kind && r.init.is_some() && r.mime_type.contains("mp4"))
+        .max_by_key(|r| (r.height.unwrap_or(0), r.bandwidth))
+        .cloned()
+}
+
 /// Picks the best presentation: the highest resolution there is (at most
-/// `max_height`), its best video and (if it has one apart) audio.
+/// `max_height`), its best video and (if it has one apart) audio. If its
+/// audio isn't MP4 (oppai.stream's 4K has Opus in WebM), the audio of
+/// another resolution's MPD is taken: the same sound, encoded apart.
 async fn presentation(
     client: &reqwest::Client,
     mirrors: &Mirrors,
@@ -759,42 +788,50 @@ async fn presentation(
         .filter(|(r, _)| max_height.is_none_or(|m| *r <= m))
         .collect();
     mpds.sort_by_key(|(r, _)| std::cmp::Reverse(*r));
-    for (res, path) in mpds {
-        let res = *res;
-        let target = Target::Path(path.clone());
-        let xml =
-            match fetch_from(client, mirrors, &target, Duration::from_secs(30), any_bytes).await {
-                Ok(Some(xml)) => xml,
-                Ok(None) => {
-                    tracing::debug!("{}: no {res}p", mirrors.site);
-                    continue;
-                }
-                Err(e) if e.is::<Challenge>() => return Err(e),
-                Err(e) => {
-                    failures.push(format!("{res}p: {e:#}"));
-                    continue;
-                }
-            };
-        let mirror = mirrors.preferred.load(Ordering::Relaxed);
-        let mpd_url = Url::parse(&mirrors.url(mirror, &target))?;
-        let mpd = match dash::parse(&String::from_utf8_lossy(&xml), &mpd_url) {
-            Ok(mpd) => mpd,
+    // Each MPD once read (None: not there, or unreadable).
+    let mut read: Vec<Option<Option<dash::Mpd>>> = vec![None; mpds.len()];
+    for i in 0..mpds.len() {
+        let (res, path) = (mpds[i].0, &mpds[i].1);
+        let mpd = match read_mpd(client, mirrors, path).await {
+            Ok(Some(mpd)) => mpd,
+            Ok(None) => {
+                tracing::debug!("{}: no {res}p", mirrors.site);
+                read[i] = Some(None);
+                continue;
+            }
+            Err(e) if e.is::<Challenge>() => return Err(e),
             Err(e) => {
                 failures.push(format!("{res}p: {e:#}"));
+                read[i] = Some(None);
                 continue;
             }
         };
-        let best = |kind: Kind| {
-            mpd.representations
-                .iter()
-                .filter(|r| r.kind == kind && r.init.is_some())
-                .max_by_key(|r| (r.height.unwrap_or(0), r.bandwidth))
-                .cloned()
+        let Some(video) = best_mp4(&mpd, Kind::Video) else {
+            failures.push(format!("{res}p: no MP4 video in its MPD"));
+            read[i] = Some(None);
+            continue;
         };
-        match best(Kind::Video) {
-            Some(v) => return Ok((res, v, best(Kind::Audio))),
-            None => failures.push(format!("{res}p: no video in its MPD")),
+        let mut audio = best_mp4(&mpd, Kind::Audio);
+        let has_other_audio = mpd.representations.iter().any(|r| r.kind == Kind::Audio);
+        if audio.is_none() && has_other_audio {
+            for j in (0..mpds.len()).filter(|&j| j != i) {
+                if read[j].is_none() {
+                    read[j] = Some(read_mpd(client, mirrors, &mpds[j].1).await.ok().flatten());
+                }
+                if let Some(Some(other)) = &read[j]
+                    && let Some(a) = best_mp4(other, Kind::Audio)
+                {
+                    tracing::info!(
+                        "{}: {res}p's audio isn't MP4; {}p's instead",
+                        mirrors.site,
+                        mpds[j].0
+                    );
+                    audio = Some(a);
+                    break;
+                }
+            }
         }
+        return Ok((res, video, audio));
     }
     if failures.is_empty() {
         bail!("{} has no stream for this episode", mirrors.site);
@@ -858,12 +895,9 @@ impl Dash {
 /// The best resolution `dash` comes in: the highest whose MPD has video.
 pub(crate) async fn dash_resolution(client: &reqwest::Client, dash: &Dash) -> Result<u32> {
     let mirrors = Mirrors::new(dash.site, dash.mirrors.clone(), dash.referer.clone())?;
-    let (res, video, _) = presentation(client, &mirrors, &dash.mpds, None).await?;
-    // 1920×800 is 1080p; 1080×1920 too.
-    Ok(video.width.zip(video.height).map_or(res, |(w, h)| {
-        let (long, short) = (w.max(h), w.min(h));
-        short.max(long * 9 / 16)
-    }))
+    // As the site names it (oppai.stream's "4K" is 3412×1920).
+    let (res, _, _) = presentation(client, &mirrors, &dash.mpds, None).await?;
+    Ok(res)
 }
 
 /// Downloads `dash`: the best video (highest resolution, at most

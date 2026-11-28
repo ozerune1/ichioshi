@@ -73,21 +73,39 @@ pub(super) async fn episodes(s: &Session, names: &[String]) -> Result<Vec<Episod
     guessed(s, names, &wanted).await
 }
 
-/// The show's episodes in the database: videos named it (with a number),
-/// else ones with it among their other titles.
+/// The show's episodes in the database: videos named it with a number
+/// ("Sister Breeder 3"); else the videos whose other titles hold one of its
+/// names ("Kuroinu 2" is also "Kuroinu: Kedakaki Seijo wa Hakudaku ni
+/// Somaru"), those of the show most of them are. A whole season in one
+/// video ("Overflow Season 1") isn't an episode, so isn't taken.
 fn in_database(db: &[Doc], wanted: &[String]) -> Vec<Episode> {
-    let named = |t: &str| {
-        matches(wanted, &normalize(&web::without_episode(t))) || matches(wanted, &normalize(t))
-    };
-    let mut found: Vec<&Doc> = db
+    static SEASON: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\bseason\s*\d+\s*$").unwrap());
+    let videos: Vec<&Doc> = db.iter().filter(|d| !SEASON.is_match(&d.name)).collect();
+    let show_of = |d: &Doc| web::without_episode(&d.name);
+    let mut found: Vec<&Doc> = videos
         .iter()
-        .filter(|d| matches(wanted, &normalize(&web::without_episode(&d.name))))
+        .copied()
+        .filter(|d| matches(wanted, &normalize(&show_of(d))))
         .collect();
     if found.is_empty() {
-        found = db
-            .iter()
-            .filter(|d| d.titles.iter().any(|t| named(t)))
-            .collect();
+        // Names long enough not to be in other shows' titles by chance.
+        let long: Vec<&String> = wanted.iter().filter(|w| w.chars().count() >= 6).collect();
+        let mut shows: Vec<(String, Vec<&Doc>)> = Vec::new();
+        for d in videos {
+            let titles = normalize(&d.titles.join(" "));
+            if !long.iter().any(|w| titles.contains(w.as_str())) {
+                continue;
+            }
+            let show = normalize(&show_of(d));
+            match shows.iter_mut().find(|(s, _)| *s == show) {
+                Some((_, docs)) => docs.push(d),
+                None => shows.push((show, vec![d])),
+            }
+        }
+        if let Some((_, docs)) = shows.into_iter().max_by_key(|(_, docs)| docs.len()) {
+            found = docs;
+        }
     }
     let site = base(SITE);
     let mut out: Vec<Episode> = Vec::new();
@@ -95,13 +113,13 @@ fn in_database(db: &[Doc], wanted: &[String]) -> Vec<Episode> {
         let n = web::episode_number(&d.name)
             .or_else(|| web::episode_number(&d.slug))
             .unwrap_or(1);
-        if out.iter().any(|e| e.episode == n) || d.slug.is_empty() {
+        if out.iter().any(|e| e.episode == n) {
             continue;
         }
         out.push(Episode {
             episode: n,
             url: format!("{site}/videos/hentai/{}", d.slug),
-            title: super::episode_title(&web::without_episode(&d.name), n),
+            title: super::episode_title(&show_of(d), n),
         });
     }
     out.sort_by_key(|e| e.episode);
@@ -477,6 +495,62 @@ mod tests {
         let mut bad = token["token"].as_str().unwrap().to_owned();
         bad.insert(40, 'A');
         assert!(open(&bad).is_err());
+    }
+
+    #[test]
+    fn finds_shows_in_the_search_database() {
+        let doc = |name: &str, slug: &str, titles: &str| Doc {
+            name: name.into(),
+            slug: slug.into(),
+            titles: vec![titles.into()],
+        };
+        let db = [
+            doc(
+                "Overflow Season 1",
+                "overflow-season-1",
+                "Overflow Season 1 Overflow おーばーふろぉ",
+            ),
+            doc(
+                "Kuroinu 2",
+                "kuroinu-2",
+                "Kuroinu 2 Kuroinu: Kedakaki Seijo wa Hakudaku ni Somaru 黒獣",
+            ),
+            doc(
+                "Kuroinu 1",
+                "kuroinu-1",
+                "Kuroinu 1 Kuroinu: Kedakaki Seijo wa Hakudaku ni Somaru 黒獣",
+            ),
+            doc(
+                "Kuroinu 2 Episode 1",
+                "kuroinu-2-episode-1",
+                "Kuroinu 2 Episode 1 Kuroinu II The Animation",
+            ),
+            doc(
+                "Sister Breeder 1",
+                "sister-breeder-1",
+                "Sister Breeder 1 OVA Sister Breeder OVA",
+            ),
+        ];
+        let find = |names: &[&str]| {
+            let names: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+            in_database(&db, &wanted(&names))
+                .into_iter()
+                .map(|e| (e.episode, e.url.rsplit('/').next().unwrap().to_owned()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            find(&["Sister Breeder"]),
+            [(1, "sister-breeder-1".to_owned())]
+        );
+        assert_eq!(
+            find(&["Kuroinu: Kedakaki Seijo wa Hakudaku ni Somaru"]),
+            [(1, "kuroinu-1".to_owned()), (2, "kuroinu-2".to_owned())],
+            "by its other title; not the sequel"
+        );
+        assert!(
+            find(&["Overflow"]).is_empty(),
+            "a whole season isn't episode 1"
+        );
     }
 
     #[test]

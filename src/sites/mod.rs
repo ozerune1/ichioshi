@@ -12,7 +12,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use url::Url;
@@ -223,14 +222,14 @@ async fn stream_resolution(s: &Session, stream: &Stream) -> Result<Option<u32>> 
         Media::Hls(url) => crate::hls::resolution(s, url, stream.referer.as_deref()).await,
         Media::Dash(mpds) => {
             let dash = crate::hstream::Dash::at(s.site, referer_of(stream), mpds)?;
-            crate::hstream::dash_resolution(&s.client, &dash)
+            crate::hstream::dash_resolution(&web::client_like_yt_dlp(None)?, &dash)
                 .await
                 .map(Some)
         }
         Media::File(url) => {
+            let http = web::client_like_yt_dlp(stream.referer.as_deref())?;
             let (_, dims) =
-                crate::ohentai::probe_with(&s.client, url.as_str(), stream.referer.as_deref())
-                    .await?;
+                crate::ohentai::probe_with(&http, url.as_str(), stream.referer.as_deref()).await?;
             Ok(dims.map(|(w, h)| crate::ohentai::resolution(w, h)))
         }
     }
@@ -240,26 +239,32 @@ fn referer_of(stream: &Stream) -> &str {
     stream.referer.as_deref().unwrap_or_default()
 }
 
-/// The best of `resolved`'s streams (the highest resolution; the first at
-/// a tie) and its resolution. A stream that can't be read is passed over.
-async fn best(s: &Session, resolved: &Resolved) -> Result<(Stream, Option<u32>)> {
-    let mut best: Option<(Stream, Option<u32>)> = None;
+/// `resolved`'s streams, best first (the highest resolution; the site's
+/// order at a tie), each with its resolution. One that can't be read is
+/// left out.
+async fn ranked(s: &Session, resolved: &Resolved) -> Result<Vec<(Stream, Option<u32>)>> {
+    let mut out: Vec<(Stream, Option<u32>)> = Vec::new();
     let mut failure = None;
     for stream in &resolved.streams {
-        let res = match stream_resolution(s, stream).await {
-            Ok(r) => r,
+        match stream_resolution(s, stream).await {
+            Ok(res) => out.push((stream.clone(), res)),
             Err(e) if e.is::<Challenge>() => return Err(e),
             Err(e) => {
                 tracing::warn!("{} {}: {e:#}", s.site, stream.label);
                 failure = Some(e);
-                continue;
             }
-        };
-        if best.as_ref().is_none_or(|(_, b)| res > *b) {
-            best = Some((stream.clone(), res));
         }
     }
-    best.ok_or_else(|| failure.unwrap_or_else(|| anyhow!("{} has no video", s.site)))
+    if out.is_empty() {
+        return Err(failure.unwrap_or_else(|| anyhow!("{} has no video", s.site)));
+    }
+    out.sort_by_key(|(_, res)| std::cmp::Reverse(*res));
+    Ok(out)
+}
+
+/// The best of `resolved`'s streams and its resolution.
+async fn best(s: &Session, resolved: &Resolved) -> Result<(Stream, Option<u32>)> {
+    Ok(ranked(s, resolved).await?.remove(0))
 }
 
 /// The best resolution the episode at `url` comes in (to rank the site's
@@ -296,18 +301,52 @@ pub async fn download(
 ) -> Result<PathBuf> {
     let s = Session::new(client, site_name(site));
     let resolved = resolve(&s, site, url).await?;
-    let (stream, res) = best(&s, &resolved).await?;
-    tracing::info!(
-        "{}: {} as {} ({})",
-        s.site,
-        resolved.title.as_deref().unwrap_or(url),
-        stream.label,
-        res.map_or("resolution unknown".to_owned(), |r| format!("{r}p")),
-    );
+    // As the site's player does: the next way if one doesn't work.
+    let mut last = None;
+    for (stream, res) in ranked(&s, &resolved).await? {
+        tracing::info!(
+            "{}: {} as {} ({})",
+            s.site,
+            resolved.title.as_deref().unwrap_or(url),
+            stream.label,
+            res.map_or("resolution unknown".to_owned(), |r| format!("{r}p")),
+        );
+        match fetch_stream(
+            &s,
+            &stream,
+            resolved.title.clone(),
+            stem,
+            cancel,
+            &mut progress,
+        )
+        .await
+        {
+            Ok(file) => return Ok(file),
+            Err(e) if cancel.load(std::sync::atomic::Ordering::Relaxed) || e.is::<Challenge>() => {
+                return Err(e);
+            }
+            Err(e) => {
+                tracing::warn!("{} {}: {e:#}; trying the next way", s.site, stream.label);
+                last = Some(e);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow!("{} has no video", s.site)))
+}
+
+/// Downloads one of an episode's streams.
+async fn fetch_stream(
+    s: &Session,
+    stream: &Stream,
+    title: Option<String>,
+    stem: &Path,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64, Option<u64>) + Send,
+) -> Result<PathBuf> {
     match &stream.media {
         Media::Hls(playlist) => {
             crate::hls::download(
-                &s,
+                s,
                 playlist,
                 stream.referer.as_deref(),
                 stem,
@@ -317,10 +356,10 @@ pub async fn download(
             .await
         }
         Media::Dash(mpds) => {
-            let mut dash = crate::hstream::Dash::at(s.site, referer_of(&stream), mpds)?;
-            dash.title = resolved.title.clone();
+            let mut dash = crate::hstream::Dash::at(s.site, referer_of(stream), mpds)?;
+            dash.title = title;
             crate::hstream::download_dash(
-                client,
+                &web::client_like_yt_dlp(None)?,
                 &dash,
                 &with_ext(stem, "mp4"),
                 &Default::default(),
@@ -331,9 +370,14 @@ pub async fn download(
             .await
         }
         Media::File(file) => {
-            let http = file_client(stream.referer.as_deref())?;
+            let http = web::client_like_yt_dlp(stream.referer.as_deref())?;
             let (len, _) =
-                crate::ohentai::probe_with(&http, file.as_str(), stream.referer.as_deref()).await?;
+                crate::ohentai::probe_with(&http, file.as_str(), stream.referer.as_deref())
+                    .await
+                    .map_err(|e| match e.downcast::<Challenge>() {
+                        Ok(_) => Challenge(s.site).into(),
+                        Err(e) => e,
+                    })?;
             let len = len.with_context(|| format!("{} didn't say how big the video is", s.site))?;
             let ext = Path::new(file.path())
                 .extension()
@@ -351,20 +395,6 @@ pub async fn download(
             Ok(dest)
         }
     }
-}
-
-/// A client for one file, sending `referer` with each request.
-fn file_client(referer: Option<&str>) -> Result<reqwest::Client> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(r) = referer {
-        headers.insert(reqwest::header::REFERER, r.parse()?);
-    }
-    Ok(reqwest::Client::builder()
-        .user_agent(concat!("ichioshi/", env!("CARGO_PKG_VERSION")))
-        .default_headers(headers)
-        .connect_timeout(Duration::from_secs(30))
-        .read_timeout(Duration::from_secs(90))
-        .build()?)
 }
 
 /// "Overflow - Episode 3".

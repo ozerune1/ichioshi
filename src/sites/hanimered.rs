@@ -205,10 +205,18 @@ async fn is_playlist(s: &Session, url: &Url) -> bool {
         .is_ok_and(|b| b.trim_ascii_start().starts_with(b"#EXTM3U"))
 }
 
+/// The episode's title: its heading (the plugin's had a `duration=""`;
+/// the site's headings have since lost it).
 fn episode_title(page: &str) -> Option<String> {
-    static RE: LazyLock<Regex> =
+    static PLUGIN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"<h1 duration="" .+>([^<]+)</h1>"#).unwrap());
-    Some(text(&RE.captures(page)?[1])).filter(|t| !t.is_empty())
+    static H1: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?s)<h1\b[^>]*>(.*?)</h1>").unwrap());
+    PLUGIN
+        .captures(page)
+        .or_else(|| H1.captures(page))
+        .map(|c| text(&c[1]))
+        .filter(|t| !t.is_empty())
 }
 
 fn iframe(page: &str) -> Option<String> {

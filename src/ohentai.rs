@@ -562,11 +562,14 @@ async fn read_range(
     if status == StatusCode::RANGE_NOT_SATISFIABLE {
         return Ok((total, Some(Vec::new())));
     }
+    if resp.headers().contains_key("cf-mitigated") {
+        return Err(crate::sites::web::Challenge("the video's server").into());
+    }
     if !status.is_success() {
-        bail!("ohentai's video server returned HTTP {status}");
+        bail!("the video's server returned HTTP {status}");
     }
     if header(CONTENT_TYPE).starts_with("text/html") {
-        bail!("ohentai's video server returned a web page, not the video");
+        bail!("the video's server returned a web page, not the video");
     }
     if status != StatusCode::PARTIAL_CONTENT {
         return Ok((resp.content_length(), None));

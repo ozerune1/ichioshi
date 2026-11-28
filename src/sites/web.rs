@@ -78,6 +78,23 @@ const YT_DLP_HEADERS: [(reqwest::header::HeaderName, &str); 4] = [
     ),
 ];
 
+/// A client sending yt-dlp's headers (and `referer`, if any) with every
+/// request: for downloads that don't go through a [`Session`].
+pub fn client_like_yt_dlp(referer: Option<&str>) -> Result<reqwest::Client> {
+    let mut headers = HeaderMap::new();
+    for (name, value) in YT_DLP_HEADERS {
+        headers.insert(name, HeaderValue::from_static(value));
+    }
+    if let Some(r) = referer {
+        headers.insert(reqwest::header::REFERER, HeaderValue::from_str(r)?);
+    }
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(90))
+        .build()?)
+}
+
 /// One visit to a site: its requests share the cookies its answers set
 /// (clones too), and carry yt-dlp's headers.
 #[derive(Clone)]
@@ -287,7 +304,8 @@ pub fn object_after<'a>(html: &'a str, before: &Regex) -> Option<&'a str> {
     balanced(&rest[open..])
 }
 
-/// The balanced `{...}` at the start of `s`.
+/// The balanced `{...}` at the start of `s` (JavaScript: braces in strings
+/// and comments don't count).
 pub fn balanced(s: &str) -> Option<&str> {
     let bytes = s.as_bytes();
     let (mut depth, mut quote, mut i) = (0usize, None::<u8>, 0);
@@ -297,6 +315,19 @@ pub fn balanced(s: &str) -> Option<&str> {
             Some(_) if c == b'\\' => i += 1,
             Some(q) if c == q => quote = None,
             Some(_) => {}
+            // A comment ("JW's" in one isn't a quote).
+            None if c == b'/' && bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            None if c == b'/' && bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
             None => match c {
                 b'"' | b'\'' | b'`' => quote = Some(c),
                 b'{' => depth += 1,
@@ -655,6 +686,11 @@ mod tests {
         let js = r#"var data = { a: "}", b: {c: 1} }; var x = {};"#;
         assert_eq!(object_after(js, &re), Some(r#"{ a: "}", b: {c: 1} }"#));
         assert_eq!(balanced("}{"), None);
+        let commented = "{a: 1, // JW's {default}\nb: '}' /* c's */}; rest";
+        assert_eq!(
+            balanced(commented),
+            Some("{a: 1, // JW's {default}\nb: '}' /* c's */}")
+        );
         assert_eq!(python_str(&serde_json::json!(true)), "True");
         assert_eq!(python_str(&serde_json::json!(12)), "12");
         assert_eq!(python_str(&serde_json::json!("x y")), "x y");
