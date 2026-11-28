@@ -61,6 +61,11 @@ pub struct Details {
     pub banner: Option<String>,
     /// Episode titles and air times, where known.
     pub episode_list: Vec<EpisodeInfo>,
+    /// AniList's users' recommendations, most recommended first.
+    pub recommendations: Vec<crate::browse::Media>,
+    /// Whether recommendations were asked for (details saved before they
+    /// were aren't fresh).
+    pub recommended: bool,
     /// When these were fetched (Unix time).
     pub fetched: i64,
 }

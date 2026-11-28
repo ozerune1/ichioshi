@@ -337,6 +337,16 @@ query ($id: Int) {
     bannerImage
     streamingEpisodes { title }
     airingSchedule(perPage: 50) { nodes { episode airingAt } }
+    recommendations(sort: RATING_DESC, perPage: 16) {
+      nodes {
+        rating
+        mediaRecommendation {
+          id idMal title { english romaji native } coverImage { extraLarge large }
+          bannerImage format episodes status season seasonYear averageScore
+          popularity genres isAdult nextAiringEpisode { episode airingAt }
+        }
+      }
+    }
   }
 }
 "#;
@@ -485,6 +495,20 @@ pub async fn anilist_details(client: &reqwest::Client, id: u64) -> Result<crate:
             .map(|(e, t)| (e as u32, t)),
         cover: text(&m["coverImage"]["extraLarge"]).or_else(|| text(&m["coverImage"]["large"])),
         banner: text(&m["bannerImage"]),
+        // Those its users rate up, once each.
+        recommendations: {
+            let mut seen = std::collections::HashSet::new();
+            m["recommendations"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|n| n["rating"].as_i64().unwrap_or(0) > 0)
+                .filter(|n| n["mediaRecommendation"].is_object())
+                .map(|n| crate::browse::media(&n["mediaRecommendation"]))
+                .filter(|r| r.id != 0 && seen.insert(r.id))
+                .collect()
+        },
+        recommended: true,
         fetched: chrono::Utc::now().timestamp(),
     })
 }
@@ -734,7 +758,12 @@ mod tests {
                 "nextAiringEpisode": {"episode": 5, "airingAt": 1800000000},
                 "coverImage": {"large": "l.png", "extraLarge": "xl.png"}, "bannerImage": "b.png",
                 "streamingEpisodes": [{"title": "Episode 2 - It Didn't Have to Be Magic..."}, {"title": "Episode 1 - The Journey's End"}, {"title": "Trailer"}],
-                "airingSchedule": {"nodes": [{"episode": 1, "airingAt": 1695999600}, {"episode": 5, "airingAt": 1800000000}]}}}}))
+                "airingSchedule": {"nodes": [{"episode": 1, "airingAt": 1695999600}, {"episode": 5, "airingAt": 1800000000}]},
+                "recommendations": {"nodes": [
+                    {"rating": 120, "mediaRecommendation": {"id": 101, "title": {"english": "Dungeon Meal"}, "format": "TV", "isAdult": false}},
+                    {"rating": -3, "mediaRecommendation": {"id": 102, "title": {"romaji": "Rated Down"}}},
+                    {"rating": 40, "mediaRecommendation": null},
+                    {"rating": 30, "mediaRecommendation": {"id": 101, "title": {"english": "Dungeon Meal"}}}]}}}}))
         })
         .await;
         let _net = crate::mock_http::mocked();
@@ -766,6 +795,14 @@ mod tests {
             ]
         );
         assert_eq!(d.aired(), Some(4), "next is episode 5");
+        // Rated up, once each.
+        let recs: Vec<(u64, &str)> = d
+            .recommendations
+            .iter()
+            .map(|m| (m.id, m.title()))
+            .collect();
+        assert_eq!(recs, [(101, "Dungeon Meal")]);
+        assert!(d.recommended);
     }
 
     /// A second season listed as 25–48 by the streaming sites is 1–24.

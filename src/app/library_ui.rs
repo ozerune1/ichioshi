@@ -962,7 +962,7 @@ impl App {
                 } else {
                     3 * 86_400
                 };
-                now - d.fetched < max_age
+                now - d.fetched < max_age && d.recommended
             });
             let failed_lately = self
                 .pages
@@ -1069,6 +1069,7 @@ impl App {
             nyaa: None,
             origin: Origin::Results,
             entry_loading: true,
+            back: None,
         });
         let client = self.http.clone();
         self.spawn(async move {
@@ -1097,8 +1098,12 @@ impl App {
         match result {
             Ok(entry) => {
                 ap.anime.entry = entry;
-                let (anime, origin) = (ap.anime.clone(), ap.origin);
+                let (anime, origin, back) = (ap.anime.clone(), ap.origin, ap.back.take());
                 self.show_anime(anime, origin);
+                // Where Back goes stays as it was.
+                if let Page::Anime(ap) = &mut self.page {
+                    ap.back = back;
+                }
             }
             Err(e) => self.set_error(format!("Couldn't look it up on SeaDex: {e}")),
         }

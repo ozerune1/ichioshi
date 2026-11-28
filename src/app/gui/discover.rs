@@ -313,6 +313,15 @@ impl Gui {
     /// A poster: AniList's score, format, genres, what's airing; whether
     /// it's on your lists or in the library.
     pub(super) fn media_card<'a>(&'a self, m: &'a Media, origin: Origin) -> Element<'a, Message> {
+        self.poster_card(m, act(Action::OpenMedia(Box::new(m.clone()), origin)))
+    }
+
+    /// [`Gui::media_card`], doing `on_press` when clicked.
+    pub(super) fn poster_card<'a>(
+        &'a self,
+        m: &'a Media,
+        on_press: Message,
+    ) -> Element<'a, Message> {
         let (w, h) = poster_size((176.0, 250.0));
         let small = compact();
         let note = if small { 11 } else { 12 };
@@ -394,7 +403,7 @@ impl Gui {
             );
         }
         mouse_area(c)
-            .on_press(act(Action::OpenMedia(Box::new(m.clone()), origin)))
+            .on_press(on_press)
             .interaction(iced::mouse::Interaction::Pointer)
             .into()
     }

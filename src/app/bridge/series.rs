@@ -48,7 +48,28 @@ pub(super) fn page(ui: &mut Ui, ap: &AnimePage) -> Value {
         "library": library_box(ui, ap),
         "episodes": episodes(ui, ap, &rows, &extras),
         "release": release(ui, ap),
+        "recommended": recommended(ui, id),
     })
+}
+
+/// AniList's users' recommendations (18+ ones only when they're shown).
+fn recommended(ui: &mut Ui, id: u64) -> Vec<Value> {
+    let adult = ui.app.adult_on();
+    let shown: Vec<crate::browse::Media> = ui
+        .app
+        .details(id)
+        .map(|d| {
+            d.recommendations
+                .iter()
+                .filter(|m| adult || !m.adult)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    shown
+        .iter()
+        .map(|m| super::browse::poster(ui, m, Action::OpenRecommended(Box::new(m.clone()))))
+        .collect()
 }
 
 fn link(ui: &mut Ui, label: &str, url: String) -> Value {

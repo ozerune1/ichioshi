@@ -54,12 +54,53 @@ impl Gui {
         if !servers {
             rest = rest.push(self.library_box(ap));
         }
+        if let Some(recommended) = self.recommended(id) {
+            rest = rest.push(recommended);
+        }
         rest = rest.push(gap(20.0));
         body = body.push(rest);
         iced::widget::scrollable(body)
             .height(Fill)
             .style(scroll_style)
             .into()
+    }
+
+    /// AniList's users' recommendations: posters in a strip to scroll
+    /// sideways (18+ ones only when they're shown).
+    fn recommended(&self, id: u64) -> Option<Element<'_, Message>> {
+        let adult = self.app.adult_on();
+        let shown: Vec<&crate::browse::Media> = self
+            .app
+            .details(id)?
+            .recommendations
+            .iter()
+            .filter(|m| adult || !m.adult)
+            .collect();
+        if shown.is_empty() {
+            return None;
+        }
+        let row = Row::with_children(
+            shown
+                .into_iter()
+                .map(|m| self.poster_card(m, act(Action::OpenRecommended(Box::new(m.clone()))))),
+        )
+        .spacing(if compact() { POSTER_GAP } else { 24.0 });
+        Some(
+            column![
+                section("Recommended", Some("by AniList's users".into())),
+                iced::widget::scrollable(container(row).padding(iced::Padding {
+                    bottom: 14.0,
+                    ..Default::default()
+                }))
+                .direction(iced::widget::scrollable::Direction::Horizontal(
+                    iced::widget::scrollable::Scrollbar::new()
+                        .width(6)
+                        .scroller_width(6)
+                ))
+                .style(scroll_style),
+            ]
+            .into(),
+        )
     }
 
     // ── Header ────────────────────────────────────────────────────────
@@ -97,7 +138,11 @@ impl Gui {
                 )),
                 ..Default::default()
             });
-        let back_to = ap.origin.name();
+        // A recommendation's page goes back to the anime it was on.
+        let back_to = match &ap.back {
+            Some(to) => clip(&to.anime.title, 32),
+            None => ap.origin.name().to_owned(),
+        };
         let back = iced::widget::button(
             row![text("←").size(14), text(back_to).size(13).font(MEDIUM)].spacing(6),
         )

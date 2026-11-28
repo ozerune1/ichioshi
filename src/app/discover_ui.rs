@@ -419,6 +419,38 @@ impl App {
             ap.origin = origin;
         }
     }
+
+    /// An anime the anime page shown recommends: its page, which goes back
+    /// to this one (and this one where it would have).
+    pub(super) fn open_recommended(&mut self, media: Media) {
+        let from = match &self.page {
+            Page::Anime(ap) => Some(Box::new(super::BackTo {
+                anime: ap.anime.clone(),
+                origin: ap.origin,
+                back: ap.back.clone(),
+            })),
+            _ => None,
+        };
+        let origin = from.as_ref().map_or(Origin::Library, |b| b.origin);
+        self.open_media(media, origin);
+        if let Page::Anime(ap) = &mut self.page {
+            ap.back = from;
+        }
+    }
+
+    /// An anime page gone back to.
+    pub(super) fn reopen(&mut self, to: super::BackTo) {
+        let id = to.anime.anilist_id;
+        if self.library.find(id).is_some() {
+            self.open_series(id);
+        } else {
+            self.look_up_and_show(to.anime);
+        }
+        if let Page::Anime(ap) = &mut self.page {
+            ap.origin = to.origin;
+            ap.back = to.back;
+        }
+    }
 }
 
 /// The anime `lists`' choices leave of a list's `entries` (by AniList ID,

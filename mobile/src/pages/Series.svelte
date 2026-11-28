@@ -191,9 +191,31 @@
       {#if release.notes_seadex}<p class="label">SeaDex notes</p><p class="muted small">{release.notes_seadex}</p>{/if}
     {/if}
   </div>
+
+  {#if page.recommended?.length}
+    <h2>Recommended <span class="muted small">by AniList's users</span></h2>
+    <div class="recs">
+      {#each page.recommended as m (m.id)}
+        <button class="rec" onclick={() => press(m.open)}>
+          <span class="rcover">
+            <Poster src={m.cover} />
+            {#if m.in_library}<span class="pill">In library</span>{/if}
+          </span>
+          <span class="rt">{m.title}</span>
+          <span class="rm">{m.facts}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
+  .recs { display: flex; gap: 10px; overflow-x: auto; margin: 0 -16px; padding: 0 16px 4px; scrollbar-width: none; }
+  .rec { flex: none; width: 112px; display: flex; flex-direction: column; gap: 2px; padding: 0; border: none; background: none; color: inherit; text-align: left; font: inherit; }
+  .rcover { position: relative; margin-bottom: 4px; }
+  .rcover .pill { position: absolute; top: 6px; left: 6px; font-size: 10px; font-weight: 600; color: white; padding: 2px 7px; border-radius: 999px; background: var(--green); }
+  .rt { font-size: 12px; font-weight: 600; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .rm { font-size: 11px; color: var(--muted); }
   .hero { position: relative; height: 230px; overflow: hidden; background: var(--surface); }
   .banner { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .shade { position: absolute; inset: 0; background: linear-gradient(rgba(13, 15, 20, 0.35), rgba(13, 15, 20, 0.75) 55%, var(--bg)); }

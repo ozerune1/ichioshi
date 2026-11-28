@@ -459,6 +459,8 @@ enum Action {
     MoreResults,
     /// An anime from Discover or the calendar.
     OpenMedia(Box<crate::browse::Media>, Origin),
+    /// An anime an anime's page recommends (Back comes back to that page).
+    OpenRecommended(Box<crate::browse::Media>),
     /// An episode's discussion on AniList and MyAnimeList.
     OpenDiscussion {
         id: u64,
@@ -587,6 +589,18 @@ struct AnimePage {
     origin: Origin,
     /// Its SeaDex entry is being looked up.
     entry_loading: bool,
+    /// The anime page it was opened from (a recommendation's): Back
+    /// reopens it.
+    pub(super) back: Option<Box<BackTo>>,
+}
+
+/// An anime page to go back to: its anime, where it was opened from, and
+/// what it would go back to in turn.
+#[derive(Clone)]
+pub(super) struct BackTo {
+    pub(super) anime: Anime,
+    origin: Origin,
+    back: Option<Box<BackTo>>,
 }
 
 impl AnimePage {
@@ -1344,6 +1358,15 @@ impl App {
                 }
             }
             Action::SearchNyaa => self.search_nyaa(),
+            // A recommendation's page goes back to the page it came from.
+            Action::Back if matches!(&self.page, Page::Anime(AnimePage { back: Some(_), .. })) => {
+                let Page::Anime(ap) = std::mem::replace(&mut self.page, Page::Home) else {
+                    unreachable!()
+                };
+                if let Some(to) = ap.back {
+                    self.reopen(*to);
+                }
+            }
             Action::Back => {
                 self.cancel_listing();
                 self.page = match std::mem::replace(&mut self.page, Page::Home) {
@@ -1514,6 +1537,7 @@ impl App {
             Action::MoreDiscover => self.discover_more(),
             Action::MoreResults => self.search_more(),
             Action::OpenMedia(media, origin) => self.open_media(*media, origin),
+            Action::OpenRecommended(media) => self.open_recommended(*media),
             Action::OpenDiscussion { id, episode } => self.open_discussion(id, episode),
             Action::DiscussionMore => self.discussion_more(),
             Action::DiscussionPost => self.discussion_post(),
@@ -1610,6 +1634,7 @@ impl App {
             nyaa,
             origin,
             entry_loading: false,
+            back: None,
         });
         if search_now {
             self.search_nyaa();

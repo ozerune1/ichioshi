@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 use crate::seadex::Anime;
 
 /// An anime as AniList lists it.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Media {
     pub id: u64,
     pub id_mal: Option<u64>,
@@ -748,7 +749,8 @@ async fn query(client: &reqwest::Client, q: &str, variables: Value) -> Result<Va
     Ok(body["data"].take())
 }
 
-fn media(m: &Value) -> Media {
+/// An anime from AniList's answer (asked with [`MEDIA`]'s fields).
+pub(crate) fn media(m: &Value) -> Media {
     let text = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
     let num = |v: &Value| v.as_u64().map(|n| n as u32);
     Media {

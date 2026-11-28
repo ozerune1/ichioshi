@@ -115,6 +115,7 @@ impl Drop for ResetNyaa {
 fn anime_page(id: u64, episodes: u32, release: Option<crate::seadex::Release>) -> Page {
     use crate::seadex::{Anime, Entry};
     Page::Anime(AnimePage {
+        back: None,
         anime: Anime {
             anilist_id: id,
             title: "Show".into(),
@@ -3634,11 +3635,14 @@ fn discovers_schedules_and_discusses() {
             return reply(200, json!({"data": {"SaveThreadComment": {"id": 999}}}));
         }
         if q.contains("Media(id") {
+            // Each recommends the next (by AniList's users).
+            let next = v["id"].as_u64().unwrap_or(0) + 10;
             return reply(
                 200,
                 json!({"data": {"Media": {"idMal": 101, "status": "RELEASING", "format": "TV",
                     "episodes": 2, "genres": [], "studios": {"nodes": []}, "startDate": {},
-                    "endDate": {}}}}),
+                    "endDate": {}, "recommendations": {"nodes": [
+                        {"rating": 9, "mediaRecommendation": show(next, &format!("Recommended {next}"))}]}}}}),
             );
         }
         panic!("unexpected query {q}")
@@ -3734,6 +3738,32 @@ fn discovers_schedules_and_discusses() {
         "its page",
         |g| matches!(&g.app.page, Page::Anime(ap) if ap.anime.anilist_id == 3 && !ap.entry_loading),
     );
+    // Its recommendations: one opened, and Back to the page it was on, then
+    // where that came from.
+    wait_for(&mut h, "Recommended 13");
+    click(&mut h, "Recommended 13");
+    wait_until(
+        &mut h,
+        "the recommended page",
+        |g| matches!(&g.app.page, Page::Anime(ap) if ap.anime.anilist_id == 13),
+    );
+    wait_for(&mut h, "Recommended 23");
+    click(&mut h, "Recommended 23");
+    wait_until(
+        &mut h,
+        "its recommended page",
+        |g| matches!(&g.app.page, Page::Anime(ap) if ap.anime.anilist_id == 23),
+    );
+    click(&mut h, "←");
+    assert!(matches!(&h.app.page, Page::Anime(ap) if ap.anime.anilist_id == 13));
+    click(&mut h, "←");
+    assert!(matches!(&h.app.page, Page::Anime(ap) if ap.anime.anilist_id == 3));
+    click(&mut h, "←");
+    assert!(
+        matches!(h.app.page, Page::Discover),
+        "back where the first came from"
+    );
+    click(&mut h, "Someone Else's");
     click(&mut h, "Discover");
     assert!(matches!(h.app.page, Page::Discover));
     click(&mut h, "Someone Else's");

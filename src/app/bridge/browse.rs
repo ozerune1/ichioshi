@@ -26,6 +26,11 @@ fn status(s: Status) -> Value {
 
 /// A poster: score, format, what's airing; on your lists, in the library.
 fn media(ui: &mut Ui, m: &Media, origin: Origin) -> Value {
+    poster(ui, m, Action::OpenMedia(Box::new(m.clone()), origin))
+}
+
+/// [`media`], doing `open` when tapped.
+pub(super) fn poster(ui: &mut Ui, m: &Media, open: Action) -> Value {
     let mut facts = Vec::new();
     if let Some(format) = &m.format {
         facts.push(format.replace('_', " "));
@@ -52,7 +57,7 @@ fn media(ui: &mut Ui, m: &Media, origin: Origin) -> Value {
         "genres": m.genres.iter().take(3).cloned().collect::<Vec<_>>().join(" · "),
         "status": list_status(ui, m).map(status),
         "in_library": ui.app.library.find(m.id).is_some(),
-        "open": ui.act(Action::OpenMedia(Box::new(m.clone()), origin)),
+        "open": ui.act(open),
     })
 }
 
